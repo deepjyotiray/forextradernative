@@ -288,34 +288,32 @@ function render(d){
   h+=`<tr><td>${t.ticket}</td><td class="${dir==='BUY'?'green':'red'}" style="font-weight:600">${dir}</td><td>${t.volume}</td><td>${Number(entry).toFixed(2)}</td><td>${sl?Number(sl).toFixed(2):'-'}</td><td>${tp?Number(tp).toFixed(2):'-'}</td><td class="${pc(pnl)}">${ps(pnl)}</td><td class="${pc(peak)}">${ps(peak)}</td><td>${age}</td><td style="font-size:9px"><span class="cyan">U:</span>${otime.includes('T')?otime.split('T')[1]?.substring(0,8):'-'}<br><span class="orange">I:</span>${toIST(otime)}</td></tr>`;});
   h+='</table>';$('openT').innerHTML=h;}
 
-  // Closed trades — MT5 deal history, grouped by date with daily P&L
+  // Closed trades — MT5 deal history, grouped by IST date with daily P&L
   const cl=d.closed_history||[];
   if(!cl.length){$('closedT').innerHTML='<div style="color:var(--dim);padding:10px;text-align:center">No closed trades</div>';}
   else{
-  // Parse date from close_time and group
-  function parseUTCDate(raw){
+  function parseDate(raw){
     if(!raw)return null;
     try{
       if(raw.includes('T'))return new Date(raw);
       return new Date(raw.replace(/\./g,'-').replace(' ','T')+'Z');
     }catch(e){return null;}
   }
-  function fmtDate(dt){return dt.toLocaleDateString('en',{timeZone:'UTC',year:'numeric',month:'short',day:'numeric',weekday:'short'});}
   function fmtUTC(dt){return dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'UTC'});}
   function fmtIST(dt){return dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});}
-  function dateKey(dt){return dt.toISOString().slice(0,10);}
-  // Build grouped structure: [{date, dateLabel, trades:[], pnl, wins, losses}]
+  function istDateKey(dt){return dt.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});}
+  function istDateLabel(dt){return dt.toLocaleDateString('en',{timeZone:'Asia/Kolkata',year:'numeric',month:'short',day:'numeric',weekday:'short'});}
   const grouped={};
   cl.forEach(t=>{
-    const dt=parseUTCDate(t.close_time);
-    const key=dt?dateKey(dt):'unknown';
-    if(!grouped[key])grouped[key]={date:key,dateLabel:dt?fmtDate(dt):key,trades:[],pnl:0,wins:0,losses:0};
+    const dt=parseDate(t.close_time);
+    const key=dt?istDateKey(dt):'unknown';
+    if(!grouped[key])grouped[key]={date:key,dateLabel:dt?istDateLabel(dt):key,trades:[],pnl:0,wins:0,losses:0};
     grouped[key].trades.push({...t,_dt:dt});
     grouped[key].pnl+=t.pnl||0;
     if(t.won)grouped[key].wins++;else grouped[key].losses++;
   });
   const days=Object.values(grouped).sort((a,b)=>b.date.localeCompare(a.date));
-  let h='<table><th>#</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Date</th><th>UTC</th><th>IST</th>';
+  let h='<table><th>#</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Date (IST)</th><th>UTC</th><th>IST</th>';
   days.forEach(day=>{
     const dp=day.pnl;
     h+=`<tr style="background:rgba(255,255,255,.04)"><td colspan="4" style="font-weight:700;font-size:11px;padding:5px">${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="3" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td></tr>`;
@@ -324,8 +322,8 @@ function render(d){
       const dt=t._dt;
       const utcTime=dt?fmtUTC(dt):'-';
       const istTime=dt?fmtIST(dt):'-';
-      const dateStr=dt?dateKey(dt):'-';
-      h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):(t.entry?Number(t.entry).toFixed(2):'-')}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px;color:var(--dim)">${dateStr}</td><td style="font-size:10px" class="cyan">${utcTime}</td><td style="font-size:10px" class="orange">${istTime}</td></tr>`;
+      const istDate=dt?istDateKey(dt):'-';
+      h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):(t.entry?Number(t.entry).toFixed(2):'-')}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px;color:var(--dim)">${istDate}</td><td style="font-size:10px" class="cyan">${utcTime}</td><td style="font-size:10px" class="orange">${istTime}</td></tr>`;
     });
   });
   h+='</table>';$('closedT').innerHTML=h;}
