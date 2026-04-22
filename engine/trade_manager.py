@@ -1,0 +1,299 @@
+"""
+Trade Manager — persistent state, correct P&L tracking.
+Saves open trades to disk so restarts don't lose tracking.
+Updates P&L from live positions every cycle.
+"""
+import time
+import json
+import os
+import MetaTrader5 as mt5
+from typing import Dict, List
+from datetime import datetime, timezone, timedelta
+import config as cfg
+
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_STATE_FILE = os.path.join(_BASE_DIR, "open_trades.json")
+
+
+class TradeRecord:
+    __slots__ = (
+        "ticket", "direction", "volume", "entry", "sl", "tp",
+        "sl_distance", "strategy", "confidence", "reason",
+        "open_time", "fill_ts", "peak_pnl", "live_pnl",
+        "sl_breakeven", "partial_closed", "trail_active",
+        "initial_volume", "scalp", "be_trigger_price", "timeout_seconds",
+        "features",
+    )
+
+    def __init__(self, ticket, direction, volume, entry, sl, tp, sl_distance,
+                 strategy="", confidence=0, reason="",
+                 scalp=False, be_trigger=0, timeout=0, features=None):
+        self.ticket = ticket
+        self.direction = direction
+        self.volume = volume
+        self.initial_volume = volume
+        self.entry = entry
+        self.sl = sl
+        self.tp = tp
+        self.sl_distance = sl_distance
+        self.strategy = strategy
+        self.confidence = confidence
+        self.reason = reason
+        self.open_time = datetime.now(timezone.utc).isoformat()
+        self.fill_ts = time.time()
+        self.peak_pnl = 0.0
+        self.live_pnl = 0.0
+        self.sl_breakeven = False
+        self.partial_closed = False
+        self.trail_active = False
+        self.scalp = scalp
+        self.be_trigger_price = be_trigger
+        self.timeout_seconds = timeout
+        self.features = features or {}
+
+    def to_dict(self) -> Dict:
+        return {s: getattr(self, s) for s in self.__slots__}
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "TradeRecord":
+        t = cls(d["ticket"], d["direction"], d["volume"], d["entry"],
+                d["sl"], d["tp"], d["sl_distance"], d.get("strategy", ""),
+                d.get("confidence", 0), d.get("reason", ""),
+                d.get("scalp", False), d.get("be_trigger_price", 0),
+                d.get("timeout_seconds", 0))
+        t.initial_volume = d.get("initial_volume", d["volume"])
+        t.open_time = d.get("open_time", "")
+        t.fill_ts = d.get("fill_ts", time.time())
+        t.peak_pnl = d.get("peak_pnl", 0)
+        t.live_pnl = d.get("live_pnl", 0)
+        t.sl_breakeven = d.get("sl_breakeven", False)
+        t.partial_closed = d.get("partial_closed", False)
+        t.trail_active = d.get("trail_active", False)
+        t.features = d.get("features", {})
+        return t
+
+
+class TradeManager:
+    def __init__(self, mt5_bridge):
+        self.bridge = mt5_bridge
+        self.open_trades: Dict[int, TradeRecord] = {}
+        self.closed_trades: List[Dict] = []
+        self._closing_tickets: set = set()
+        self._load_state()
+
+    def register_trade(self, ticket, direction, volume, entry, sl, tp, sl_distance,
+                       strategy="", confidence=0, reason="",
+                       scalp=False, be_trigger=0, timeout=0, features=None):
+        self.open_trades[ticket] = TradeRecord(
+            ticket, direction, volume, entry, sl, tp, sl_distance,
+            strategy, confidence, reason, scalp, be_trigger, timeout, features,
+        )
+        self._save_state()
+
+    def manage_all(self, live_positions: List[Dict]):
+        live_map = {p["ticket"]: p for p in live_positions}
+        closed = []
+
+        for ticket, trade in list(self.open_trades.items()):
+            if ticket not in live_map:
+                # Position gone — use last known P&L or fetch from history
+                pnl = trade.live_pnl
+                if pnl == 0.0:
+                    pnl = self._fetch_closed_pnl(ticket)
+                self.closed_trades.append({
+                    **trade.to_dict(),
+                    "close_time": datetime.now(timezone.utc).isoformat(),
+                    "pnl": round(pnl, 2),
+                    "won": pnl > 0,
+                })
+                closed.append((ticket, pnl, pnl > 0))
+                self._closing_tickets.discard(ticket)
+                del self.open_trades[ticket]
+            else:
+                pos = live_map[ticket]
+                pnl = pos["net_profit"]
+                trade.live_pnl = pnl
+                trade.volume = pos["volume"]
+                # Update SL/TP from MT5 (may have been modified by broker/EA)
+                if pos.get("sl"):
+                    trade.sl = pos["sl"]
+                if pos.get("tp"):
+                    trade.tp = pos["tp"]
+                if pnl > trade.peak_pnl:
+                    trade.peak_pnl = pnl
+
+        for ticket, trade in list(self.open_trades.items()):
+            if ticket in self._closing_tickets:
+                continue
+            self._manage_trade(trade)
+
+        if closed:
+            self._save_state()
+
+        return closed
+
+    def _fetch_closed_pnl(self, ticket: int) -> float:
+        """Fetch real P&L from MT5 deal history."""
+        try:
+            now = datetime.now(timezone.utc)
+            # Search last 7 days
+            deals = mt5.history_deals_get(now - timedelta(days=7), now + timedelta(hours=1))
+            if not deals:
+                return 0.0
+            total = 0.0
+            found = False
+            for d in deals:
+                if d.position_id == ticket:
+                    total += d.profit + d.swap + d.commission
+                    found = True
+            return round(total, 2) if found else 0.0
+        except Exception:
+            return 0.0
+
+    def _manage_trade(self, t: TradeRecord):
+        if t.scalp:
+            self._manage_scalp(t)
+        else:
+            self._manage_swing(t)
+
+    def _manage_scalp(self, t: TradeRecord):
+        pnl = t.live_pnl
+        age = time.time() - t.fill_ts
+        price_move = pnl / (t.initial_volume * cfg.PIP_VALUE_PER_LOT) if t.initial_volume > 0 else 0
+
+        if t.be_trigger_price > 0 and not t.sl_breakeven:
+            if price_move >= t.be_trigger_price:
+                buf = 0.05
+                new_sl = round((t.entry + buf) if t.direction == "BUY" else (t.entry - buf), 2)
+                res = self.bridge.modify_trade(t.ticket, new_sl, t.tp)
+                if res.get("success"):
+                    t.sl = new_sl
+                    t.sl_breakeven = True
+                return
+
+        timeout = t.timeout_seconds
+        if timeout > 0 and age >= timeout and pnl < 0.5 * (t.sl_distance * t.initial_volume * cfg.PIP_VALUE_PER_LOT):
+            self._close_early(t, f"Scalp timeout {age:.0f}s, P&L ${pnl:.2f}")
+            return
+
+        if t.peak_pnl > 2.0 and pnl < 0.50:
+            self._close_early(t, f"Scalp reversal (peak ${t.peak_pnl:.2f} -> ${pnl:.2f})")
+            return
+
+    def _manage_swing(self, t: TradeRecord):
+        r = t.sl_distance * t.initial_volume * cfg.PIP_VALUE_PER_LOT
+        if r <= 0:
+            r = 1.0
+        pnl = t.live_pnl
+        peak = t.peak_pnl
+        age = time.time() - t.fill_ts
+
+        if pnl >= 0.5 * r and not t.sl_breakeven:
+            buf = max(t.sl_distance * 0.15, 0.30)
+            new_sl = round((t.entry + buf) if t.direction == "BUY" else (t.entry - buf), 2)
+            res = self.bridge.modify_trade(t.ticket, new_sl, t.tp)
+            if res.get("success"):
+                t.sl = new_sl
+                t.sl_breakeven = True
+            return
+
+        if pnl >= 1.0 * r and not t.partial_closed:
+            t.partial_closed = True
+            close_vol = round(t.initial_volume * 0.5, 2)
+            # Only partial close if remaining volume stays above min lot
+            # Otherwise skip partial and just tighten SL to lock profit
+            if close_vol >= cfg.MIN_LOT and (t.volume - close_vol) >= cfg.MIN_LOT:
+                self._partial_close(t, close_vol, f"Partial 50% at 1R")
+            # Set runner TP at 2R + tighten SL to lock 0.5R
+            rr = 2.0
+            if t.direction == "BUY":
+                new_tp = round(t.entry + t.sl_distance * rr, 2)
+                new_sl = round(max(t.sl, t.entry + t.sl_distance * 0.5), 2)
+            else:
+                new_tp = round(t.entry - t.sl_distance * rr, 2)
+                new_sl = round(min(t.sl, t.entry - t.sl_distance * 0.5), 2)
+            self.bridge.modify_trade(t.ticket, new_sl, new_tp)
+            t.tp = new_tp
+            t.sl = new_sl
+            t.trail_active = True
+            return
+
+        if t.trail_active and pnl >= 1.5 * r:
+            if t.direction == "BUY":
+                trail_sl = round(max(t.sl, t.entry + t.sl_distance * 1.0), 2)
+            else:
+                trail_sl = round(min(t.sl, t.entry - t.sl_distance * 1.0), 2)
+            if trail_sl != t.sl:
+                self.bridge.modify_trade(t.ticket, trail_sl, t.tp)
+                t.sl = trail_sl
+            return
+
+        if age >= 600 and pnl < 0.2 * r:
+            self._close_early(t, f"Time exit {age:.0f}s, P&L ${pnl:.2f}")
+            return
+
+        if peak >= 1.2 * r and pnl < 0.3 * r:
+            self._close_early(t, f"Reversal (peak ${peak:.2f} -> ${pnl:.2f})")
+            return
+
+    def _partial_close(self, t: TradeRecord, volume: float, reason: str):
+        tick = mt5.symbol_info_tick(cfg.SYMBOL)
+        if not tick:
+            return
+        close_type = mt5.ORDER_TYPE_SELL if t.direction == "BUY" else mt5.ORDER_TYPE_BUY
+        price = tick.bid if t.direction == "BUY" else tick.ask
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL, "symbol": cfg.SYMBOL,
+            "volume": round(volume, 2), "type": close_type,
+            "position": t.ticket, "price": price,
+            "deviation": cfg.DEVIATION, "magic": cfg.MAGIC_NUMBER,
+            "comment": "FT_PARTIAL", "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        mt5.order_send(request)
+
+    def _close_early(self, t: TradeRecord, reason: str):
+        self._closing_tickets.add(t.ticket)
+        res = self.bridge.close_trade(t.ticket)
+        if not res.get("success"):
+            self._closing_tickets.discard(t.ticket)
+
+    def close_all(self):
+        for ticket in list(self.open_trades.keys()):
+            self.bridge.close_trade(ticket)
+
+    # --- Persistence ---
+
+    def _save_state(self):
+        try:
+            data = {str(k): v.to_dict() for k, v in self.open_trades.items()}
+            with open(_STATE_FILE, "w") as f:
+                json.dump(data, f, default=str)
+        except Exception:
+            pass
+
+    def _load_state(self):
+        if not os.path.isfile(_STATE_FILE):
+            return
+        try:
+            with open(_STATE_FILE) as f:
+                data = json.load(f)
+            for k, v in data.items():
+                ticket = int(k)
+                self.open_trades[ticket] = TradeRecord.from_dict(v)
+        except Exception:
+            pass
+
+    @property
+    def open_count(self) -> int:
+        return len(self.open_trades)
+
+    @property
+    def status(self) -> Dict:
+        return {
+            "open_trades": [t.to_dict() for t in self.open_trades.values()],
+            "open_count": self.open_count,
+            "closed_trades": self.closed_trades[-50:],
+            "closed_count": len(self.closed_trades),
+            "total_pnl": round(sum(t.get("pnl", 0) for t in self.closed_trades), 2),
+        }
