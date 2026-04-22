@@ -280,7 +280,7 @@ class MT5Bridge:
             # Fallback: fetch all deals and filter by symbol substring
             deals = mt5.history_deals_get(from_date, to_date)
             if deals:
-                deals = [d for d in deals if cfg.SYMBOL in (d.symbol or "")]
+                deals = [d for d in deals if self._match_symbol(d.symbol)]
         if not deals:
             return []
         return [{
@@ -344,6 +344,10 @@ class MT5Bridge:
         closed.sort(key=lambda t: t["close_time"])
         return closed
 
+    def _match_symbol(self, symbol: str) -> bool:
+        """Check if a deal's symbol matches our configured symbol (handles suffixes like XAUUSDm)."""
+        return cfg.SYMBOL in (symbol or "")
+
     def get_today_pnl(self) -> Dict:
         """Get today's realized P&L. Day resets at IST midnight."""
         now = datetime.now(timezone.utc)
@@ -359,7 +363,7 @@ class MT5Bridge:
             wins = 0
             losses = 0
             for d in deals:
-                if d.entry == 1 and d.symbol == cfg.SYMBOL:  # exit deals only
+                if d.entry in (1, 2) and self._match_symbol(d.symbol):
                     net = d.profit + d.swap + d.commission
                     pnl += net
                     trades += 1
@@ -373,7 +377,6 @@ class MT5Bridge:
         # Fallback: balance - initial deposit (crude but works on demo)
         info = mt5.account_info()
         if info:
-            # Find deposit amount from deal history
             all_deals = mt5.history_deals_get(now - timedelta(days=90), now + timedelta(hours=1))
             deposit = 0.0
             if all_deals:
