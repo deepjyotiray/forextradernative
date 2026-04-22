@@ -28,10 +28,10 @@ def run(cmd, cwd=BASE_DIR):
 def has_new_commits():
     run("git fetch origin")
     local, _, _ = run("git rev-parse HEAD")
-    remote, _, _ = run("git rev-parse origin/main")
-    if not local or not remote:
-        # try master if main doesn't exist
-        remote, _, _ = run("git rev-parse origin/master")
+    branch, _, _ = run("git rev-parse --abbrev-ref HEAD")
+    remote, _, rc = run(f"git rev-parse origin/{branch}")
+    if rc != 0:
+        return False
     return local != remote and bool(remote)
 
 
