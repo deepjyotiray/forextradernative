@@ -95,6 +95,10 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 .cfg-item input:focus{outline:none;border-color:var(--blue)}
 .btn-save{background:var(--blue);color:#fff;padding:6px 16px;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer}
 .btn-save:hover{opacity:.85}
+.toggle{position:relative;width:36px;height:20px;-webkit-appearance:none;appearance:none;background:var(--border);border-radius:10px;outline:none;cursor:pointer;transition:background .2s}
+.toggle:checked{background:var(--green)}
+.toggle::before{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:transform .2s}
+.toggle:checked::before{transform:translateX(16px)}
 </style>
 </head>
 <body>
@@ -275,7 +279,7 @@ function render(d){
     <div class="big ${pc(dp)}" style="margin-bottom:3px">$${ps(dp)}</div>
     <div class="progress"><div class="progress-fill" style="width:${Math.abs(pct)}%;background:${dp>=0?'var(--green)':'var(--red)'}"></div></div>
     <div style="font-size:10px;color:var(--dim);margin-top:3px">${pct.toFixed(0)}% of $${tgt} ${tgtEnabled?'':'<span class="yellow">(DISABLED)</span>'}</div>
-    <div class="row"><span class="label">Target Gate</span><label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="tgtToggle" onchange="toggleDailyTarget(this.checked)" ${tgtEnabled?'checked':''} style="cursor:pointer"><span style="font-size:10px">${tgtEnabled?'<span class=green>ON</span>':'<span class=red>OFF</span>'}</span></label></div>
+    <div class="row"><span class="label">Target Gate</span><label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="toggle" id="tgtToggle" onchange="toggleDailyTarget(this.checked)" ${tgtEnabled?'checked':''}><span style="font-size:10px">${tgtEnabled?'<span class=green>ON</span>':'<span class=red>OFF</span>'}</span></label></div>
     <div class="row"><span class="label">Trades</span><span>${dt}</span></div>
     <div class="row"><span class="label">Source</span><span style="font-size:10px;color:var(--dim)">${pnlSrc}</span></div>
     <div class="row"><span class="label">Losses</span><span class="${(rk.consecutive_losses||0)>=3?'red':''}">${rk.consecutive_losses||0} streak</span></div>

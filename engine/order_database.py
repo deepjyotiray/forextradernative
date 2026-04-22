@@ -352,14 +352,18 @@ class OrderDatabase:
             """, (today_ist,))
             
             row = cursor.fetchone()
-            stats = dict(row) if row else {}
+            if row:
+                stats = {k: row[k] for k in row.keys()}
+            else:
+                stats = {}
             
             cursor = conn.execute("""
                 SELECT COUNT(*) as open_count, SUM(live_pnl) as open_pnl
                 FROM orders WHERE status = 'OPEN'
             """)
             row = cursor.fetchone()
-            stats.update(dict(row) if row else {})
+            if row:
+                stats.update({k: row[k] for k in row.keys()})
             
             for key in ['trades', 'wins', 'losses', 'open_count']:
                 stats[key] = stats[key] or 0

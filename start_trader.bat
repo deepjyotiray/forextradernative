@@ -10,3 +10,8 @@ timeout /t 1 /nobreak >nul
 :: Start fresh
 wscript "%~dp0start_trader.vbs"
 echo Auto Trader started. Dashboard: http://127.0.0.1:8899
+
+:: Start cloudflared tunnel and push URL to GitHub
+taskkill /IM cloudflared.exe /F >nul 2>&1
+wscript "%~dp0start_tunnel.vbs"
+echo Cloudflare tunnel starting in background.

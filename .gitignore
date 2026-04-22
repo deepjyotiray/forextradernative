@@ -5,6 +5,7 @@ __pycache__/
 deploy_watcher.log
 *.txt
 !requirements.txt
+!cf_url.txt
 cloudflared.exe
 *.json
 !xgb_model.json
