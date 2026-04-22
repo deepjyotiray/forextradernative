@@ -226,6 +226,24 @@ class AutoTrader:
         if self._cycle % 300 == 0:
             self._correlation = corr_engine.compute()
 
+        # Feed floating P&L to risk manager for combined target check
+        floating = sum(p["net_profit"] for p in all_positions if p.get("magic") == cfg.MAGIC_NUMBER)
+        self.risk.update_floating_pnl(floating)
+
+        # Close all open trades if daily target/loss limit breached (realized+floating)
+        if self.risk.should_close_all() and self.trades.open_count > 0:
+            reason = self.risk.should_close_all_reason()
+            self.log("RISK", f"{reason}. Closing all.")
+            self.trades.close_all()
+
+        # Close all if equity drawdown exceeds limit
+        if self.risk.should_close_drawdown(account) and self.trades.open_count > 0:
+            bal = account.get('balance', 0)
+            eq = account.get('equity', bal)
+            dd = (bal - eq) / bal * 100 if bal > 0 else 0
+            self.log("RISK", f"Drawdown {dd:.1f}% >= {cfg.MAX_DRAWDOWN_PCT}%. Closing all.")
+            self.trades.close_all()
+
         # Manage open trades (ALWAYS) — pass ALL positions for P&L matching
         closed = self.trades.manage_all(all_positions)
         for ticket, pnl, won in closed:
@@ -538,6 +556,7 @@ class AutoTrader:
             "candles": {tf: len(df) for tf, df in self._candles.items()},
             "risk": self.risk.daily_status,
             "daily_target": cfg.DAILY_TARGET_DOLLARS,
+            "daily_target_enabled": cfg.DAILY_TARGET_ENABLED,
             "risk_config": {
                 "MAX_POSITIONS": cfg.MAX_POSITIONS,
                 "MAX_RISK_PCT": cfg.MAX_RISK_PCT,
@@ -641,6 +660,9 @@ class AutoTrader:
                     if 'TIER1_ENABLED' in body:
                         cfg.TIER1_ENABLED = bool(body['TIER1_ENABLED'])
                         updated['TIER1_ENABLED'] = cfg.TIER1_ENABLED
+                    if 'DAILY_TARGET_ENABLED' in body:
+                        cfg.DAILY_TARGET_ENABLED = bool(body['DAILY_TARGET_ENABLED'])
+                        updated['DAILY_TARGET_ENABLED'] = cfg.DAILY_TARGET_ENABLED
                     if updated:
                         trader.log("API", f"Config updated: {updated}")
                     s._j({"updated":updated})

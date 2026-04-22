@@ -264,6 +264,7 @@ function render(d){
 
   // Daily
   const tgt=d.daily_target||30;
+  const tgtEnabled=d.daily_target_enabled!==false;
   const mt5pnl=d.mt5_today_pnl||{};
   // Best P&L source: MT5 deals (single source of truth)
   const dp=mt5pnl.pnl!=null?mt5pnl.pnl:(rk.pnl||0);
@@ -273,7 +274,8 @@ function render(d){
   if(!hasSelectionIn($('dailyCard')))$('dailyCard').innerHTML=`
     <div class="big ${pc(dp)}" style="margin-bottom:3px">$${ps(dp)}</div>
     <div class="progress"><div class="progress-fill" style="width:${Math.abs(pct)}%;background:${dp>=0?'var(--green)':'var(--red)'}"></div></div>
-    <div style="font-size:10px;color:var(--dim);margin-top:3px">${pct.toFixed(0)}% of $${tgt}</div>
+    <div style="font-size:10px;color:var(--dim);margin-top:3px">${pct.toFixed(0)}% of $${tgt} ${tgtEnabled?'':'<span class="yellow">(DISABLED)</span>'}</div>
+    <div class="row"><span class="label">Target Gate</span><label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="tgtToggle" onchange="toggleDailyTarget(this.checked)" ${tgtEnabled?'checked':''} style="cursor:pointer"><span style="font-size:10px">${tgtEnabled?'<span class=green>ON</span>':'<span class=red>OFF</span>'}</span></label></div>
     <div class="row"><span class="label">Trades</span><span>${dt}</span></div>
     <div class="row"><span class="label">Source</span><span style="font-size:10px;color:var(--dim)">${pnlSrc}</span></div>
     <div class="row"><span class="label">Losses</span><span class="${(rk.consecutive_losses||0)>=3?'red':''}">${rk.consecutive_losses||0} streak</span></div>
@@ -419,6 +421,9 @@ async function saveConfig(){
 }
 async function toggleTier1(enabled){
   try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({TIER1_ENABLED:enabled})});setTimeout(get,200);}catch(e){alert('Failed to toggle Tier 1');}
+}
+async function toggleDailyTarget(enabled){
+  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({DAILY_TARGET_ENABLED:enabled})});setTimeout(get,200);}catch(e){alert('Failed to toggle Daily Target');}
 }
 setInterval(get,500);get();
 </script>
