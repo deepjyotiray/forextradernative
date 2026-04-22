@@ -231,17 +231,35 @@ class AutoTrader:
             if len(featured) >= 15 and xgb_model.should_retrain(len(featured)):
                 threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
 
+        # Periodic status (moved before gates so it always fires)
+        now = time.time()
+        if now - self._last_log_time > 30:
+            self._last_log_time = now
+            self._log_status(tick)
+
         if not self.enabled:
             return
         if not is_market_open():
+            if now - getattr(self, '_last_gate_log', 0) > 60:
+                self._last_gate_log = now
+                self.log("GATE", "Market closed")
             return
-        blocked, _ = is_session_open_blocked()
+        blocked, block_reason = is_session_open_blocked()
         if blocked:
+            if now - getattr(self, '_last_gate_log', 0) > 60:
+                self._last_gate_log = now
+                self.log("GATE", f"Session blocked: {block_reason}")
             return
         if self._calendar.get("blocked"):
+            if now - getattr(self, '_last_gate_log', 0) > 60:
+                self._last_gate_log = now
+                self.log("GATE", f"Calendar blocked: {self._calendar.get('reason', '')}")
             return
-        allowed, _ = self.risk.can_trade(account, len(positions))  # count only our positions
+        allowed, risk_reason = self.risk.can_trade(account, len(positions))  # count only our positions
         if not allowed:
+            if now - getattr(self, '_last_gate_log', 0) > 60:
+                self._last_gate_log = now
+                self.log("GATE", f"Risk blocked: {risk_reason}")
             return
 
         # === Strategy signal ===
@@ -256,9 +274,18 @@ class AutoTrader:
         sig, strat_name = self.strat_mgr.generate_signal(strat_data)
         action = sig.get("signal", "NO_TRADE")
 
-        if action == "NO_TRADE" and sig.get("score", 0) > 0.3:
-            self.log("FILTERED", f"[{strat_name}] {sig.get('reason','')[:120]}")
         if action not in ("BUY", "SELL"):
+            if now - getattr(self, '_last_sig_log', 0) > 30:
+                self._last_sig_log = now
+                reason = sig.get("reason", "unknown")[:120]
+                score = sig.get("score", 0)
+                # In AUTO mode, show all strategy results
+                auto_results = sig.get("_auto_results", {})
+                if auto_results:
+                    parts = [f"{n}: {r.get('reason','-')[:60]}" for n, r in auto_results.items()]
+                    self.log("NO_SIG", " | ".join(parts))
+                else:
+                    self.log("NO_SIG", f"[{strat_name}] {reason} (score:{score:.2f})")
             return
 
         self._stats["signals"] += 1
@@ -333,11 +360,7 @@ class AutoTrader:
         elif result:
             self.log("TRADE", f"FAILED: {result.get('error')}")
 
-        # Periodic status
-        now = time.time()
-        if now - self._last_log_time > 30:
-            self._last_log_time = now
-            self._log_status(tick)
+
 
     def _recompute_all(self):
         m1 = self._candles.get("M1")
