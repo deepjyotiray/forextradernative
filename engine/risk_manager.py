@@ -29,6 +29,9 @@ class RiskManager:
 
     def seed_from_mt5(self, today_pnl: Dict, closed_trades: list = None):
         """Seed daily P&L from MT5 deal history on startup."""
+        # Reset day FIRST so yesterday's data doesn't re-trigger flags
+        self.check_daily_reset()
+
         self._daily_pnl = today_pnl.get("pnl", 0.0)
         self._daily_trades = today_pnl.get("trades", 0)
         # Compute trailing consecutive losses from actual trade sequence
@@ -44,7 +47,7 @@ class RiskManager:
             self._consecutive_losses = streak
         else:
             self._consecutive_losses = 0
-        # Never un-set target/loss flags once triggered (prevents race with MT5 deal propagation)
+        # Set flags based on today's P&L (after daily reset, so these reflect current day)
         if self._daily_pnl >= cfg.DAILY_TARGET_DOLLARS:
             self._daily_target_hit = True
         balance = self._start_balance if self._start_balance > 0 else 1000
