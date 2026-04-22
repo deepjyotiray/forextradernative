@@ -275,12 +275,12 @@ class MT5Bridge:
     def get_history(self, days: int = 30) -> List[Dict]:
         from_date = datetime.now(timezone.utc) - timedelta(days=days)
         to_date = datetime.now(timezone.utc) + timedelta(hours=1)
-        deals = mt5.history_deals_get(from_date, to_date, group=f"*{cfg.SYMBOL}*")
+        # Fetch ALL deals first, then filter — group pattern can miss suffixed symbols
+        deals = mt5.history_deals_get(from_date, to_date)
         if not deals:
-            # Fallback: fetch all deals and filter by symbol substring
-            deals = mt5.history_deals_get(from_date, to_date)
-            if deals:
-                deals = [d for d in deals if self._match_symbol(d.symbol)]
+            return []
+        # Filter by symbol match
+        deals = [d for d in deals if self._match_symbol(d.symbol)]
         if not deals:
             return []
         return [{
@@ -298,49 +298,130 @@ class MT5Bridge:
             "time": datetime.fromtimestamp(d.time, tz=timezone.utc).isoformat(),
             "magic": d.magic,
             "comment": d.comment,
-            "entry": d.entry,  # 0=in, 1=out
+            "entry": d.entry,  # 0=in, 1=out, 2=inout, 3=out_by
         } for d in deals]
 
     def get_closed_trades(self, days: int = 30) -> List[Dict]:
-        """Pair IN/OUT deals from MT5 history into closed trade records.
-        Handles partial closes (multiple OUT deals per position) by aggregating P&L."""
+        """Build closed trade records from MT5 history.
+        Primary: history_deals grouped by position_id.
+        Fallback: history_orders to catch positions with missing deals (demo server quirk).
+        FILTERS BY MAGIC NUMBER to only include bot trades."""
         deals = self.get_history(days)
-        if not deals:
-            return []
-        entries = {}   # position_id -> IN deal
-        exits = {}     # position_id -> aggregated exit info
-        for d in deals:
+        bot_deals = [d for d in deals if d["magic"] == cfg.MAGIC_NUMBER] if deals else []
+
+        # Group deals by position_id
+        by_pos = {}
+        for d in bot_deals:
             pid = d["position_id"]
-            if d["entry"] == 0:  # IN
-                entries[pid] = d
-            elif d["entry"] in (1, 2):  # OUT or IN/OUT reversal
-                if pid not in exits:
-                    exits[pid] = {"pnl": 0.0, "volume": 0.0, "last_deal": d}
-                exits[pid]["pnl"] += d["net_profit"]
-                exits[pid]["volume"] += d["volume"]
-                # Keep the latest exit deal for close_time/price
-                if d["time"] >= exits[pid]["last_deal"]["time"]:
-                    exits[pid]["last_deal"] = d
+            if pid not in by_pos:
+                by_pos[pid] = {"ins": [], "outs": []}
+            if d["entry"] == 0:
+                by_pos[pid]["ins"].append(d)
+            elif d["entry"] in (1, 2):
+                by_pos[pid]["outs"].append(d)
+
         closed = []
-        for pid, ex in exits.items():
-            e = entries.get(pid)
-            d = ex["last_deal"]
-            pnl = round(ex["pnl"], 2)
+        deal_pids = set()  # track which positions we built from deals
+
+        for pid, group in by_pos.items():
+            outs = group["outs"]
+            if not outs:
+                continue
+            ins = group["ins"]
+            entry = ins[0] if ins else None
+
+            total_pnl = sum(d["profit"] for d in ins + outs)
+            total_swap = sum(d["swap"] for d in ins + outs)
+            total_comm = sum(d["commission"] for d in ins + outs)
+            net_pnl = round(total_pnl + total_swap + total_comm, 2)
+
+            last_out = max(outs, key=lambda d: d["time"])
+            direction = entry["type"] if entry else ("BUY" if last_out["type"] == "SELL" else "SELL")
+            entry_price = entry["price"] if entry else 0
+            volume = entry["volume"] if entry else round(sum(d["volume"] for d in outs), 2)
+
             closed.append({
                 "ticket": pid,
-                "symbol": d["symbol"],
-                "direction": e["type"] if e else ("BUY" if d["type"] == "SELL" else "SELL"),
-                "volume": round(ex["volume"], 2),
-                "entry_price": e["price"] if e else 0,
-                "exit_price": d["price"],
-                "pnl": pnl,
-                "won": pnl > 0,
-                "open_time": e["time"] if e else "",
-                "close_time": d["time"],
-                "reason": d["comment"],
-                "magic": d["magic"],
-                "comment": d["comment"],
+                "symbol": last_out["symbol"],
+                "direction": direction,
+                "volume": round(volume, 2),
+                "entry_price": entry_price,
+                "exit_price": last_out["price"],
+                "pnl": net_pnl,
+                "swap": round(total_swap, 2),
+                "commission": round(total_comm, 2),
+                "won": net_pnl > 0,
+                "open_time": entry["time"] if entry else "",
+                "close_time": last_out["time"],
+                "reason": last_out["comment"],
+                "magic": last_out["magic"],
+                "comment": last_out["comment"],
             })
+            deal_pids.add(pid)
+
+        # Fallback: scan history_orders for positions missing from deals
+        # (MetaQuotes-Demo sometimes doesn't persist deal records)
+        try:
+            from_date = datetime.now(timezone.utc) - timedelta(days=days)
+            to_date = datetime.now(timezone.utc) + timedelta(hours=1)
+            orders = mt5.history_orders_get(from_date, to_date)
+            if orders:
+                # Group orders by position_id
+                ord_by_pos = {}
+                for o in orders:
+                    if o.magic != cfg.MAGIC_NUMBER or not self._match_symbol(o.symbol):
+                        continue
+                    if o.state != 1:  # 1 = ORDER_STATE_FILLED
+                        continue
+                    pid = o.position_id
+                    if pid in deal_pids:
+                        continue  # already have this from deals
+                    if pid not in ord_by_pos:
+                        ord_by_pos[pid] = []
+                    ord_by_pos[pid].append(o)
+
+                for pid, pos_orders in ord_by_pos.items():
+                    if len(pos_orders) < 2:
+                        continue  # need at least open + close order
+                    # Sort by time
+                    pos_orders.sort(key=lambda o: o.time_setup)
+                    open_ord = pos_orders[0]
+                    close_ord = pos_orders[-1]
+
+                    # Determine direction from open order type
+                    # ORDER_TYPE_SELL=1, ORDER_TYPE_BUY=0
+                    direction = "SELL" if open_ord.type == 1 else "BUY"
+                    entry_price = open_ord.price_current if open_ord.price_current > 0 else open_ord.price_open
+                    exit_price = close_ord.price_current if close_ord.price_current > 0 else close_ord.price_open
+                    volume = open_ord.volume_initial
+
+                    # Compute P&L from prices
+                    if direction == "SELL":
+                        pnl = round((entry_price - exit_price) * volume * 100, 2)
+                    else:
+                        pnl = round((exit_price - entry_price) * volume * 100, 2)
+
+                    closed.append({
+                        "ticket": pid,
+                        "symbol": open_ord.symbol,
+                        "direction": direction,
+                        "volume": round(volume, 2),
+                        "entry_price": round(entry_price, 2),
+                        "exit_price": round(exit_price, 2),
+                        "pnl": pnl,
+                        "swap": 0.0,
+                        "commission": 0.0,
+                        "won": pnl > 0,
+                        "open_time": datetime.fromtimestamp(open_ord.time_setup, tz=timezone.utc).isoformat(),
+                        "close_time": datetime.fromtimestamp(close_ord.time_setup, tz=timezone.utc).isoformat(),
+                        "reason": close_ord.comment,
+                        "magic": open_ord.magic,
+                        "comment": close_ord.comment,
+                        "source": "orders",  # flag that this came from order fallback
+                    })
+        except Exception:
+            pass
+
         closed.sort(key=lambda t: t["close_time"])
         return closed
 
@@ -349,43 +430,86 @@ class MT5Bridge:
         return cfg.SYMBOL in (symbol or "")
 
     def get_today_pnl(self) -> Dict:
-        """Get today's realized P&L. Day resets at IST midnight."""
+        """Get today's realized P&L from bot trades. Day resets at IST midnight.
+        Uses position-level grouping. Falls back to orders for missing deals."""
         now = datetime.now(timezone.utc)
         ist_now = now.astimezone(_IST)
         ist_midnight = ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
         today_start = ist_midnight.astimezone(timezone.utc)
-        
-        # Try deal history first
-        deals = mt5.history_deals_get(today_start, now + timedelta(hours=1))
-        if deals:
-            pnl = 0.0
-            trades = 0
-            wins = 0
-            losses = 0
-            for d in deals:
-                if d.entry in (1, 2) and self._match_symbol(d.symbol):
-                    net = d.profit + d.swap + d.commission
-                    pnl += net
-                    trades += 1
-                    if net > 0:
-                        wins += 1
-                    elif net < 0:
-                        losses += 1
-            if trades > 0:
-                return {"pnl": round(pnl, 2), "trades": trades, "wins": wins, "losses": losses, "source": "deals"}
 
-        # Fallback: balance - initial deposit (crude but works on demo)
+        deals = mt5.history_deals_get(today_start, now + timedelta(hours=1))
+
+        # Group deals by position_id
+        pos_pnl = {}
+        closed_pids = set()
+        for d in (deals or []):
+            if not (self._match_symbol(d.symbol) and d.magic == cfg.MAGIC_NUMBER):
+                continue
+            pid = d.position_id
+            if pid not in pos_pnl:
+                pos_pnl[pid] = 0.0
+            pos_pnl[pid] += d.profit + d.swap + d.commission
+            if d.entry in (1, 2):
+                closed_pids.add(pid)
+
+        # Fallback: check orders for positions missing from deals
+        try:
+            orders = mt5.history_orders_get(today_start, now + timedelta(hours=1))
+            if orders:
+                ord_by_pos = {}
+                for o in orders:
+                    if o.magic != cfg.MAGIC_NUMBER or not self._match_symbol(o.symbol):
+                        continue
+                    if o.state != 1:
+                        continue
+                    pid = o.position_id
+                    if pid in closed_pids:
+                        continue
+                    if pid not in ord_by_pos:
+                        ord_by_pos[pid] = []
+                    ord_by_pos[pid].append(o)
+                for pid, pos_orders in ord_by_pos.items():
+                    if len(pos_orders) < 2:
+                        continue
+                    pos_orders.sort(key=lambda o: o.time_setup)
+                    open_ord = pos_orders[0]
+                    close_ord = pos_orders[-1]
+                    direction = "SELL" if open_ord.type == 1 else "BUY"
+                    ep = open_ord.price_current if open_ord.price_current > 0 else open_ord.price_open
+                    xp = close_ord.price_current if close_ord.price_current > 0 else close_ord.price_open
+                    vol = open_ord.volume_initial
+                    pnl = round(((ep - xp) if direction == "SELL" else (xp - ep)) * vol * 100, 2)
+                    pos_pnl[pid] = pnl
+                    closed_pids.add(pid)
+        except Exception:
+            pass
+
+        pnl = 0.0
+        wins = 0
+        losses = 0
+        for pid in closed_pids:
+            net = round(pos_pnl.get(pid, 0.0), 2)
+            pnl += net
+            if net > 0:
+                wins += 1
+            elif net < 0:
+                losses += 1
+
+        if closed_pids:
+            return {"pnl": round(pnl, 2), "trades": len(closed_pids),
+                    "wins": wins, "losses": losses, "source": "deals"}
+
+        # Fallback: balance - deposit
         info = mt5.account_info()
         if info:
             all_deals = mt5.history_deals_get(now - timedelta(days=90), now + timedelta(hours=1))
             deposit = 0.0
             if all_deals:
                 for d in all_deals:
-                    if d.type == 2:  # balance operation (deposit)
+                    if d.type == 2:
                         deposit += d.profit
             if deposit > 0:
-                pnl = round(info.balance - deposit, 2)
-                return {"pnl": pnl, "trades": 0, "wins": 0, "losses": 0, "source": "balance_delta",
-                        "deposit": deposit, "balance": info.balance}
+                return {"pnl": round(info.balance - deposit, 2), "trades": 0,
+                        "wins": 0, "losses": 0, "source": "balance_delta"}
 
         return {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0, "source": "none"}

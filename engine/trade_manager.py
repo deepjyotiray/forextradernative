@@ -82,7 +82,7 @@ class TradeManager:
     def __init__(self, mt5_bridge):
         self.bridge = mt5_bridge
         self.open_trades: Dict[int, TradeRecord] = {}
-        self.closed_trades: List[Dict] = []
+        self.closed_trades: List[Dict] = []  # Deprecated - use MT5 history instead
         self._closing_tickets: set = set()
         self._load_state()
 
@@ -112,18 +112,13 @@ class TradeManager:
 
         for ticket, trade in list(self.open_trades.items()):
             if ticket not in live_map:
-                # Position gone — use last known P&L or fetch from history
-                pnl = trade.live_pnl
-                if pnl == 0.0:
-                    pnl = self._fetch_closed_pnl(ticket)
+                # Position gone — ALWAYS fetch P&L from MT5 history (authoritative)
+                pnl = self._fetch_closed_pnl(ticket)
+                # If MT5 history fetch fails, use last known live P&L as fallback
+                if pnl == 0.0 and trade.live_pnl != 0.0:
+                    pnl = trade.live_pnl
                 now = datetime.now(timezone.utc)
-                self.closed_trades.append({
-                    **trade.to_dict(),
-                    "close_time": now.isoformat(),
-                    "close_time_ist": now.astimezone(_IST).isoformat(),
-                    "pnl": round(pnl, 2),
-                    "won": pnl > 0,
-                })
+                # Don't add to internal closed_trades - MT5 history is the source of truth
                 closed.append((ticket, pnl, pnl > 0))
                 self._closing_tickets.discard(ticket)
                 del self.open_trades[ticket]
@@ -151,10 +146,10 @@ class TradeManager:
         return closed
 
     def _fetch_closed_pnl(self, ticket: int) -> float:
-        """Fetch real P&L from MT5 deal history."""
+        """Fetch real P&L from MT5 deal history - AUTHORITATIVE SOURCE.
+        Sums profit+swap+commission from ALL deals for this position_id."""
         try:
             now = datetime.now(timezone.utc)
-            # Search last 7 days
             deals = mt5.history_deals_get(now - timedelta(days=7), now + timedelta(hours=1))
             if not deals:
                 return 0.0
@@ -163,7 +158,8 @@ class TradeManager:
             for d in deals:
                 if d.position_id == ticket:
                     total += d.profit + d.swap + d.commission
-                    found = True
+                    if d.entry in (1, 2):  # only mark found if we see an OUT deal
+                        found = True
             return round(total, 2) if found else 0.0
         except Exception:
             return 0.0
@@ -327,7 +323,4 @@ class TradeManager:
         return {
             "open_trades": [t.to_dict() for t in self.open_trades.values()],
             "open_count": self.open_count,
-            "closed_trades": self.closed_trades,
-            "closed_count": len(self.closed_trades),
-            "total_pnl": round(sum(t.get("pnl", 0) for t in self.closed_trades), 2),
         }

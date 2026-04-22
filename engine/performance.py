@@ -14,11 +14,53 @@ class PerformanceTracker:
         self.trades: List[Dict] = []
         self._recent: deque = deque(maxlen=50)
         self._peak_balance = 0.0
+        self._ticket_set: set = set()  # fast lookup for dedup
         self._load()
 
     def record(self, trade: Dict):
-        self.trades.append(trade)
-        self._recent.append(trade)
+        ticket = trade.get("ticket")
+        if ticket and ticket in self._ticket_set:
+            # Update existing record with richer data (MT5 sync may enrich)
+            for i, t in enumerate(self.trades):
+                if t.get("ticket") == ticket:
+                    self.trades[i] = {**t, **trade}  # merge, new data wins
+                    break
+        else:
+            self.trades.append(trade)
+            if ticket:
+                self._ticket_set.add(ticket)
+            self._recent.append(trade)
+        self._save()
+
+    def sync_from_mt5(self, mt5_closed: List[Dict]):
+        """Full sync: ensure every MT5 closed trade is in the tracker with correct P&L."""
+        for mt5t in mt5_closed:
+            ticket = mt5t.get("ticket")
+            if not ticket:
+                continue
+            record = {
+                "ticket": ticket,
+                "pnl": mt5t.get("pnl", 0),
+                "won": mt5t.get("won", False),
+                "time": mt5t.get("close_time", ""),
+                "direction": mt5t.get("direction", ""),
+                "volume": mt5t.get("volume", 0),
+                "entry_price": mt5t.get("entry_price", 0),
+                "exit_price": mt5t.get("exit_price", 0),
+                "symbol": mt5t.get("symbol", ""),
+                "comment": mt5t.get("comment", ""),
+            }
+            if ticket in self._ticket_set:
+                # Update P&L to match MT5 (authoritative)
+                for i, t in enumerate(self.trades):
+                    if t.get("ticket") == ticket:
+                        if t.get("pnl") != record["pnl"]:
+                            self.trades[i] = {**t, **record}
+                        break
+            else:
+                self.trades.append(record)
+                self._ticket_set.add(ticket)
+                self._recent.append(record)
         self._save()
 
     def get_stats(self) -> Dict:
@@ -32,7 +74,6 @@ class PerformanceTracker:
         win_rate = len(wins) / len(pnls) if pnls else 0
         expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
 
-        # Max drawdown from cumulative P&L
         cum = 0
         peak = 0
         max_dd = 0
@@ -108,6 +149,7 @@ class PerformanceTracker:
             try:
                 with open(self._path) as f:
                     self.trades = json.load(f)
+                self._ticket_set = {t.get("ticket") for t in self.trades if t.get("ticket")}
                 for t in self.trades[-50:]:
                     self._recent.append(t)
             except Exception:

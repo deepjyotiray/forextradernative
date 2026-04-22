@@ -223,18 +223,16 @@ class AutoTrader:
         # Manage open trades (ALWAYS) — pass ALL positions for P&L matching
         closed = self.trades.manage_all(all_positions)
         for ticket, pnl, won in closed:
+            # Record to performance tracker with MT5-sourced P&L
             self.perf.record({"ticket": ticket, "pnl": pnl, "won": won,
-                              "time": datetime.now(timezone.utc).isoformat(),
-                              **({"features": self.trades.closed_trades[-1].get("features", {})} if self.trades.closed_trades else {})})
+                              "time": datetime.now(timezone.utc).isoformat()})
+            self.risk.record_trade_result(pnl, won)
             self.risk.set_risk_multiplier(self.perf.risk_multiplier())
-            self.log("RESULT", f"#{ticket} {'WIN' if won else 'LOSS'} ${pnl:+.2f}")
-            # XGBoost: retrain on featured trades only
-            featured = [t for t in self.trades.closed_trades
-                        if t.get("features") and any(
-                            isinstance(v, (int, float)) and v != 0
-                            for v in t["features"].values())]
-            if len(featured) >= 15 and xgb_model.should_retrain(len(featured)):
-                threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
+            self.log("RESULT", f"#{ticket} {'WIN' if won else 'LOSS'} ${pnl:+.2f} (MT5 sourced)")
+            # XGBoost: retrain using MT5 closed trades (authoritative)
+            mt5_closed = self.bridge.get_closed_trades(30)
+            if len(mt5_closed) >= 15 and xgb_model.should_retrain(len(mt5_closed)):
+                threading.Thread(target=xgb_model.train, args=(mt5_closed,), daemon=True).start()
 
         # Poll MT5 history every 5s — single source of truth
         now_ts = time.time()
@@ -383,14 +381,23 @@ class AutoTrader:
         self._recompute_regime_bias()
 
     def _poll_mt5_history(self):
-        """Poll MT5 deal history and sync risk manager. MT5 = source of truth."""
+        """Poll MT5 deal history - SINGLE SOURCE OF TRUTH for closed trades."""
         try:
             self._mt5_today_pnl = self.bridge.get_today_pnl()
             self._mt5_closed_history = self.bridge.get_closed_trades(30)
             # Sync risk manager daily P&L from MT5 deals (overwrite incremental tracking)
             self.risk.seed_from_mt5(self._mt5_today_pnl)
+            # Update performance tracker with MT5 data if needed
+            self._sync_performance_with_mt5()
         except Exception as e:
             self.log("ERR", f"History poll failed: {e}")
+
+    def _sync_performance_with_mt5(self):
+        """Sync performance tracker with MT5 deal history (authoritative)."""
+        try:
+            self.perf.sync_from_mt5(self._mt5_closed_history)
+        except Exception as e:
+            self.log("ERR", f"Performance sync failed: {e}")
 
     def _recompute_regime_bias(self):
         ts = self.tick_proc.snapshot()
@@ -406,6 +413,13 @@ class AutoTrader:
                  f"Open:{self.trades.open_count} | Daily:${self._mt5_today_pnl.get('pnl', 0):+.2f}")
 
     def get_full_status(self) -> Dict:
+        # Compute performance stats directly from MT5 closed history (single source of truth)
+        mt5_closed = self._mt5_closed_history
+        mt5_pnls = [t.get("pnl", 0) for t in mt5_closed]
+        mt5_wins = [p for p in mt5_pnls if p > 0]
+        mt5_losses = [p for p in mt5_pnls if p <= 0]
+        mt5_total_pnl = round(sum(mt5_pnls), 2) if mt5_pnls else 0
+
         return {
             "enabled": self.enabled,
             "mt5_connected": self._mt5_connected,
@@ -434,9 +448,16 @@ class AutoTrader:
             "mt5_today_pnl": self._mt5_today_pnl,
             "mt5_positions": self.bridge.get_positions() if self._mt5_connected else [],
             "mt5_floating_pnl": self.bridge.get_floating_pnl() if self._mt5_connected else {},
-            "closed_history": self._mt5_closed_history,
+            "closed_history": mt5_closed,
             "xgb": xgb_model.get_feature_importance(),
-            "performance": self.perf.get_stats(),
+            "performance": {
+                "total": len(mt5_pnls),
+                "wins": len(mt5_wins),
+                "losses": len(mt5_losses),
+                "win_rate": round(len(mt5_wins) / len(mt5_pnls), 3) if mt5_pnls else 0,
+                "total_pnl": mt5_total_pnl,
+                **self.perf.get_stats(),  # merge tracker stats (expectancy, drawdown, etc)
+            },
             "trades": self.trades.status if self.trades else {},
             "stats": self._stats,
             "log": list(self._log)[-50:],
