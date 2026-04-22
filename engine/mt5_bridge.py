@@ -152,6 +152,27 @@ class MT5Bridge:
         """Only positions opened by this bot (matching magic number)."""
         return [p for p in self.get_positions() if p["magic"] == cfg.MAGIC_NUMBER]
 
+    def get_floating_pnl(self) -> Dict:
+        """Live floating P&L from all open positions."""
+        positions = self.get_positions()
+        total = sum(p["net_profit"] for p in positions)
+        return {
+            "total": round(total, 2),
+            "count": len(positions),
+            "positions": [{
+                "ticket": p["ticket"],
+                "direction": p["type"],
+                "volume": p["volume"],
+                "open_price": p["open_price"],
+                "current_price": p["current_price"],
+                "pnl": p["net_profit"],
+                "sl": p["sl"],
+                "tp": p["tp"],
+                "open_time": p["open_time"],
+                "magic": p["magic"],
+            } for p in positions],
+        }
+
     # --- Order Execution ---
 
     def open_trade(self, direction: str, volume: float, sl: float, tp: float,
@@ -274,6 +295,39 @@ class MT5Bridge:
             "comment": d.comment,
             "entry": d.entry,  # 0=in, 1=out
         } for d in deals]
+
+    def get_closed_trades(self, days: int = 30) -> List[Dict]:
+        """Pair IN/OUT deals from MT5 history into closed trade records."""
+        deals = self.get_history(days)
+        if not deals:
+            return []
+        entries = {}
+        closed = []
+        for d in deals:
+            if d["entry"] == 0:  # IN
+                entries[d["position_id"]] = d
+            elif d["entry"] == 1:  # OUT
+                e = entries.get(d["position_id"])
+                entry_price = e["price"] if e else 0
+                entry_time = e["time"] if e else ""
+                direction = e["type"] if e else ("BUY" if d["type"] == "SELL" else "SELL")
+                pnl = d["net_profit"]
+                closed.append({
+                    "ticket": d["position_id"],
+                    "symbol": d["symbol"],
+                    "direction": direction,
+                    "volume": d["volume"],
+                    "entry_price": entry_price,
+                    "exit_price": d["price"],
+                    "pnl": pnl,
+                    "won": pnl > 0,
+                    "open_time": entry_time,
+                    "close_time": d["time"],
+                    "reason": d["comment"],
+                    "magic": d["magic"],
+                    "comment": d["comment"],
+                })
+        return closed
 
     def get_today_pnl(self) -> Dict:
         """Get today's realized P&L. Day resets at IST midnight."""

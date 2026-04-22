@@ -210,10 +210,11 @@ function render(d){
 
   // Account
   const bal=a.balance||0,eq=a.equity||0,dd=bal>0?((bal-eq)/bal*100):0;
+  const fp=d.mt5_floating_pnl||{};
   $('acctCard').innerHTML=`
     <div class="big" style="margin-bottom:4px">$${bal.toFixed(2)}</div>
     <div class="row"><span class="label">Equity</span><span class="${pc(eq-bal)}">$${eq.toFixed(2)}</span></div>
-    <div class="row"><span class="label">Floating</span><span class="${pc(a.profit||0)}">${ps(a.profit||0)}</span></div>
+    <div class="row"><span class="label">Floating</span><span class="${pc(fp.total||0)}">${ps(fp.total||0)} (${fp.count||0} pos)</span></div>
     <div class="row"><span class="label">Drawdown</span><span class="${dd>3?'red':dd>1?'yellow':'green'}">${dd.toFixed(1)}%</span></div>
     <div class="row"><span class="label">Leverage</span><span>1:${a.leverage||'-'}</span></div>
   `;
@@ -221,8 +222,8 @@ function render(d){
   // Daily
   const tgt=d.daily_target||30;
   const mt5pnl=d.mt5_today_pnl||{};
-  // Best P&L source: MT5 deals > balance delta > risk tracker
-  const dp=mt5pnl.pnl!=null&&mt5pnl.pnl!==0?mt5pnl.pnl:(rk.pnl||0);
+  // Best P&L source: MT5 deals (single source of truth)
+  const dp=mt5pnl.pnl!=null?mt5pnl.pnl:(rk.pnl||0);
   const dt=mt5pnl.trades||rk.trades||0;
   const pnlSrc=mt5pnl.source||'tracker';
   const pct=tgt>0?Math.min(100,Math.max(-100,dp/tgt*100)):0;
@@ -267,18 +268,29 @@ function render(d){
   sup.slice(0,4).forEach(z=>{const w=Math.round((z.strength||0)*100);zh+=`<tr><td class="green">S</td><td>${z.zone_low}</td><td>${z.zone_high}</td><td><div class="zone-bar zone-s" style="width:${w}%"></div>${w}%</td><td>${z.touches||0}</td></tr>`;});
   zh+='</table>';$('zonesCard').innerHTML=zh;
 
-  // Open trades
-  const op=tr.open_trades||[];
+  // Open trades — use MT5 positions as source of truth, enrich with trade manager data
+  const mt5pos=d.mt5_positions||[];
+  const tmTrades=tr.open_trades||[];
+  const tmMap={}; tmTrades.forEach(t=>{tmMap[t.ticket]=t;});
+  const op=mt5pos.length>0?mt5pos:tmTrades;
   if(!op.length){$('openT').innerHTML='<div style="color:var(--dim);padding:10px;text-align:center">No open trades</div>';}
   else{let h='<table><th>#</th><th>Dir</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>P&L</th><th>Peak</th><th>Age</th><th>Time</th>';
-  op.forEach(t=>{const age=t.fill_ts?Math.round(Date.now()/1000-t.fill_ts)+'s':'-';const p=t.live_pnl||0;
-  h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}" style="font-weight:600">${t.direction}</td><td>${t.volume}</td><td>${Number(t.entry).toFixed(2)}</td><td>${Number(t.sl).toFixed(2)}</td><td>${Number(t.tp).toFixed(2)}</td><td class="${pc(p)}">${ps(p)}</td><td class="${pc(t.peak_pnl||0)}">${ps(t.peak_pnl||0)}</td><td>${age}</td><td style="font-size:9px"><span class="cyan">U:</span>${(t.open_time||'').split('T')[1]?.substring(0,8)||'-'}<br><span class="orange">I:</span>${toIST(t.open_time)}</td></tr>`;});
+  op.forEach(t=>{
+  const tm=tmMap[t.ticket]||{};
+  const dir=t.type||t.direction||'-';
+  const pnl=t.net_profit!=null?t.net_profit:(t.live_pnl||0);
+  const peak=tm.peak_pnl||0;
+  const entry=t.open_price||t.price_open||t.entry||0;
+  const sl=t.sl||0;
+  const tp=t.tp||0;
+  const otime=t.open_time||'';
+  const age=tm.fill_ts?Math.round(Date.now()/1000-tm.fill_ts)+'s':'-';
+  h+=`<tr><td>${t.ticket}</td><td class="${dir==='BUY'?'green':'red'}" style="font-weight:600">${dir}</td><td>${t.volume}</td><td>${Number(entry).toFixed(2)}</td><td>${sl?Number(sl).toFixed(2):'-'}</td><td>${tp?Number(tp).toFixed(2):'-'}</td><td class="${pc(pnl)}">${ps(pnl)}</td><td class="${pc(peak)}">${ps(peak)}</td><td>${age}</td><td style="font-size:9px"><span class="cyan">U:</span>${otime.includes('T')?otime.split('T')[1]?.substring(0,8):'-'}<br><span class="orange">I:</span>${toIST(otime)}</td></tr>`;});
   h+='</table>';$('openT').innerHTML=h;}
 
-  // Closed trades — prefer CSV history from EA, fall back to trade manager
-  const csvHistory=d.closed_history||[];
-  const cl=csvHistory.length>0?csvHistory:(tr.closed_trades||[]);
-  if(!cl.length){const cc=tr.closed_count||0,cp=tr.total_pnl||0;$('closedT').innerHTML=cc>0?`<div style="padding:10px;text-align:center"><span class="dim">${cc} trades</span> <span class="${pc(cp)}">${ps(cp)}</span></div>`:'<div style="color:var(--dim);padding:10px;text-align:center">No closed trades</div>';}
+  // Closed trades — MT5 deal history is source of truth
+  const cl=d.closed_history||[];
+  if(!cl.length){$('closedT').innerHTML='<div style="color:var(--dim);padding:10px;text-align:center">No closed trades</div>';}
   else{let h='<table><th>#</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Reason</th><th>Time (UTC/IST)</th>';
   cl.slice().reverse().forEach(t=>{const p=t.pnl||0;
   const ctRaw=t.close_time||'';

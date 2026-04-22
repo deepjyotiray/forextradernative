@@ -40,7 +40,6 @@ from engine.smc_strategy import SMCStrategy
 from engine.sweep_scalper import SweepScalper
 from engine.calendar import calendar as eco_calendar
 from engine.correlation import correlation as corr_engine
-from engine import csv_reader
 from engine.xgb_model import xgb_model
 
 _TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "H1": 60, "H4": 120, "D1": 300}
@@ -102,24 +101,13 @@ class AutoTrader:
             acct = self.bridge.get_account()
             self.risk.set_start_balance(acct.get("balance", 0))
             self.risk.set_risk_multiplier(self.perf.risk_multiplier())
-            # Seed daily P&L from MT5 history
+            # Seed daily P&L from MT5 deal history (single source of truth)
             today_pnl = self.bridge.get_today_pnl()
             self.risk.seed_from_mt5(today_pnl)
-            if today_pnl["trades"] > 0:
-                self.log("INIT", f"Today's MT5 P&L: ${today_pnl['pnl']:+.2f} ({today_pnl['trades']} trades, {today_pnl['wins']}W/{today_pnl['losses']}L)")
+            if today_pnl.get("pnl", 0) != 0 or today_pnl.get("trades", 0) > 0:
+                self.log("INIT", f"Today MT5 P&L: ${today_pnl['pnl']:+.2f} ({today_pnl['trades']} trades, {today_pnl['wins']}W/{today_pnl['losses']}L) [{today_pnl.get('source','')}]")
             self.trades = TradeManager(self.bridge)
             corr_engine.init_symbols()
-            # Init CSV reader for EA-exported files
-            import MetaTrader5 as mt5
-            ti = mt5.terminal_info()
-            if ti:
-                csv_reader.set_files_dir(ti.data_path)
-                self.log("INIT", f"CSV reader: {ti.data_path}/MQL5/Files")
-            # Seed daily P&L
-            today_pnl = self._get_today_pnl()
-            self.risk.seed_from_mt5(today_pnl)
-            if today_pnl.get("pnl", 0) != 0 or today_pnl.get("trades", 0) > 0:
-                self.log("INIT", f"Today P&L: ${today_pnl['pnl']:+.2f} ({today_pnl.get('trades',0)} trades) [{today_pnl.get('source','')}]")
             # XGBoost: train from performance tracker (has features), not CSV
             perf_trades = self.perf.trades
             if perf_trades and xgb_model.should_retrain(len(perf_trades)):
@@ -361,9 +349,7 @@ class AutoTrader:
         self._recompute_regime_bias()
 
     def _get_today_pnl(self) -> Dict:
-        """Best source for today's P&L: CSV deals > MT5 API > balance delta."""
-        if csv_reader.available():
-            return csv_reader.get_today_pnl()
+        """Today's P&L from MT5 deal history (single source of truth)."""
         return self.bridge.get_today_pnl()
 
     def _recompute_regime_bias(self):
@@ -406,7 +392,9 @@ class AutoTrader:
             "risk": self.risk.daily_status,
             "daily_target": cfg.DAILY_TARGET_DOLLARS,
             "mt5_today_pnl": self._get_today_pnl() if self._mt5_connected else {},
-            "closed_history": csv_reader.get_closed_trades() if csv_reader.available() else [],
+            "mt5_positions": self.bridge.get_positions() if self._mt5_connected else [],
+            "mt5_floating_pnl": self.bridge.get_floating_pnl() if self._mt5_connected else {},
+            "closed_history": self.bridge.get_closed_trades(30) if self._mt5_connected else [],
             "xgb": xgb_model.get_feature_importance(),
             "performance": self.perf.get_stats(),
             "trades": self.trades.status if self.trades else {},
