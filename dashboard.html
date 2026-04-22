@@ -274,7 +274,10 @@ function render(d){
   const tmMap={}; tmTrades.forEach(t=>{tmMap[t.ticket]=t;});
   const op=mt5pos.length>0?mt5pos:tmTrades;
   if(!op.length){$('openT').innerHTML='<div style="color:var(--dim);padding:10px;text-align:center">No open trades</div>';}
-  else{let h='<table><th>#</th><th>Dir</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>P&L</th><th>Peak</th><th>Age</th><th>Time</th>';
+  else{
+  let totalPnl=0;op.forEach(t=>{totalPnl+=(t.net_profit!=null?t.net_profit:(t.live_pnl||0));});
+  let h=`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;margin-bottom:6px;background:rgba(255,255,255,.03);border-radius:4px"><span style="font-size:11px;color:var(--dim)">${op.length} position${op.length>1?'s':''}</span><span style="font-size:15px;font-weight:700" class="${pc(totalPnl)}">Floating: ${ps(totalPnl)}</span></div>`;
+  h+='<table><th>#</th><th>Dir</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>P&L</th><th>Peak</th><th>Age</th><th>Time</th>';
   op.forEach(t=>{
   const tm=tmMap[t.ticket]||{};
   const dir=t.type||t.direction||'-';

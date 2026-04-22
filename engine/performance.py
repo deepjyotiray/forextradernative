@@ -32,8 +32,9 @@ class PerformanceTracker:
             self._recent.append(trade)
         self._save()
 
-    def sync_from_mt5(self, mt5_closed: List[Dict]):
-        """Full sync: ensure every MT5 closed trade is in the tracker with correct P&L."""
+    def sync_from_mt5(self, mt5_closed: List[Dict], order_db=None):
+        """Full sync: ensure every MT5 closed trade is in the tracker with correct P&L.
+        If order_db is provided, enrich with stored features."""
         for mt5t in mt5_closed:
             ticket = mt5t.get("ticket")
             if not ticket:
@@ -50,12 +51,22 @@ class PerformanceTracker:
                 "symbol": mt5t.get("symbol", ""),
                 "comment": mt5t.get("comment", ""),
             }
+            # Enrich with features from order DB if available
+            if order_db and "features" not in record:
+                try:
+                    db_order = order_db.get_order(ticket)
+                    if db_order and db_order.get("features"):
+                        record["features"] = db_order["features"]
+                except Exception:
+                    pass
             if ticket in self._ticket_set:
-                # Update P&L to match MT5 (authoritative)
                 for i, t in enumerate(self.trades):
                     if t.get("ticket") == ticket:
-                        if t.get("pnl") != record["pnl"]:
-                            self.trades[i] = {**t, **record}
+                        # Preserve existing features, update P&L from MT5
+                        existing_features = t.get("features", {})
+                        self.trades[i] = {**t, **record}
+                        if existing_features and not self.trades[i].get("features"):
+                            self.trades[i]["features"] = existing_features
                         break
             else:
                 self.trades.append(record)

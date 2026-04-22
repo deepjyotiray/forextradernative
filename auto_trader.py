@@ -229,16 +229,22 @@ class AutoTrader:
         # Manage open trades (ALWAYS) — pass ALL positions for P&L matching
         closed = self.trades.manage_all(all_positions)
         for ticket, pnl, won in closed:
-            # Record to performance tracker with MT5-sourced P&L
-            self.perf.record({"ticket": ticket, "pnl": pnl, "won": won,
-                              "time": datetime.now(timezone.utc).isoformat()})
+            # Record to performance tracker with MT5-sourced P&L + features from DB
+            record = {"ticket": ticket, "pnl": pnl, "won": won,
+                      "time": datetime.now(timezone.utc).isoformat()}
+            db_order = self.trades.order_db.get_order(ticket)
+            if db_order and db_order.get("features"):
+                record["features"] = db_order["features"]
+            self.perf.record(record)
             self.risk.record_trade_result(pnl, won)
             self.risk.set_risk_multiplier(self.perf.risk_multiplier())
             self.log("RESULT", f"#{ticket} {'WIN' if won else 'LOSS'} ${pnl:+.2f} (MT5 sourced)")
-            # XGBoost: retrain using MT5 closed trades (authoritative)
-            mt5_closed = self.bridge.get_closed_trades(30)
-            if len(mt5_closed) >= 15 and xgb_model.should_retrain(len(mt5_closed)):
-                threading.Thread(target=xgb_model.train, args=(mt5_closed,), daemon=True).start()
+            # XGBoost: retrain using perf trades with real features (not raw MT5)
+            featured = [t for t in self.perf.trades if t.get("features") and
+                        any(isinstance(v, (int, float)) and v != 0
+                            for v in t["features"].values())]
+            if len(featured) >= 15 and xgb_model.should_retrain(len(featured)):
+                threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
 
         # Poll MT5 history every 5s — single source of truth
         now_ts = time.time()
@@ -404,7 +410,7 @@ class AutoTrader:
     def _sync_performance_with_mt5(self):
         """Sync performance tracker with MT5 deal history (authoritative)."""
         try:
-            self.perf.sync_from_mt5(self._mt5_closed_history)
+            self.perf.sync_from_mt5(self._mt5_closed_history, self.trades.order_db if self.trades else None)
         except Exception as e:
             self.log("ERR", f"Performance sync failed: {e}")
 
