@@ -52,21 +52,40 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 .ind-val{font-size:15px;font-weight:600}.ind-label{font-size:9px;color:var(--dim);margin-top:1px}
 .bias-arrow{font-size:20px;font-weight:700}
 @media(max-width:768px){
-  body{padding:6px}
+  body{padding:6px 4px}
   .g4,.g3,.g2{grid-template-columns:1fr}
-  .controls{flex-wrap:wrap}
-  .btn{padding:6px 12px;flex:1 1 auto;min-width:0}
-  .header h1{font-size:14px}
+  .header{flex-direction:column;align-items:flex-start;gap:4px}
+  .header h1{font-size:15px}
+  .header .meta{font-size:9px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;width:100%}
+  #clocks{display:block;width:100%;font-size:9px!important;line-height:1.6}
+  .controls{flex-wrap:wrap;gap:6px}
+  .btn{padding:10px 12px;flex:1 1 45%;min-width:0;font-size:12px;min-height:42px}
+  .btn-emergency{flex-basis:100%}
+  #tradingStatus{width:100%;text-align:center;order:-1;font-size:13px!important}
+  #stratBtns{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:4px}
+  #stratBtns .btn{flex-shrink:0;white-space:nowrap}
+  #stratInfo{display:none}
   .big{font-size:22px}
   .ind-grid{grid-template-columns:repeat(2,1fr)}
-  table{display:block;overflow-x:auto;white-space:nowrap}
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;font-size:10px}
+  th,td{padding:4px 3px}
+  .log-box{max-height:200px;font-size:9.5px}
   .log-entry{white-space:normal;word-break:break-word}
-  #stratBtns{flex-wrap:wrap}
-  #stratInfo{display:none}
+  .cfg-grid{grid-template-columns:1fr 1fr}
+  .cfg-item input{padding:8px 6px;font-size:13px;min-height:36px}
+  .btn-save{width:100%;padding:10px;font-size:13px;min-height:42px}
+  .card{padding:8px}
+  .card h3{font-size:9px}
+  .row{padding:3px 0;font-size:12px}
+  .bias-arrow{font-size:18px}
 }
 @media(max-width:400px){
+  .g4,.g3,.g2{gap:6px}
   .ind-grid{grid-template-columns:1fr 1fr}
-  .btn{font-size:11px;padding:5px 8px}
+  .btn{font-size:11px;padding:8px 6px;flex-basis:100%}
+  .cfg-grid{grid-template-columns:1fr}
+  .big{font-size:20px}
+  #clocks{font-size:8px!important}
 }
 .cfg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}
 .cfg-item{display:flex;flex-direction:column;gap:2px}
