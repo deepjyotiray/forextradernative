@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .idea/
 *.log
+deploy_watcher.log
 *.txt
 !requirements.txt
 cloudflared.exe
