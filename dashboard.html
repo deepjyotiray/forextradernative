@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>XAUUSD Auto Trader</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0a0e17;--card:#111827;--border:#1e293b;--text:#e2e8f0;--dim:#64748b;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--yellow:#eab308;--cyan:#06b6d4;--purple:#a855f7;--orange:#f97316}
@@ -401,7 +402,9 @@ function render(d){
   if(cg && !cg.dataset.init){cg.dataset.init='1';cg.innerHTML=Object.entries(cfgLabels).map(([k,l])=>`<div class="cfg-item"><label>${l}</label><input id="cfg_${k}" data-key="${k}" type="number" step="any" value="${rc[k]||''}"></div>`).join('');}
   else if(cg&&cg.dataset.init){Object.keys(cfgLabels).forEach(k=>{const inp=document.getElementById('cfg_'+k);if(inp&&inp!==document.activeElement)inp.value=rc[k]!=null?rc[k]:'';});}
 
-  document.title=`${ps(dp)} | XAUUSD Auto Trader`;
+  const floatPnl=fp.total||0;
+  const floatStr=floatPnl?` | Float ${ps(floatPnl)}`:'';
+  document.title=`${ps(dp)}${floatStr} | XAUUSD`;
 }
 
 function toggleTheme(){const h=document.documentElement;const t=h.getAttribute('data-theme')==='light'?'dark':'light';h.setAttribute('data-theme',t==='light'?'light':'');localStorage.setItem('theme',t);$('themeToggle').innerHTML=t==='light'?'&#9728;':'&#9790;';}
