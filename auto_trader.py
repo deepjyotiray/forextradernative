@@ -425,7 +425,7 @@ class AutoTrader:
         s, p = get_session(), tick["bid"]
         r, b = self._regime.get("state", "?"), self._bias.get("direction", "?")
         self.log("STATUS", f"[{self.strat_mgr.active_name}] {s} | {p:.2f} | {r} | Bias:{b} | "
-                 f"Open:{self.trades.open_count} | Daily:${self._mt5_today_pnl.get('pnl', 0):+.2f}")
+                 f"Open:{self.trades.open_count} | Daily:${self.trades.order_db.get_today_stats().get('total_pnl', 0) if self.trades else 0:+.2f}")
 
     def get_full_status(self) -> Dict:
         # Daily PNL from DB (single source of truth, IST-based)
