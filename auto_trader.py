@@ -418,8 +418,11 @@ class AutoTrader:
             # Sync risk manager daily P&L from MT5 deals (overwrite incremental tracking)
             # Pass today's closed trades so consecutive losses is computed from actual sequence
             today_str = datetime.now(_IST).strftime("%Y-%m-%d")
-            today_closed = [t for t in self._mt5_closed_history if t.get("close_time", "")[:10] >= today_str]
+            ist_midnight_utc = datetime.now(_IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+            today_closed = [t for t in self._mt5_closed_history if t.get("close_time", "") >= ist_midnight_utc]
             self.risk.seed_from_mt5(self._mt5_today_pnl, today_closed)
+            if self._mt5_today_pnl.get("pnl", 0) >= cfg.DAILY_TARGET_DOLLARS:
+                self.log("SEED", f"MT5 today_pnl=${self._mt5_today_pnl.get('pnl',0):.2f} trades={self._mt5_today_pnl.get('trades',0)} src={self._mt5_today_pnl.get('source','')} today_closed={len(today_closed)}")
             # Update performance tracker with MT5 data if needed
             self._sync_performance_with_mt5()
             # Reconcile order DB with MT5 deal history
