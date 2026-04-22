@@ -277,6 +277,11 @@ class MT5Bridge:
         to_date = datetime.now(timezone.utc) + timedelta(hours=1)
         deals = mt5.history_deals_get(from_date, to_date, group=f"*{cfg.SYMBOL}*")
         if not deals:
+            # Fallback: fetch all deals and filter by symbol substring
+            deals = mt5.history_deals_get(from_date, to_date)
+            if deals:
+                deals = [d for d in deals if cfg.SYMBOL in (d.symbol or "")]
+        if not deals:
             return []
         return [{
             "ticket": d.ticket,
@@ -297,36 +302,46 @@ class MT5Bridge:
         } for d in deals]
 
     def get_closed_trades(self, days: int = 30) -> List[Dict]:
-        """Pair IN/OUT deals from MT5 history into closed trade records."""
+        """Pair IN/OUT deals from MT5 history into closed trade records.
+        Handles partial closes (multiple OUT deals per position) by aggregating P&L."""
         deals = self.get_history(days)
         if not deals:
             return []
-        entries = {}
-        closed = []
+        entries = {}   # position_id -> IN deal
+        exits = {}     # position_id -> aggregated exit info
         for d in deals:
+            pid = d["position_id"]
             if d["entry"] == 0:  # IN
-                entries[d["position_id"]] = d
-            elif d["entry"] == 1:  # OUT
-                e = entries.get(d["position_id"])
-                entry_price = e["price"] if e else 0
-                entry_time = e["time"] if e else ""
-                direction = e["type"] if e else ("BUY" if d["type"] == "SELL" else "SELL")
-                pnl = d["net_profit"]
-                closed.append({
-                    "ticket": d["position_id"],
-                    "symbol": d["symbol"],
-                    "direction": direction,
-                    "volume": d["volume"],
-                    "entry_price": entry_price,
-                    "exit_price": d["price"],
-                    "pnl": pnl,
-                    "won": pnl > 0,
-                    "open_time": entry_time,
-                    "close_time": d["time"],
-                    "reason": d["comment"],
-                    "magic": d["magic"],
-                    "comment": d["comment"],
-                })
+                entries[pid] = d
+            elif d["entry"] in (1, 2):  # OUT or IN/OUT reversal
+                if pid not in exits:
+                    exits[pid] = {"pnl": 0.0, "volume": 0.0, "last_deal": d}
+                exits[pid]["pnl"] += d["net_profit"]
+                exits[pid]["volume"] += d["volume"]
+                # Keep the latest exit deal for close_time/price
+                if d["time"] >= exits[pid]["last_deal"]["time"]:
+                    exits[pid]["last_deal"] = d
+        closed = []
+        for pid, ex in exits.items():
+            e = entries.get(pid)
+            d = ex["last_deal"]
+            pnl = round(ex["pnl"], 2)
+            closed.append({
+                "ticket": pid,
+                "symbol": d["symbol"],
+                "direction": e["type"] if e else ("BUY" if d["type"] == "SELL" else "SELL"),
+                "volume": round(ex["volume"], 2),
+                "entry_price": e["price"] if e else 0,
+                "exit_price": d["price"],
+                "pnl": pnl,
+                "won": pnl > 0,
+                "open_time": e["time"] if e else "",
+                "close_time": d["time"],
+                "reason": d["comment"],
+                "magic": d["magic"],
+                "comment": d["comment"],
+            })
+        closed.sort(key=lambda t: t["close_time"])
         return closed
 
     def get_today_pnl(self) -> Dict:

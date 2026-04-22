@@ -99,6 +99,17 @@ class TradeManager:
         live_map = {p["ticket"]: p for p in live_positions}
         closed = []
 
+        # Auto-adopt bot positions that exist in MT5 but aren't tracked
+        for p in live_positions:
+            if p["ticket"] not in self.open_trades and p.get("magic") == cfg.MAGIC_NUMBER:
+                self.register_trade(
+                    p["ticket"], p["type"], p["volume"], p["open_price"],
+                    p.get("sl") or 0, p.get("tp") or 0,
+                    abs(p["open_price"] - (p.get("sl") or p["open_price"])),
+                    strategy="adopted", reason="auto-adopted from MT5",
+                )
+                self._log_adopt(p["ticket"])
+
         for ticket, trade in list(self.open_trades.items()):
             if ticket not in live_map:
                 # Position gone — use last known P&L or fetch from history
@@ -273,6 +284,13 @@ class TradeManager:
         res = self.bridge.close_trade(t.ticket)
         if not res.get("success"):
             self._closing_tickets.discard(t.ticket)
+
+    def _log_adopt(self, ticket: int):
+        try:
+            with open(os.path.join(_BASE_DIR, "trader.log"), "a") as f:
+                f.write(f"[ADOPT] Auto-adopted position #{ticket} from MT5\n")
+        except Exception:
+            pass
 
     def close_all(self):
         for ticket in list(self.open_trades.keys()):
