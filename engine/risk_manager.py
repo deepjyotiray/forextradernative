@@ -47,12 +47,10 @@ class RiskManager:
             self._consecutive_losses = streak
         else:
             self._consecutive_losses = 0
-        # Set flags based on today's P&L (after daily reset, so these reflect current day)
-        if self._daily_pnl >= cfg.DAILY_TARGET_DOLLARS:
-            self._daily_target_hit = True
+        # Re-evaluate flags from fresh MT5 data every reseed (clear then set)
+        self._daily_target_hit = self._daily_pnl >= cfg.DAILY_TARGET_DOLLARS
         balance = self._start_balance if self._start_balance > 0 else 1000
-        if self._daily_pnl <= -(balance * cfg.DAILY_LOSS_LIMIT_PCT / 100):
-            self._daily_loss_hit = True
+        self._daily_loss_hit = self._daily_pnl <= -(balance * cfg.DAILY_LOSS_LIMIT_PCT / 100)
 
     def set_risk_multiplier(self, mult: float):
         """Called by performance tracker for adaptive risk."""
