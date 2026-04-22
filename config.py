@@ -15,7 +15,7 @@ DEVIATION = 20
 PIP_VALUE_PER_LOT = 100
 
 # Risk (defaults — strategies can override via their own params)
-MAX_POSITIONS = 2
+MAX_POSITIONS = 4
 MAX_RISK_PCT = 0.5
 MAX_DRAWDOWN_PCT = 5.0
 MAX_LOT = 1.0

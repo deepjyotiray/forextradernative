@@ -507,6 +507,18 @@ class AutoTrader:
             "candles": {tf: len(df) for tf, df in self._candles.items()},
             "risk": self.risk.daily_status,
             "daily_target": cfg.DAILY_TARGET_DOLLARS,
+            "risk_config": {
+                "MAX_POSITIONS": cfg.MAX_POSITIONS,
+                "MAX_RISK_PCT": cfg.MAX_RISK_PCT,
+                "MAX_DRAWDOWN_PCT": cfg.MAX_DRAWDOWN_PCT,
+                "MAX_LOT": cfg.MAX_LOT,
+                "MIN_LOT": cfg.MIN_LOT,
+                "DAILY_TARGET_DOLLARS": cfg.DAILY_TARGET_DOLLARS,
+                "DAILY_LOSS_LIMIT_PCT": cfg.DAILY_LOSS_LIMIT_PCT,
+                "MAX_CONSECUTIVE_LOSSES": cfg.MAX_CONSECUTIVE_LOSSES,
+                "MIN_TRADE_COOLDOWN": cfg.MIN_TRADE_COOLDOWN,
+                "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE,
+            },
             "mt5_today_pnl": {
                 'pnl': db_daily_pnl,
                 'trades': db_trades,
@@ -580,6 +592,23 @@ class AutoTrader:
                         s._j({"active":name,"available":trader.strat_mgr.available})
                     else:
                         s._j({"error":f"Unknown: {name}","available":trader.strat_mgr.available},400)
+                elif p == "/config":
+                    import json as _json
+                    length = int(s.headers.get('Content-Length', 0))
+                    body = _json.loads(s.rfile.read(length)) if length else {}
+                    _RISK_KEYS = {'MAX_POSITIONS':int,'MAX_RISK_PCT':float,'MAX_DRAWDOWN_PCT':float,
+                        'MAX_LOT':float,'MIN_LOT':float,'DAILY_TARGET_DOLLARS':float,
+                        'DAILY_LOSS_LIMIT_PCT':float,'MAX_CONSECUTIVE_LOSSES':int,
+                        'MIN_TRADE_COOLDOWN':float,'LOSS_STREAK_PAUSE':int}
+                    updated = {}
+                    for k,v in body.items():
+                        if k in _RISK_KEYS:
+                            val = _RISK_KEYS[k](v)
+                            setattr(cfg, k, val)
+                            updated[k] = val
+                    if updated:
+                        trader.log("API", f"Config updated: {updated}")
+                    s._j({"updated":updated})
                 elif p == "/shutdown":
                     trader.enabled = False; trader._running = False
                     if trader.trades: trader.trades.close_all()
