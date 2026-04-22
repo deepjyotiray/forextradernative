@@ -11,6 +11,8 @@ from typing import Dict, List
 from datetime import datetime, timezone, timedelta
 import config as cfg
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STATE_FILE = os.path.join(_BASE_DIR, "open_trades.json")
 
@@ -19,7 +21,7 @@ class TradeRecord:
     __slots__ = (
         "ticket", "direction", "volume", "entry", "sl", "tp",
         "sl_distance", "strategy", "confidence", "reason",
-        "open_time", "fill_ts", "peak_pnl", "live_pnl",
+        "open_time", "open_time_ist", "fill_ts", "peak_pnl", "live_pnl",
         "sl_breakeven", "partial_closed", "trail_active",
         "initial_volume", "scalp", "be_trigger_price", "timeout_seconds",
         "features",
@@ -39,7 +41,9 @@ class TradeRecord:
         self.strategy = strategy
         self.confidence = confidence
         self.reason = reason
-        self.open_time = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        self.open_time = now.isoformat()
+        self.open_time_ist = now.astimezone(_IST).isoformat()
         self.fill_ts = time.time()
         self.peak_pnl = 0.0
         self.live_pnl = 0.0
@@ -63,6 +67,7 @@ class TradeRecord:
                 d.get("timeout_seconds", 0))
         t.initial_volume = d.get("initial_volume", d["volume"])
         t.open_time = d.get("open_time", "")
+        t.open_time_ist = d.get("open_time_ist", "")
         t.fill_ts = d.get("fill_ts", time.time())
         t.peak_pnl = d.get("peak_pnl", 0)
         t.live_pnl = d.get("live_pnl", 0)
@@ -100,9 +105,11 @@ class TradeManager:
                 pnl = trade.live_pnl
                 if pnl == 0.0:
                     pnl = self._fetch_closed_pnl(ticket)
+                now = datetime.now(timezone.utc)
                 self.closed_trades.append({
                     **trade.to_dict(),
-                    "close_time": datetime.now(timezone.utc).isoformat(),
+                    "close_time": now.isoformat(),
+                    "close_time_ist": now.astimezone(_IST).isoformat(),
                     "pnl": round(pnl, 2),
                     "won": pnl > 0,
                 })
@@ -302,7 +309,7 @@ class TradeManager:
         return {
             "open_trades": [t.to_dict() for t in self.open_trades.values()],
             "open_count": self.open_count,
-            "closed_trades": self.closed_trades[-50:],
+            "closed_trades": self.closed_trades,
             "closed_count": len(self.closed_trades),
             "total_pnl": round(sum(t.get("pnl", 0) for t in self.closed_trades), 2),
         }

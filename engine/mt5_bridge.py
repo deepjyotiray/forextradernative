@@ -10,6 +10,8 @@ from typing import Optional, Dict, List, Tuple
 from datetime import datetime, timezone, timedelta
 import config as cfg
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
 
 class MT5Bridge:
     """Direct MT5 connection for data + execution."""
@@ -274,9 +276,11 @@ class MT5Bridge:
         } for d in deals]
 
     def get_today_pnl(self) -> Dict:
-        """Get today's realized P&L. Tries deal history first, falls back to balance delta."""
+        """Get today's realized P&L. Day resets at IST midnight."""
         now = datetime.now(timezone.utc)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        ist_now = now.astimezone(_IST)
+        ist_midnight = ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = ist_midnight.astimezone(timezone.utc)
         
         # Try deal history first
         deals = mt5.history_deals_get(today_start, now + timedelta(hours=1))

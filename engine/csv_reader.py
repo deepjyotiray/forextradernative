@@ -4,8 +4,10 @@ CSV Reader — reads EA-exported files. Source of truth for P&L and trade histor
 import os
 import pandas as pd
 from typing import Dict, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import config as cfg
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 _files_dir = ""
 _cache: Dict[str, tuple] = {}
@@ -143,35 +145,39 @@ def get_closed_trades() -> List[Dict]:
 
 
 def get_today_pnl() -> Dict:
-    """Today's P&L from deal history."""
+    """Today's P&L from deal history. Day resets at IST midnight."""
     closed = get_closed_trades()
     if not closed:
         return {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0, "source": "csv_empty"}
 
-    today = datetime.now(timezone.utc).strftime("%Y.%m.%d")
+    now_utc = datetime.now(timezone.utc)
+    ist_now = now_utc.astimezone(_IST)
+    ist_today = ist_now.strftime("%Y.%m.%d")
+    # IST midnight in UTC for comparison
+    ist_midnight = ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    ist_midnight_utc = ist_midnight.astimezone(timezone.utc)
+
     pnl = 0.0
     trades = 0
     wins = 0
     losses = 0
     for t in closed:
         ct = t.get("close_time", "")
-        if today in ct:
-            pnl += t["pnl"]
-            trades += 1
-            if t["won"]:
-                wins += 1
-            else:
-                losses += 1
-
-    # If no today filter match, sum all (might be different date format)
-    if trades == 0:
-        for t in closed:
-            pnl += t["pnl"]
-            trades += 1
-            if t["won"]:
-                wins += 1
-            else:
-                losses += 1
+        # Try parsing the close_time and check if it's after IST midnight
+        try:
+            ct_dt = datetime.strptime(ct.strip(), "%Y.%m.%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            if ct_dt < ist_midnight_utc:
+                continue
+        except Exception:
+            # Fallback: check IST date string in close_time
+            if ist_today not in ct:
+                continue
+        pnl += t["pnl"]
+        trades += 1
+        if t["won"]:
+            wins += 1
+        else:
+            losses += 1
 
     return {"pnl": round(pnl, 2), "trades": trades, "wins": wins, "losses": losses, "source": "csv_deals"}
 

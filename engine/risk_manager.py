@@ -2,16 +2,18 @@
 Risk Manager — lot sizing, position limits, drawdown, daily P&L, adaptive risk.
 """
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict
 import config as cfg
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 
 class RiskManager:
     def __init__(self):
         self._daily_pnl = 0.0
         self._daily_trades = 0
-        self._daily_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self._daily_date = datetime.now(_IST).strftime("%Y-%m-%d")
         self._daily_target_hit = False
         self._daily_loss_hit = False
         self._consecutive_losses = 0
@@ -38,7 +40,7 @@ class RiskManager:
         self._risk_multiplier = max(0.5, min(1.25, mult))
 
     def check_daily_reset(self):
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(_IST).strftime("%Y-%m-%d")
         if today != self._daily_date:
             self._daily_pnl = 0.0
             self._daily_trades = 0

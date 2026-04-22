@@ -78,6 +78,7 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
     <button class="theme-btn" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">&#9790;</button>
     <span id="pulse" class="pulse pulse-off"></span>
     <span id="conn">Connecting...</span> | <span id="clocks" style="font-size:10px;letter-spacing:.5px"></span>
+    <span style="font-size:10px;color:var(--dim);margin-left:4px">(Daily resets at IST midnight)</span>
   </div>
 </div>
 
@@ -115,8 +116,8 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 </div>
 
 <div class="grid g2">
-  <div class="card"><h3>Open Trades</h3><div id="openT" style="max-height:180px;overflow-y:auto">-</div></div>
-  <div class="card"><h3>Closed Trades</h3><div id="closedT" style="max-height:180px;overflow-y:auto">-</div></div>
+  <div class="card"><h3>Open Trades</h3><div id="openT" style="max-height:300px;overflow-y:auto">-</div></div>
+  <div class="card"><h3>Closed Trades (All)</h3><div id="closedT" style="max-height:400px;overflow-y:auto">-</div></div>
 </div>
 
 <div class="card"><h3>Live Log</h3><div class="log-box" id="logBox">-</div></div>
@@ -259,23 +260,27 @@ function render(d){
   // Open trades
   const op=tr.open_trades||[];
   if(!op.length){$('openT').innerHTML='<div style="color:var(--dim);padding:10px;text-align:center">No open trades</div>';}
-  else{let h='<table><th>#</th><th>Dir</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>P&L</th><th>Peak</th><th>Age</th>';
+  else{let h='<table><th>#</th><th>Dir</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>P&L</th><th>Peak</th><th>Age</th><th>Time</th>';
   op.forEach(t=>{const age=t.fill_ts?Math.round(Date.now()/1000-t.fill_ts)+'s':'-';const p=t.live_pnl||0;
-  h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}" style="font-weight:600">${t.direction}</td><td>${t.volume}</td><td>${Number(t.entry).toFixed(2)}</td><td>${Number(t.sl).toFixed(2)}</td><td>${Number(t.tp).toFixed(2)}</td><td class="${pc(p)}">${ps(p)}</td><td class="${pc(t.peak_pnl||0)}">${ps(t.peak_pnl||0)}</td><td>${age}</td></tr>`;});
+  const otUtc=(t.open_time||'').split('T')[1]||(t.open_time||'');const otIst=(t.open_time_ist||'').split('T')[1]||'';
+  h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}" style="font-weight:600">${t.direction}</td><td>${t.volume}</td><td>${Number(t.entry).toFixed(2)}</td><td>${Number(t.sl).toFixed(2)}</td><td>${Number(t.tp).toFixed(2)}</td><td class="${pc(p)}">${ps(p)}</td><td class="${pc(t.peak_pnl||0)}">${ps(t.peak_pnl||0)}</td><td>${age}</td><td style="font-size:9px"><span class="cyan">U:</span>${otUtc.substring(0,8)}<br><span class="orange">I:</span>${otIst.substring(0,8)}</td></tr>`;});
   h+='</table>';$('openT').innerHTML=h;}
 
   // Closed trades — prefer CSV history from EA, fall back to trade manager
   const csvHistory=d.closed_history||[];
   const cl=csvHistory.length>0?csvHistory:(tr.closed_trades||[]);
   if(!cl.length){const cc=tr.closed_count||0,cp=tr.total_pnl||0;$('closedT').innerHTML=cc>0?`<div style="padding:10px;text-align:center"><span class="dim">${cc} trades</span> <span class="${pc(cp)}">${ps(cp)}</span></div>`:'<div style="color:var(--dim);padding:10px;text-align:center">No closed trades</div>';}
-  else{let h='<table><th>#</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Reason</th><th>Time</th>';
-  cl.slice(-15).reverse().forEach(t=>{const p=t.pnl||0;h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):(t.entry?Number(t.entry).toFixed(2):'-')}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px">${t.reason||'-'}</td><td style="font-size:10px">${(t.close_time||'').split(' ').pop()||'-'}</td></tr>`;});
+  else{let h='<table><th>#</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Reason</th><th>Time (UTC/IST)</th>';
+  cl.slice().reverse().forEach(t=>{const p=t.pnl||0;
+  const ctUtc=(t.close_time||'').includes('T')?(t.close_time||'').split('T')[1]:(t.close_time||'').split(' ').pop()||'-';
+  const ctIst=(t.close_time_ist||'').includes('T')?(t.close_time_ist||'').split('T')[1]:'';
+  h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):(t.entry?Number(t.entry).toFixed(2):'-')}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px">${t.reason||'-'}</td><td style="font-size:9px"><span class="cyan">U:</span>${ctUtc.substring(0,8)}<br><span class="orange">I:</span>${ctIst?ctIst.substring(0,8):'-'}</td></tr>`;});
   h+='</table>';$('closedT').innerHTML=h;}
 
   // Logs
   const logs=d.log||[];
   const lb=$('logBox');
-  lb.innerHTML=logs.map(l=>`<div class="log-entry"><span class="log-time">${l.time}</span><span class="log-tag tag-${l.tag}">${l.tag}</span>${esc(l.msg)}</div>`).join('');
+  lb.innerHTML=logs.map(l=>`<div class="log-entry"><span class="log-time"><span class="cyan">${l.time}</span> <span class="orange">${l.time_ist||''}</span></span> <span class="log-tag tag-${l.tag}">${l.tag}</span>${esc(l.msg)}</div>`).join('');
   lb.scrollTop=lb.scrollHeight;
 
   document.title=`${ps(dp)} | XAUUSD Auto Trader`;
@@ -283,7 +288,7 @@ function render(d){
 
 function toggleTheme(){const h=document.documentElement;const t=h.getAttribute('data-theme')==='light'?'dark':'light';h.setAttribute('data-theme',t==='light'?'light':'');localStorage.setItem('theme',t);$('themeToggle').innerHTML=t==='light'?'&#9728;':'&#9790;';}
 (function(){const t=localStorage.getItem('theme')||'dark';if(t==='light')document.documentElement.setAttribute('data-theme','light');$('themeToggle').innerHTML=t==='light'?'&#9728;':'&#9790;';})();
-function tickClocks(){const o={hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false};const utc=new Date().toLocaleTimeString('en',{...o,timeZone:'UTC'});const ldn=new Date().toLocaleTimeString('en',{...o,timeZone:'Europe/London'});const ny=new Date().toLocaleTimeString('en',{...o,timeZone:'America/New_York'});$('clocks').innerHTML='<span class="cyan">UTC</span> '+utc+' &middot; <span class="blue">LDN</span> '+ldn+' &middot; <span class="orange">NY</span> '+ny;}
+function tickClocks(){const o={hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false};const utc=new Date().toLocaleTimeString('en',{...o,timeZone:'UTC'});const ist=new Date().toLocaleTimeString('en',{...o,timeZone:'Asia/Kolkata'});const ldn=new Date().toLocaleTimeString('en',{...o,timeZone:'Europe/London'});const ny=new Date().toLocaleTimeString('en',{...o,timeZone:'America/New_York'});$('clocks').innerHTML='<span class="cyan">UTC</span> '+utc+' &middot; <span class="orange">IST</span> '+ist+' &middot; <span class="blue">LDN</span> '+ldn+' &middot; <span class="orange">NY</span> '+ny;}
 setInterval(tickClocks,1000);tickClocks();
 setInterval(get,500);get();
 </script>

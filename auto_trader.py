@@ -18,8 +18,10 @@ import json
 import os
 from collections import deque
 from typing import Dict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 import config as cfg
 from engine.mt5_bridge import MT5Bridge
@@ -82,11 +84,14 @@ class AutoTrader:
         self._last_account: Dict = {}
 
     def log(self, tag: str, msg: str):
-        entry = {"time": datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3], "tag": tag, "msg": msg}
+        now = datetime.now(timezone.utc)
+        utc_str = now.strftime("%H:%M:%S.%f")[:-3]
+        ist_str = now.astimezone(_IST).strftime("%H:%M:%S.%f")[:-3]
+        entry = {"time": utc_str, "time_ist": ist_str, "tag": tag, "msg": msg}
         self._log.append(entry)
         try:
             with open(os.path.join(_BASE_DIR, "trader.log"), "a") as f:
-                f.write(f"[{entry['time']}][{tag}] {msg}\n")
+                f.write(f"[{utc_str} UTC | {ist_str} IST][{tag}] {msg}\n")
         except Exception:
             pass
 
@@ -401,7 +406,7 @@ class AutoTrader:
             "risk": self.risk.daily_status,
             "daily_target": cfg.DAILY_TARGET_DOLLARS,
             "mt5_today_pnl": self._get_today_pnl() if self._mt5_connected else {},
-            "closed_history": csv_reader.get_closed_trades()[-20:] if csv_reader.available() else [],
+            "closed_history": csv_reader.get_closed_trades() if csv_reader.available() else [],
             "xgb": xgb_model.get_feature_importance(),
             "performance": self.perf.get_stats(),
             "trades": self.trades.status if self.trades else {},
