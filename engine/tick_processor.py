@@ -1,28 +1,26 @@
 """
-Tick Processor — rolling tick buffer for micro-execution intelligence.
-Tracks velocity, momentum shift, spread stability.
+Tick Processor — rolling tick buffer with spread model.
+Tracks velocity, momentum, spread (mean/std/percentile), direction stability.
 """
 import time
+import math
 from collections import deque
-from typing import Dict, Optional
+from typing import Dict
 
 
 class TickProcessor:
-    def __init__(self, buffer_size: int = 200):
+    def __init__(self, buffer_size: int = 500):
         self._ticks: deque = deque(maxlen=buffer_size)
-        self._last_ts: float = 0
 
     def feed(self, tick: Dict):
-        now = time.time()
         self._ticks.append({
             "bid": tick["bid"], "ask": tick["ask"],
             "spread": tick.get("spread", tick["ask"] - tick["bid"]),
-            "ts": now,
+            "ts": time.time(),
         })
-        self._last_ts = now
 
     def snapshot(self) -> Dict:
-        if len(self._ticks) < 5:
+        if len(self._ticks) < 10:
             return {"ready": False}
         ticks = list(self._ticks)
         n = len(ticks)
@@ -30,49 +28,108 @@ class TickProcessor:
         window = now - ticks[0]["ts"]
         velocity = n / window if window > 0 else 0
 
-        # Price momentum over last N ticks
-        recent = ticks[-20:] if n >= 20 else ticks
+        # Recent ticks for momentum/direction
+        recent = ticks[-30:] if n >= 30 else ticks
+        rn = len(recent)
         price_delta = recent[-1]["bid"] - recent[0]["bid"]
         dt = recent[-1]["ts"] - recent[0]["ts"]
         momentum = price_delta / dt if dt > 0 else 0
 
         # Directional ticks
-        dir_up = sum(1 for i in range(1, len(recent)) if recent[i]["bid"] > recent[i-1]["bid"])
-        dir_dn = sum(1 for i in range(1, len(recent)) if recent[i]["bid"] < recent[i-1]["bid"])
+        dir_up = sum(1 for i in range(1, rn) if recent[i]["bid"] > recent[i-1]["bid"])
+        dir_dn = sum(1 for i in range(1, rn) if recent[i]["bid"] < recent[i-1]["bid"])
         dir_ticks = dir_up - dir_dn
+        dir_pct = max(dir_up, dir_dn) / (rn - 1) if rn > 1 else 0.5
 
-        # Spread stats
-        spreads = [t["spread"] for t in ticks[-50:]]
-        avg_spread = sum(spreads) / len(spreads)
-        max_spread = max(spreads)
-        spread_stable = max_spread < avg_spread * 2.5
+        # Direction stability: count sign changes in last 20 ticks
+        sign_changes = 0
+        for i in range(2, min(21, rn)):
+            d1 = recent[-i+1]["bid"] - recent[-i]["bid"]
+            d2 = recent[-i]["bid"] - recent[-i-1]["bid"] if i+1 <= rn else 0
+            if d1 * d2 < 0:
+                sign_changes += 1
+        dir_stable = sign_changes < 8  # < 8 reversals in 20 ticks = stable
 
-        # Tick acceleration (compare velocity of last 10 vs prev 10)
-        accel = 0.0
-        if n >= 20:
-            mid = n // 2
-            t1 = ticks[mid]["ts"] - ticks[0]["ts"]
+        # Velocity trend (is it increasing?)
+        vel_increasing = False
+        if n >= 40:
+            mid = n - 20
+            t1 = ticks[mid]["ts"] - ticks[mid-20]["ts"]
             t2 = ticks[-1]["ts"] - ticks[mid]["ts"]
-            v1 = mid / t1 if t1 > 0 else 0
-            v2 = (n - mid) / t2 if t2 > 0 else 0
-            accel = v2 - v1
+            v1 = 20 / t1 if t1 > 0 else 0
+            v2 = 20 / t2 if t2 > 0 else 0
+            vel_increasing = v2 > v1 * 1.1
+
+        # === SPREAD MODEL ===
+        # Short window: last 50-150 ticks (1-3 seconds worth)
+        short_spreads = [t["spread"] for t in ticks[-100:]]
+        spread_mean = sum(short_spreads) / len(short_spreads)
+        spread_std = math.sqrt(sum((s - spread_mean)**2 for s in short_spreads) / len(short_spreads))
+
+        # Long window: last 5-10 minutes for percentile
+        cutoff = now - 600  # 10 minutes
+        long_spreads = [t["spread"] for t in ticks if t["ts"] >= cutoff]
+        if len(long_spreads) < 20:
+            long_spreads = short_spreads  # fallback
+
+        # Percentile: what % of recent spreads are >= current spread
+        current_spread = ticks[-1]["spread"]
+        below = sum(1 for s in long_spreads if s <= current_spread)
+        spread_pctl = below / len(long_spreads) if long_spreads else 0.5
+
+        spread_stable = spread_std < 0.05 and current_spread < spread_mean * 1.5
 
         return {
             "ready": True,
             "velocity": round(velocity, 2),
+            "vel_increasing": vel_increasing,
             "momentum": round(momentum, 4),
             "dir_ticks": dir_ticks,
-            "spread": round(ticks[-1]["spread"], 3),
-            "avg_spread": round(avg_spread, 3),
-            "max_spread": round(max_spread, 3),
+            "dir_pct": round(dir_pct, 3),
+            "dir_stable": dir_stable,
+            "spread": round(current_spread, 3),
+            "spread_mean": round(spread_mean, 3),
+            "spread_std": round(spread_std, 4),
+            "spread_pctl": round(spread_pctl, 3),
             "spread_stable": spread_stable,
-            "acceleration": round(accel, 2),
             "tick_count": n,
         }
 
+    def check_spread_ok(self, max_spread: float, max_pctl: float = 0.5) -> tuple:
+        """Pre-execution spread check. Returns (ok, reason)."""
+        s = self.snapshot()
+        if not s.get("ready"):
+            return False, "Tick buffer not ready"
+        if s["spread_mean"] > max_spread:
+            return False, f"Spread mean {s['spread_mean']:.3f} > {max_spread}"
+        if s["spread_std"] > 0.08:
+            return False, f"Spread spiking (std {s['spread_std']:.4f})"
+        if s["spread_pctl"] > max_pctl:
+            return False, f"Spread percentile {s['spread_pctl']:.0%} > {max_pctl:.0%}"
+        return True, "OK"
+
+    def check_execution_quality(self) -> tuple:
+        """Pre-execution quality gate. Returns (ok, reason)."""
+        s = self.snapshot()
+        if not s.get("ready"):
+            return False, "Not ready"
+        if not s["vel_increasing"] and s["velocity"] < 3:
+            return False, f"Low/falling velocity ({s['velocity']})"
+        if not s["dir_stable"]:
+            return False, "Direction oscillating"
+        if not s["spread_stable"]:
+            return False, "Spread unstable"
+        return True, "OK"
+
+    def spread_changed(self, signal_spread: float, max_delta: float = 0.03) -> bool:
+        """Check if spread widened since signal was generated."""
+        if not self._ticks:
+            return False
+        current = self._ticks[-1]["spread"]
+        return (current - signal_spread) > max_delta
+
     def is_chaotic(self) -> bool:
-        """True if tick behavior looks like news spike — avoid entry."""
         s = self.snapshot()
         if not s.get("ready"):
             return False
-        return (s["velocity"] > 50 and not s["spread_stable"]) or s["max_spread"] > 1.0
+        return (s["velocity"] > 50 and not s["spread_stable"]) or s["spread"] > 1.0

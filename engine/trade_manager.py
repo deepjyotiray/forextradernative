@@ -161,6 +161,13 @@ class TradeManager:
         age = time.time() - t.fill_ts
         price_move = pnl / (t.initial_volume * cfg.PIP_VALUE_PER_LOT) if t.initial_volume > 0 else 0
 
+        # Early failure: adverse move > $0.20 in first 15 seconds
+        early_fail = getattr(t, 'early_fail', 0) or 0.20
+        if age < 15 and price_move < -early_fail:
+            self._close_early(t, f"Early fail: ${price_move:.2f} in {age:.0f}s")
+            return
+
+        # BE trigger
         if t.be_trigger_price > 0 and not t.sl_breakeven:
             if price_move >= t.be_trigger_price:
                 buf = 0.05
@@ -171,11 +178,13 @@ class TradeManager:
                     t.sl_breakeven = True
                 return
 
-        timeout = t.timeout_seconds
-        if timeout > 0 and age >= timeout and pnl < 0.5 * (t.sl_distance * t.initial_volume * cfg.PIP_VALUE_PER_LOT):
-            self._close_early(t, f"Scalp timeout {age:.0f}s, P&L ${pnl:.2f}")
+        # Speed exit: no +$0.30 move in 60s
+        timeout = t.timeout_seconds or 60
+        if age >= timeout and price_move < 0.30:
+            self._close_early(t, f"Speed exit: +${price_move:.2f} in {age:.0f}s")
             return
 
+        # Reversal protection
         if t.peak_pnl > 2.0 and pnl < 0.50:
             self._close_early(t, f"Scalp reversal (peak ${t.peak_pnl:.2f} -> ${pnl:.2f})")
             return

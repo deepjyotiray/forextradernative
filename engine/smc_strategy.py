@@ -75,10 +75,11 @@ class SMCStrategy(BaseStrategy):
             return {"signal": "NO_TRADE", "reason": "Tick chaos — news-like behavior",
                     "regime": regime, "bias": bias}
 
-        # Spread filter
+        # Spread filter — use spread model
         atr_val = ind.get("atr", 1)
-        if atr_val > 0 and spread > 0.3 * atr_val:
-            return {"signal": "NO_TRADE", "reason": f"Spread {spread:.2f} > 30% ATR"}
+        spread_ok, spread_reason = self.tick_proc.check_spread_ok(0.30, max_pctl=0.6)
+        if not spread_ok:
+            return {"signal": "NO_TRADE", "reason": f"Spread: {spread_reason}"}
 
         # === 6. Score confluence ===
         score = 0.0

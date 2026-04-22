@@ -288,7 +288,11 @@ class AutoTrader:
             lot = round(lot * 0.7, 2)
         lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
 
-        # Execute with retry
+        # Execute with retry + spread re-check
+        signal_spread = tick.get("spread", 0)
+        if self.tick_proc.spread_changed(signal_spread, max_delta=0.03):
+            self.log("BLOCKED", f"[{strat_name}] Spread widened since signal")
+            return
         comment = f"FT_{strat_name[:8]}"
         result = None
         for _ in range(3):
