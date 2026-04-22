@@ -82,6 +82,11 @@ class AutoTrader:
         self._last_tick: Dict = {}
         self._last_account: Dict = {}
 
+        # MT5 history cache (polled every 5s in engine loop)
+        self._mt5_closed_history: list = []
+        self._mt5_today_pnl: Dict = {}
+        self._last_history_poll = 0.0
+
     def log(self, tag: str, msg: str):
         now = datetime.now(timezone.utc)
         utc_str = now.strftime("%H:%M:%S.%f")[:-3]
@@ -102,8 +107,9 @@ class AutoTrader:
             self.risk.set_start_balance(acct.get("balance", 0))
             self.risk.set_risk_multiplier(self.perf.risk_multiplier())
             # Seed daily P&L from MT5 deal history (single source of truth)
-            today_pnl = self.bridge.get_today_pnl()
-            self.risk.seed_from_mt5(today_pnl)
+            # Initial MT5 history poll
+            self._poll_mt5_history()
+            today_pnl = self._mt5_today_pnl
             if today_pnl.get("pnl", 0) != 0 or today_pnl.get("trades", 0) > 0:
                 self.log("INIT", f"Today MT5 P&L: ${today_pnl['pnl']:+.2f} ({today_pnl['trades']} trades, {today_pnl['wins']}W/{today_pnl['losses']}L) [{today_pnl.get('source','')}]")
             self.trades = TradeManager(self.bridge)
@@ -217,12 +223,11 @@ class AutoTrader:
         # Manage open trades (ALWAYS) — pass ALL positions for P&L matching
         closed = self.trades.manage_all(all_positions)
         for ticket, pnl, won in closed:
-            self.risk.record_trade_result(pnl, won)
             self.perf.record({"ticket": ticket, "pnl": pnl, "won": won,
                               "time": datetime.now(timezone.utc).isoformat(),
                               **({"features": self.trades.closed_trades[-1].get("features", {})} if self.trades.closed_trades else {})})
             self.risk.set_risk_multiplier(self.perf.risk_multiplier())
-            self.log("RESULT", f"#{ticket} {'WIN' if won else 'LOSS'} ${pnl:+.2f} | Daily: ${self.risk._daily_pnl:+.2f}")
+            self.log("RESULT", f"#{ticket} {'WIN' if won else 'LOSS'} ${pnl:+.2f}")
             # XGBoost: retrain on featured trades only
             featured = [t for t in self.trades.closed_trades
                         if t.get("features") and any(
@@ -231,8 +236,14 @@ class AutoTrader:
             if len(featured) >= 15 and xgb_model.should_retrain(len(featured)):
                 threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
 
+        # Poll MT5 history every 5s — single source of truth
+        now_ts = time.time()
+        if now_ts - self._last_history_poll >= 5.0:
+            self._last_history_poll = now_ts
+            self._poll_mt5_history()
+
         # Periodic status (moved before gates so it always fires)
-        now = time.time()
+        now = now_ts
         if now - self._last_log_time > 30:
             self._last_log_time = now
             self._log_status(tick)
@@ -371,9 +382,15 @@ class AutoTrader:
             self._zones = self.zone_detector.detect(m5)
         self._recompute_regime_bias()
 
-    def _get_today_pnl(self) -> Dict:
-        """Today's P&L from MT5 deal history (single source of truth)."""
-        return self.bridge.get_today_pnl()
+    def _poll_mt5_history(self):
+        """Poll MT5 deal history and sync risk manager. MT5 = source of truth."""
+        try:
+            self._mt5_today_pnl = self.bridge.get_today_pnl()
+            self._mt5_closed_history = self.bridge.get_closed_trades(30)
+            # Sync risk manager daily P&L from MT5 deals (overwrite incremental tracking)
+            self.risk.seed_from_mt5(self._mt5_today_pnl)
+        except Exception as e:
+            self.log("ERR", f"History poll failed: {e}")
 
     def _recompute_regime_bias(self):
         ts = self.tick_proc.snapshot()
@@ -386,7 +403,7 @@ class AutoTrader:
         s, p = get_session(), tick["bid"]
         r, b = self._regime.get("state", "?"), self._bias.get("direction", "?")
         self.log("STATUS", f"[{self.strat_mgr.active_name}] {s} | {p:.2f} | {r} | Bias:{b} | "
-                 f"Open:{self.trades.open_count} | Daily:${self.risk._daily_pnl:+.2f}")
+                 f"Open:{self.trades.open_count} | Daily:${self._mt5_today_pnl.get('pnl', 0):+.2f}")
 
     def get_full_status(self) -> Dict:
         return {
@@ -414,10 +431,10 @@ class AutoTrader:
             "candles": {tf: len(df) for tf, df in self._candles.items()},
             "risk": self.risk.daily_status,
             "daily_target": cfg.DAILY_TARGET_DOLLARS,
-            "mt5_today_pnl": self._get_today_pnl() if self._mt5_connected else {},
+            "mt5_today_pnl": self._mt5_today_pnl,
             "mt5_positions": self.bridge.get_positions() if self._mt5_connected else [],
             "mt5_floating_pnl": self.bridge.get_floating_pnl() if self._mt5_connected else {},
-            "closed_history": self.bridge.get_closed_trades(30) if self._mt5_connected else [],
+            "closed_history": self._mt5_closed_history,
             "xgb": xgb_model.get_feature_importance(),
             "performance": self.perf.get_stats(),
             "trades": self.trades.status if self.trades else {},
