@@ -445,30 +445,42 @@ class MT5Bridge:
 
     def get_today_pnl(self) -> Dict:
         """Get today's realized P&L from bot trades. Day resets at IST midnight.
-        Uses position-level grouping. Falls back to orders for missing deals."""
+        Uses position-level grouping. Only counts positions whose CLOSING deal
+        happened after IST midnight. Falls back to orders for missing deals."""
         now = datetime.now(timezone.utc)
         ist_now = now.astimezone(_IST)
         ist_midnight = ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
         today_start = ist_midnight.astimezone(timezone.utc)
+        today_start_ts = int(today_start.timestamp())
 
-        deals = mt5.history_deals_get(today_start, now + timedelta(hours=1))
+        # Fetch deals from a wider window to capture full position P&L,
+        # but only count positions closed after IST midnight
+        fetch_start = today_start - timedelta(days=1)
+        deals = mt5.history_deals_get(fetch_start, now + timedelta(hours=1))
 
-        # Group deals by position_id
-        pos_pnl = {}
+        # First pass: find positions with a closing deal AFTER IST midnight
         closed_pids = set()
         for d in (deals or []):
             if not (self._match_symbol(d.symbol) and d.magic == cfg.MAGIC_NUMBER):
                 continue
+            if d.entry in (1, 2) and d.time >= today_start_ts:
+                closed_pids.add(d.position_id)
+
+        # Second pass: sum P&L for only those positions
+        pos_pnl = {}
+        for d in (deals or []):
+            if not (self._match_symbol(d.symbol) and d.magic == cfg.MAGIC_NUMBER):
+                continue
             pid = d.position_id
+            if pid not in closed_pids:
+                continue
             if pid not in pos_pnl:
                 pos_pnl[pid] = 0.0
             pos_pnl[pid] += d.profit + d.swap + d.commission
-            if d.entry in (1, 2):
-                closed_pids.add(pid)
 
         # Fallback: check orders for positions missing from deals
         try:
-            orders = mt5.history_orders_get(today_start, now + timedelta(hours=1))
+            orders = mt5.history_orders_get(fetch_start, now + timedelta(hours=1))
             if orders:
                 ord_by_pos = {}
                 for o in orders:
@@ -488,6 +500,9 @@ class MT5Bridge:
                     pos_orders.sort(key=lambda o: o.time_setup)
                     open_ord = pos_orders[0]
                     close_ord = pos_orders[-1]
+                    # Only count if closed after IST midnight
+                    if close_ord.time_setup < today_start_ts:
+                        continue
                     direction = "SELL" if open_ord.type == 1 else "BUY"
                     ep = open_ord.price_current if open_ord.price_current > 0 else open_ord.price_open
                     xp = close_ord.price_current if close_ord.price_current > 0 else close_ord.price_open
