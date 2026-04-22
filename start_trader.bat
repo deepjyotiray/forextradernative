@@ -9,4 +9,4 @@ timeout /t 1 /nobreak >nul
 
 :: Start fresh
 wscript "%~dp0start_trader.vbs"
-echo Auto Trader started. Dashboard opening in browser.
+echo Auto Trader started. Dashboard: http://127.0.0.1:8899

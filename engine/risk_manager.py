@@ -24,11 +24,20 @@ class RiskManager:
     def set_start_balance(self, balance: float):
         self._start_balance = balance
 
-    def seed_from_mt5(self, today_pnl: Dict):
+    def seed_from_mt5(self, today_pnl: Dict, closed_trades: list = None):
         """Seed daily P&L from MT5 deal history on startup."""
         self._daily_pnl = today_pnl.get("pnl", 0.0)
         self._daily_trades = today_pnl.get("trades", 0)
-        self._consecutive_losses = today_pnl.get("losses", 0)  # conservative
+        # Compute trailing consecutive losses from actual trade sequence
+        if closed_trades:
+            streak = 0
+            for t in reversed(closed_trades):
+                if t.get("won") or t.get("pnl", 0) > 0:
+                    break
+                streak += 1
+            self._consecutive_losses = streak
+        else:
+            self._consecutive_losses = 0
         if self._daily_pnl >= cfg.DAILY_TARGET_DOLLARS:
             self._daily_target_hit = True
         balance = self._start_balance if self._start_balance > 0 else 1000

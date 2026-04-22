@@ -152,6 +152,11 @@ class AutoTrader:
         while self._running:
             t0 = time.time()
             try:
+                # Proactive connection health check every cycle
+                if self._mt5_connected and not self.bridge.ping():
+                    self._mt5_connected = False
+                    self.log("ENGINE", "MT5 connection lost (ping failed)")
+
                 if not self._mt5_connected:
                     if self.bridge.connect():
                         self._mt5_connected = True
@@ -165,8 +170,9 @@ class AutoTrader:
             except Exception as e:
                 self.log("ERR", str(e))
                 self._stats["errors"] += 1
-                if "initialize" in str(e).lower():
+                if "initialize" in str(e).lower() or "terminal" in str(e).lower() or not self.bridge.ping():
                     self._mt5_connected = False
+                    self.log("ENGINE", "MT5 disconnected, will retry...")
             elapsed = time.time() - t0
             if elapsed < 0.01:
                 time.sleep(0.01)
@@ -386,7 +392,10 @@ class AutoTrader:
             self._mt5_today_pnl = self.bridge.get_today_pnl()
             self._mt5_closed_history = self.bridge.get_closed_trades(30)
             # Sync risk manager daily P&L from MT5 deals (overwrite incremental tracking)
-            self.risk.seed_from_mt5(self._mt5_today_pnl)
+            # Pass today's closed trades so consecutive losses is computed from actual sequence
+            today_str = datetime.now(_IST).strftime("%Y-%m-%d")
+            today_closed = [t for t in self._mt5_closed_history if t.get("close_time", "")[:10] >= today_str]
+            self.risk.seed_from_mt5(self._mt5_today_pnl, today_closed)
             # Update performance tracker with MT5 data if needed
             self._sync_performance_with_mt5()
         except Exception as e:
@@ -413,12 +422,59 @@ class AutoTrader:
                  f"Open:{self.trades.open_count} | Daily:${self._mt5_today_pnl.get('pnl', 0):+.2f}")
 
     def get_full_status(self) -> Dict:
-        # Compute performance stats directly from MT5 closed history (single source of truth)
-        mt5_closed = self._mt5_closed_history
-        mt5_pnls = [t.get("pnl", 0) for t in mt5_closed]
-        mt5_wins = [p for p in mt5_pnls if p > 0]
-        mt5_losses = [p for p in mt5_pnls if p <= 0]
-        mt5_total_pnl = round(sum(mt5_pnls), 2) if mt5_pnls else 0
+        # Daily PNL from DB (single source of truth, IST-based)
+        db_today = self.trades.order_db.get_today_stats() if self.trades else {}
+        db_daily_pnl = db_today.get('total_pnl', 0)
+        db_trades = db_today.get('trades', 0)
+        db_wins = db_today.get('wins', 0)
+        db_losses = db_today.get('losses', 0)
+
+        # Closed history from DB for dashboard, enriched with MT5 data for missing fields
+        db_closed = self.trades.order_db.get_closed_orders(30) if self.trades else []
+        mt5_map = {t['ticket']: t for t in self._mt5_closed_history} if self._mt5_closed_history else {}
+        closed_for_dash = []
+        for o in db_closed:
+            mt5_t = mt5_map.get(o['ticket'], {})
+            exit_price = o.get('exit_price') or mt5_t.get('exit_price') or 0
+            close_time = o.get('close_time') or mt5_t.get('close_time') or ''
+            closed_for_dash.append({
+                'ticket': o['ticket'],
+                'symbol': o['symbol'],
+                'direction': o['direction'],
+                'volume': o['volume'],
+                'entry_price': o['entry_price'],
+                'exit_price': exit_price,
+                'pnl': o['final_pnl'] or 0,
+                'won': (o['final_pnl'] or 0) > 0,
+                'open_time': o['open_time'],
+                'close_time': close_time,
+                'comment': o.get('close_reason') or o.get('strategy', ''),
+            })
+
+        # Performance stats from DB closed history
+        pnls = [t['pnl'] for t in closed_for_dash]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        total_pnl = round(sum(pnls), 2) if pnls else 0
+
+        # Performance stats computed entirely from DB
+        # pnls is in DESC order from DB; reverse for chronological drawdown calc
+        pnls_chrono = list(reversed(pnls))
+        avg_win = round(sum(wins) / len(wins), 2) if wins else 0
+        avg_loss_vals = [abs(p) for p in losses]
+        avg_loss = round(sum(avg_loss_vals) / len(avg_loss_vals), 2) if avg_loss_vals else 0
+        win_rate = round(len(wins) / len(pnls), 3) if pnls else 0
+        expectancy = round((win_rate * avg_win) - ((1 - win_rate) * avg_loss), 2)
+        cum = 0
+        peak = 0
+        max_dd = 0
+        for p in pnls_chrono:
+            cum += p
+            if cum > peak:
+                peak = cum
+            dd = peak - cum
+            if dd > max_dd:
+                max_dd = dd
 
         return {
             "enabled": self.enabled,
@@ -445,18 +501,28 @@ class AutoTrader:
             "candles": {tf: len(df) for tf, df in self._candles.items()},
             "risk": self.risk.daily_status,
             "daily_target": cfg.DAILY_TARGET_DOLLARS,
-            "mt5_today_pnl": self._mt5_today_pnl,
+            "mt5_today_pnl": {
+                'pnl': db_daily_pnl,
+                'trades': db_trades,
+                'wins': db_wins,
+                'losses': db_losses,
+                'source': 'orders_db',
+            },
             "mt5_positions": self.bridge.get_positions() if self._mt5_connected else [],
             "mt5_floating_pnl": self.bridge.get_floating_pnl() if self._mt5_connected else {},
-            "closed_history": mt5_closed,
+            "closed_history": closed_for_dash,
             "xgb": xgb_model.get_feature_importance(),
             "performance": {
-                "total": len(mt5_pnls),
-                "wins": len(mt5_wins),
-                "losses": len(mt5_losses),
-                "win_rate": round(len(mt5_wins) / len(mt5_pnls), 3) if mt5_pnls else 0,
-                "total_pnl": mt5_total_pnl,
-                **self.perf.get_stats(),  # merge tracker stats (expectancy, drawdown, etc)
+                "total": len(pnls),
+                "wins": len(wins),
+                "losses": len(losses),
+                "win_rate": win_rate,
+                "avg_win": avg_win,
+                "avg_loss": avg_loss,
+                "expectancy": expectancy,
+                "total_pnl": total_pnl,
+                "max_drawdown": round(max_dd, 2),
+                "avg_rr": round(avg_win / avg_loss, 2) if avg_loss > 0 else 0,
             },
             "trades": self.trades.status if self.trades else {},
             "stats": self._stats,

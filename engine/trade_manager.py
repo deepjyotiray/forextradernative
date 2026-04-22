@@ -2,6 +2,7 @@
 Trade Manager — persistent state, correct P&L tracking.
 Saves open trades to disk so restarts don't lose tracking.
 Updates P&L from live positions every cycle.
+Integrated with comprehensive order database and PnL validation.
 """
 import time
 import json
@@ -10,6 +11,8 @@ import MetaTrader5 as mt5
 from typing import Dict, List
 from datetime import datetime, timezone, timedelta
 import config as cfg
+from .order_database import OrderDatabase
+from .pnl_validator import PnLValidator
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -84,15 +87,27 @@ class TradeManager:
         self.open_trades: Dict[int, TradeRecord] = {}
         self.closed_trades: List[Dict] = []  # Deprecated - use MT5 history instead
         self._closing_tickets: set = set()
+        self.order_db = OrderDatabase()
+        self.pnl_validator = PnLValidator(mt5_bridge)
         self._load_state()
 
     def register_trade(self, ticket, direction, volume, entry, sl, tp, sl_distance,
                        strategy="", confidence=0, reason="",
-                       scalp=False, be_trigger=0, timeout=0, features=None):
+                       scalp=False, be_trigger=0, timeout=0, features=None,
+                       session_type="", market_phase=""):
+        # Store in memory for active management
         self.open_trades[ticket] = TradeRecord(
             ticket, direction, volume, entry, sl, tp, sl_distance,
             strategy, confidence, reason, scalp, be_trigger, timeout, features,
         )
+        
+        # Store in database for permanent record
+        self.order_db.store_order(
+            ticket, direction, volume, entry, sl, tp, sl_distance,
+            strategy, confidence, reason, scalp, be_trigger, timeout,
+            features, session_type, market_phase
+        )
+        
         self._save_state()
 
     def manage_all(self, live_positions: List[Dict]):
@@ -113,12 +128,19 @@ class TradeManager:
         for ticket, trade in list(self.open_trades.items()):
             if ticket not in live_map:
                 # Position gone — ALWAYS fetch P&L from MT5 history (authoritative)
-                pnl = self._fetch_closed_pnl(ticket)
+                close_data = self._fetch_closed_pnl(ticket)
+                pnl = close_data["pnl"]
                 # If MT5 history fetch fails, use last known live P&L as fallback
                 if pnl == 0.0 and trade.live_pnl != 0.0:
                     pnl = trade.live_pnl
-                now = datetime.now(timezone.utc)
-                # Don't add to internal closed_trades - MT5 history is the source of truth
+                
+                # Update database with final PnL + exit price
+                self.order_db.close_order(
+                    ticket, pnl, "MT5_CLOSED",
+                    swap=close_data["swap"], commission=close_data["commission"],
+                    exit_price=close_data["exit_price"]
+                )
+                
                 closed.append((ticket, pnl, pnl > 0))
                 self._closing_tickets.discard(ticket)
                 del self.open_trades[ticket]
@@ -127,6 +149,7 @@ class TradeManager:
                 pnl = pos["net_profit"]
                 trade.live_pnl = pnl
                 trade.volume = pos["volume"]
+                
                 # Update SL/TP from MT5 (may have been modified by broker/EA)
                 if pos.get("sl"):
                     trade.sl = pos["sl"]
@@ -134,6 +157,11 @@ class TradeManager:
                     trade.tp = pos["tp"]
                 if pnl > trade.peak_pnl:
                     trade.peak_pnl = pnl
+                
+                # Update database with live PnL
+                self.order_db.update_live_pnl(
+                    ticket, pnl, trade.volume, trade.sl, trade.tp
+                )
 
         for ticket, trade in list(self.open_trades.items()):
             if ticket in self._closing_tickets:
@@ -145,24 +173,34 @@ class TradeManager:
 
         return closed
 
-    def _fetch_closed_pnl(self, ticket: int) -> float:
-        """Fetch real P&L from MT5 deal history - AUTHORITATIVE SOURCE.
+    def _fetch_closed_pnl(self, ticket: int) -> Dict:
+        """Fetch real P&L + exit price from MT5 deal history - AUTHORITATIVE SOURCE.
         Sums profit+swap+commission from ALL deals for this position_id."""
+        result = {"pnl": 0.0, "exit_price": 0.0, "swap": 0.0, "commission": 0.0}
         try:
             now = datetime.now(timezone.utc)
             deals = mt5.history_deals_get(now - timedelta(days=7), now + timedelta(hours=1))
             if not deals:
-                return 0.0
+                return result
             total = 0.0
+            total_swap = 0.0
+            total_comm = 0.0
             found = False
             for d in deals:
                 if d.position_id == ticket:
                     total += d.profit + d.swap + d.commission
-                    if d.entry in (1, 2):  # only mark found if we see an OUT deal
+                    total_swap += d.swap
+                    total_comm += d.commission
+                    if d.entry in (1, 2):  # OUT deal
                         found = True
-            return round(total, 2) if found else 0.0
+                        result["exit_price"] = d.price
+            if found:
+                result["pnl"] = round(total, 2)
+                result["swap"] = round(total_swap, 2)
+                result["commission"] = round(total_comm, 2)
+            return result
         except Exception:
-            return 0.0
+            return result
 
     def _manage_trade(self, t: TradeRecord):
         if t.scalp:
@@ -190,6 +228,7 @@ class TradeManager:
                 if res.get("success"):
                     t.sl = new_sl
                     t.sl_breakeven = True
+                    self.order_db.update_management_flags(t.ticket, sl_breakeven=True)
                 return
 
         # Speed exit: no +$0.30 move in 60s
@@ -218,6 +257,7 @@ class TradeManager:
             if res.get("success"):
                 t.sl = new_sl
                 t.sl_breakeven = True
+                self.order_db.update_management_flags(t.ticket, sl_breakeven=True)
             return
 
         if pnl >= 1.0 * r and not t.partial_closed:
@@ -239,6 +279,9 @@ class TradeManager:
             t.tp = new_tp
             t.sl = new_sl
             t.trail_active = True
+            self.order_db.update_management_flags(
+                t.ticket, partial_closed=True, trail_active=True
+            )
             return
 
         if t.trail_active and pnl >= 1.5 * r:
@@ -280,11 +323,29 @@ class TradeManager:
         res = self.bridge.close_trade(t.ticket)
         if not res.get("success"):
             self._closing_tickets.discard(t.ticket)
+        else:
+            # Mark in database with close reason + exit price
+            self.order_db.close_order(
+                t.ticket, t.live_pnl, reason,
+                exit_price=res.get("close_price", 0)
+            )
 
     def _log_adopt(self, ticket: int):
         try:
             with open(os.path.join(_BASE_DIR, "trader.log"), "a") as f:
                 f.write(f"[ADOPT] Auto-adopted position #{ticket} from MT5\n")
+        except Exception:
+            pass
+    
+    def _log_pnl_validation(self, ticket: int, pnl_data: Dict):
+        """Log PnL validation details for audit trail."""
+        try:
+            with open(os.path.join(_BASE_DIR, "pnl_validation.log"), "a") as f:
+                timestamp = datetime.now(timezone.utc).isoformat()
+                f.write(f"[{timestamp}] Ticket {ticket}: ")
+                f.write(f"PnL=${pnl_data['final_pnl']}, ")
+                f.write(f"Confidence={pnl_data['confidence']}, ")
+                f.write(f"Notes={pnl_data['validation_notes']}\n")
         except Exception:
             pass
 
@@ -323,4 +384,36 @@ class TradeManager:
         return {
             "open_trades": [t.to_dict() for t in self.open_trades.values()],
             "open_count": self.open_count,
+            "today_stats": self.order_db.get_today_stats(),
         }
+    
+    def get_order_history(self, days: int = 30) -> List[Dict]:
+        """Get order history from database."""
+        return self.order_db.get_closed_orders(days)
+    
+    def get_strategy_performance(self, days: int = 30) -> List[Dict]:
+        """Get strategy performance breakdown."""
+        return self.order_db.get_strategy_performance(days)
+    
+    def export_snapshot(self, filename: str = None) -> str:
+        """Export complete order database snapshot."""
+        return self.order_db.export_snapshot(filename)
+    
+    def get_pnl_validation_summary(self) -> Dict:
+        """Get PnL validation summary for all open positions."""
+        summary = {
+            "total_positions": len(self.open_trades),
+            "validation_results": [],
+            "account_summary": self.pnl_validator.get_account_pnl_summary()
+        }
+        
+        for ticket in self.open_trades.keys():
+            pnl_data = self.pnl_validator.get_accurate_live_pnl(ticket)
+            summary["validation_results"].append({
+                "ticket": ticket,
+                "pnl": pnl_data['pnl'],
+                "confidence": pnl_data['confidence'],
+                "source": pnl_data['source']
+            })
+        
+        return summary

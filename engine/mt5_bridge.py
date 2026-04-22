@@ -51,6 +51,20 @@ class MT5Bridge:
         mt5.shutdown()
         self._connected = False
 
+    def ping(self) -> bool:
+        """Check if MT5 is actually responsive (detects silent disconnects)."""
+        if not self._connected:
+            return False
+        try:
+            info = mt5.terminal_info()
+            if info is None:
+                self._connected = False
+                return False
+            return True
+        except Exception:
+            self._connected = False
+            return False
+
     @property
     def connected(self) -> bool:
         return self._connected

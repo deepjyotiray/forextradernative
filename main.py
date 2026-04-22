@@ -1,13 +1,17 @@
 from fastapi import FastAPI
+from engine.order_api import router as order_router
 
-app = FastAPI()
+app = FastAPI(title="Trading System API", version="1.0.0")
+
+# Include order management routes
+app.include_router(order_router)
 
 
 @app.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Trading System API", "version": "1.0.0"}
 
 
-@app.get("/hello/{name}")
-async def say_hello(name: str):
-    return {"message": f"Hello {name}"}
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "trading_system"}
