@@ -13,10 +13,17 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TRADER_URL = "http://127.0.0.1:8899"
 LOG_FILE = os.path.join(BASE_DIR, "deploy_watcher.log")
 
-logging.basicConfig(
-    filename=LOG_FILE, level=logging.INFO,
-    format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
-)
+try:
+    logging.basicConfig(
+        filename=LOG_FILE, level=logging.INFO,
+        format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+    )
+except PermissionError:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logging.warning(f"Could not open {LOG_FILE}, logging to console only")
 log = logging.getLogger(__name__)
 
 
