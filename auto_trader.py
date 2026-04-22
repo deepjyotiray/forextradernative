@@ -115,11 +115,18 @@ class AutoTrader:
             self.risk.seed_from_mt5(today_pnl)
             if today_pnl.get("pnl", 0) != 0 or today_pnl.get("trades", 0) > 0:
                 self.log("INIT", f"Today P&L: ${today_pnl['pnl']:+.2f} ({today_pnl.get('trades',0)} trades) [{today_pnl.get('source','')}]")
-            # XGBoost: train from CSV history
-            csv_trades = csv_reader.get_closed_trades() if csv_reader.available() else []
-            if csv_trades and xgb_model.should_retrain(len(csv_trades)):
-                threading.Thread(target=xgb_model.train, args=(csv_trades,), daemon=True).start()
-                self.log("INIT", f"XGBoost training on {len(csv_trades)} trades")
+            # XGBoost: train from performance tracker (has features), not CSV
+            perf_trades = self.perf.trades
+            if perf_trades and xgb_model.should_retrain(len(perf_trades)):
+                # Filter to trades that have real features
+                featured = [t for t in perf_trades if t.get("features") and
+                            any(isinstance(v, (int, float)) and v != 0
+                                for v in t["features"].values())]
+                if len(featured) >= 15:
+                    threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
+                    self.log("INIT", f"XGBoost training on {len(featured)} trades (with features)")
+                else:
+                    self.log("INIT", f"XGBoost: {len(featured)} featured trades < 15 min, skipping")
             elif xgb_model.is_trained:
                 self.log("INIT", f"XGBoost loaded ({xgb_model._trades_at_last_train} trades)")
             self.log("INIT", "Loading candle data...")
@@ -223,10 +230,13 @@ class AutoTrader:
                               **({"features": self.trades.closed_trades[-1].get("features", {})} if self.trades.closed_trades else {})})
             self.risk.set_risk_multiplier(self.perf.risk_multiplier())
             self.log("RESULT", f"#{ticket} {'WIN' if won else 'LOSS'} ${pnl:+.2f} | Daily: ${self.risk._daily_pnl:+.2f}")
-            # XGBoost: retrain periodically — use bot's own trades (have features)
-            all_closed = self.trades.closed_trades
-            if all_closed and xgb_model.should_retrain(len(all_closed)):
-                threading.Thread(target=xgb_model.train, args=(all_closed,), daemon=True).start()
+            # XGBoost: retrain on featured trades only
+            featured = [t for t in self.trades.closed_trades
+                        if t.get("features") and any(
+                            isinstance(v, (int, float)) and v != 0
+                            for v in t["features"].values())]
+            if len(featured) >= 15 and xgb_model.should_retrain(len(featured)):
+                threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
 
         if not self.enabled:
             return
