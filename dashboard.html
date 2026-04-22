@@ -274,6 +274,8 @@ function render(d){
   const lb=$('logBox');
   lb.innerHTML=logs.map(l=>`<div class="log-entry"><span class="log-time">${l.time}</span><span class="log-tag tag-${l.tag}">${l.tag}</span>${esc(l.msg)}</div>`).join('');
   lb.scrollTop=lb.scrollHeight;
+
+  document.title=`${ps(dp)} | XAUUSD Auto Trader`;
 }
 
 setInterval(get,500);get();
