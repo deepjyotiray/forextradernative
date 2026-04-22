@@ -32,7 +32,7 @@ class RiskManager:
         if closed_trades:
             streak = 0
             for t in reversed(closed_trades):
-                if t.get("won") or t.get("pnl", 0) > 0:
+                if t.get("pnl", 0) >= 0:
                     break
                 streak += 1
             self._consecutive_losses = streak
