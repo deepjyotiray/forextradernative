@@ -528,17 +528,4 @@ class MT5Bridge:
             return {"pnl": round(pnl, 2), "trades": len(closed_pids),
                     "wins": wins, "losses": losses, "source": "deals"}
 
-        # Fallback: balance - deposit
-        info = mt5.account_info()
-        if info:
-            all_deals = mt5.history_deals_get(now - timedelta(days=90), now + timedelta(hours=1))
-            deposit = 0.0
-            if all_deals:
-                for d in all_deals:
-                    if d.type == 2:
-                        deposit += d.profit
-            if deposit > 0:
-                return {"pnl": round(info.balance - deposit, 2), "trades": 0,
-                        "wins": 0, "losses": 0, "source": "balance_delta"}
-
         return {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0, "source": "none"}
