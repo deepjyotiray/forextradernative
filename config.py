@@ -41,3 +41,6 @@ API_PORT = 8899
 
 # Default strategy on startup
 DEFAULT_STRATEGY = "AUTO"
+
+# Tier 1 upgrades toggle
+TIER1_ENABLED = True

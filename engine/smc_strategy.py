@@ -14,6 +14,7 @@ from .liquidity import compute_liquidity
 from .indicators import ema, atr, rsi, compute_indicators
 from .tick_processor import TickProcessor
 from .session_filter import get_session
+import config as cfg
 
 
 class SMCStrategy(BaseStrategy):
@@ -75,11 +76,15 @@ class SMCStrategy(BaseStrategy):
             return {"signal": "NO_TRADE", "reason": "Tick chaos — news-like behavior",
                     "regime": regime, "bias": bias}
 
-        # Spread filter — use spread model
+        # Spread filter
         atr_val = ind.get("atr", 1)
-        spread_ok, spread_reason = self.tick_proc.check_spread_ok(0.30, max_pctl=0.6)
-        if not spread_ok:
-            return {"signal": "NO_TRADE", "reason": f"Spread: {spread_reason}"}
+        if cfg.TIER1_ENABLED:
+            spread_ok, spread_reason = self.tick_proc.check_spread_ok(0.30, max_pctl=0.6)
+            if not spread_ok:
+                return {"signal": "NO_TRADE", "reason": f"Spread: {spread_reason}"}
+        else:
+            if spread > 0.50:
+                return {"signal": "NO_TRADE", "reason": f"Spread {spread:.2f} > 0.50"}
 
         # === 6. Score confluence ===
         score = 0.0

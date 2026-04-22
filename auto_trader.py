@@ -341,7 +341,7 @@ class AutoTrader:
 
         # Execute with retry + spread re-check
         signal_spread = tick.get("spread", 0)
-        if self.tick_proc.spread_changed(signal_spread, max_delta=0.03):
+        if cfg.TIER1_ENABLED and self.tick_proc.spread_changed(signal_spread, max_delta=0.03):
             self.log("BLOCKED", f"[{strat_name}] Spread widened since signal")
             return
         comment = f"FT_{strat_name[:8]}"
@@ -404,6 +404,8 @@ class AutoTrader:
             self.risk.seed_from_mt5(self._mt5_today_pnl, today_closed)
             # Update performance tracker with MT5 data if needed
             self._sync_performance_with_mt5()
+            # Reconcile order DB with MT5 deal history
+            self._reconcile_db_with_mt5()
         except Exception as e:
             self.log("ERR", f"History poll failed: {e}")
 
@@ -413,6 +415,35 @@ class AutoTrader:
             self.perf.sync_from_mt5(self._mt5_closed_history, self.trades.order_db if self.trades else None)
         except Exception as e:
             self.log("ERR", f"Performance sync failed: {e}")
+
+    def _reconcile_db_with_mt5(self):
+        """Reconcile closed orders in DB against MT5 deal history.
+        Fixes exit_price, final_pnl, swap, commission if they differ from MT5."""
+        if not self._mt5_closed_history or not self.trades:
+            return
+        try:
+            mt5_map = {t["ticket"]: t for t in self._mt5_closed_history}
+            db = self.trades.order_db
+            stale = db.get_stale_closed_orders(mt5_map)
+            if not stale:
+                return
+            patched = 0
+            for ticket, db_row in stale.items():
+                mt5t = mt5_map[ticket]
+                db.reconcile_order(
+                    ticket,
+                    final_pnl=mt5t["pnl"],
+                    exit_price=mt5t.get("exit_price", 0),
+                    swap=mt5t.get("swap", 0),
+                    commission=mt5t.get("commission", 0),
+                )
+                patched += 1
+            if patched:
+                self.log("RECONCILE", f"Fixed {patched} orders from MT5 history")
+        except Exception as e:
+            self.log("ERR", f"Reconciliation failed: {e}")
+
+
 
     def _recompute_regime_bias(self):
         ts = self.tick_proc.snapshot()
@@ -519,6 +550,7 @@ class AutoTrader:
                 "MIN_TRADE_COOLDOWN": cfg.MIN_TRADE_COOLDOWN,
                 "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE,
             },
+            "tier1_enabled": cfg.TIER1_ENABLED,
             "mt5_today_pnl": {
                 'pnl': db_daily_pnl,
                 'trades': db_trades,
@@ -606,6 +638,9 @@ class AutoTrader:
                             val = _RISK_KEYS[k](v)
                             setattr(cfg, k, val)
                             updated[k] = val
+                    if 'TIER1_ENABLED' in body:
+                        cfg.TIER1_ENABLED = bool(body['TIER1_ENABLED'])
+                        updated['TIER1_ENABLED'] = cfg.TIER1_ENABLED
                     if updated:
                         trader.log("API", f"Config updated: {updated}")
                     s._j({"updated":updated})

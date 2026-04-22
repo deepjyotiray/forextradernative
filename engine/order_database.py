@@ -215,6 +215,59 @@ class OrderDatabase:
             
             return conn.total_changes > 0
     
+    def update_exit_price(self, ticket: int, exit_price: float) -> bool:
+        """Store exit price immediately when known (before final P&L is available)."""
+        if not exit_price or exit_price <= 0:
+            return False
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                UPDATE orders SET exit_price = ?, updated_at = strftime('%s', 'now')
+                WHERE ticket = ? AND (exit_price IS NULL OR exit_price = 0)
+            """, (exit_price, ticket))
+            return conn.total_changes > 0
+
+    def get_stale_closed_orders(self, mt5_map: dict) -> dict:
+        """Find closed orders where DB data differs from MT5 deal history.
+        Returns {ticket: db_row} for orders needing reconciliation."""
+        if not mt5_map:
+            return {}
+        tickets = list(mt5_map.keys())
+        stale = {}
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            placeholders = ','.join('?' * len(tickets))
+            cursor = conn.execute(f"""
+                SELECT ticket, final_pnl, exit_price, swap, commission
+                FROM orders WHERE status = 'CLOSED' AND ticket IN ({placeholders})
+            """, tickets)
+            for row in cursor.fetchall():
+                t = row['ticket']
+                mt5t = mt5_map[t]
+                mt5_pnl = mt5t.get('pnl', 0)
+                mt5_exit = mt5t.get('exit_price', 0)
+                db_pnl = row['final_pnl'] or 0
+                db_exit = row['exit_price'] or 0
+                if (abs(db_pnl - mt5_pnl) > 0.005
+                        or (mt5_exit and abs(db_exit - mt5_exit) > 0.005)):
+                    stale[t] = dict(row)
+        return stale
+
+    def reconcile_order(self, ticket: int, final_pnl: float,
+                       exit_price: float = 0, swap: float = 0,
+                       commission: float = 0) -> bool:
+        """Overwrite closed order data with authoritative MT5 values."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                UPDATE orders SET
+                    final_pnl = ?,
+                    exit_price = CASE WHEN ? > 0 THEN ? ELSE exit_price END,
+                    swap = ?,
+                    commission = ?,
+                    updated_at = strftime('%s', 'now')
+                WHERE ticket = ? AND status = 'CLOSED'
+            """, (final_pnl, exit_price, exit_price, swap, commission, ticket))
+            return conn.total_changes > 0
+    
     def get_open_orders(self) -> List[Dict]:
         """Get all open orders."""
         with sqlite3.connect(self.db_path) as conn:

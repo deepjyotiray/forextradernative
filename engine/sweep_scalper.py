@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from .strategies.base_strategy import BaseStrategy
 from .indicators import ema, atr
 from .tick_processor import TickProcessor
+import config as cfg
 
 _SPREAD_MAX = 0.25
 _ATR_MIN = 0.30
@@ -59,10 +60,15 @@ class SweepScalper(BaseStrategy):
         price = tick["bid"]
         spread = tick.get("spread", 0)
 
-        # === 1. Session windows: London 07-09, Overlap 12-13, NY 13-15 ===
+        # === 1. Session windows ===
         now = datetime.now(timezone.utc)
         h = now.hour
-        in_window = (7 <= h < 9) or (12 <= h < 13) or (13 <= h < 15)
+        if cfg.TIER1_ENABLED:
+            # Tier 1: tightened windows
+            in_window = (7 <= h < 9) or (12 <= h < 13) or (13 <= h < 15)
+        else:
+            # Baseline: wider windows
+            in_window = (7 <= h < 12) or (13 <= h < 17)
         if not in_window:
             return _no(f"Outside trade window (UTC {h}:xx)")
 
@@ -76,10 +82,14 @@ class SweepScalper(BaseStrategy):
         if self._session_trades >= _MAX_TRADES_SESSION:
             return _no(f"Max {_MAX_TRADES_SESSION} trades this session")
 
-        # === 2. Spread model check ===
-        spread_ok, spread_reason = self.tick_proc.check_spread_ok(_SPREAD_MAX, max_pctl=0.5)
-        if not spread_ok:
-            return _no(f"Spread: {spread_reason}")
+        # === 2. Spread check ===
+        if cfg.TIER1_ENABLED:
+            spread_ok, spread_reason = self.tick_proc.check_spread_ok(_SPREAD_MAX, max_pctl=0.5)
+            if not spread_ok:
+                return _no(f"Spread: {spread_reason}")
+        else:
+            if spread > 0.40:
+                return _no(f"Spread {spread:.2f} > 0.40")
 
         # === 3. Volatility filter ===
         c = m1["close"].values.astype(float)
@@ -121,10 +131,11 @@ class SweepScalper(BaseStrategy):
         sweep_level = sweep["level"]
 
         # === 7. First-sweep-only: block re-entry at same level ===
-        self._cleanup_levels()
-        level_key = round(sweep_level * 2) / 2  # round to nearest $0.50
-        if level_key in self._traded_levels:
-            return _no(f"Level {sweep_level:.2f} already traded")
+        if cfg.TIER1_ENABLED:
+            self._cleanup_levels()
+            level_key = round(sweep_level * 2) / 2  # round to nearest $0.50
+            if level_key in self._traded_levels:
+                return _no(f"Level {sweep_level:.2f} already traded")
 
         # Bias agreement
         if m5_bias and m5_bias != direction:
@@ -167,11 +178,15 @@ class SweepScalper(BaseStrategy):
         if dir_pct < _TICK_DIR_PCT:
             return _no(f"Tick direction {dir_pct:.0%} < {_TICK_DIR_PCT:.0%}")
 
-        # === 10. Dynamic SL/TP ===
+        # === 10. SL/TP ===
         signal = "BUY" if direction == "LONG" else "SELL"
 
-        # SL = clamp(ATR * 0.6, 0.80, 1.50)
-        sl_dist = max(0.80, min(1.50, atr_val * 0.6))
+        if cfg.TIER1_ENABLED:
+            # Tier 1: Dynamic SL = clamp(ATR * 0.6, 0.80, 1.50)
+            sl_dist = max(0.80, min(1.50, atr_val * 0.6))
+        else:
+            # Baseline: fixed SL range $0.60-$1.00
+            sl_dist = max(0.60, min(1.00, atr_val * 0.5))
 
         if signal == "BUY":
             sl = round(max(sweep_level - 0.10, price - sl_dist), 2)
@@ -180,17 +195,24 @@ class SweepScalper(BaseStrategy):
             sl = round(min(sweep_level + 0.10, price + sl_dist), 2)
             sl_dist = sl - price
 
-        sl_dist = round(max(0.80, min(1.50, sl_dist)), 2)
+        if cfg.TIER1_ENABLED:
+            sl_dist = round(max(0.80, min(1.50, sl_dist)), 2)
+        else:
+            sl_dist = round(max(0.60, min(1.00, sl_dist)), 2)
         if signal == "BUY":
             sl = round(price - sl_dist, 2)
         else:
             sl = round(price + sl_dist, 2)
 
-        # TP = max(ATR * 0.8, spread * 2.2) capped at ATR * 1.5
         spread_mean = ts.get("spread_mean", spread)
-        tp_dist = max(atr_val * 0.8, spread_mean * 2.2)
-        tp_dist = min(tp_dist, atr_val * 1.5)
-        tp_dist = round(max(tp_dist, spread_mean * 2.2), 2)  # floor at cost threshold
+        if cfg.TIER1_ENABLED:
+            # Tier 1: TP = max(ATR * 0.8, spread * 2.2) capped at ATR * 1.5
+            tp_dist = max(atr_val * 0.8, spread_mean * 2.2)
+            tp_dist = min(tp_dist, atr_val * 1.5)
+            tp_dist = round(max(tp_dist, spread_mean * 2.2), 2)
+        else:
+            # Baseline: simpler TP
+            tp_dist = round(atr_val * 1.0, 2)
 
         if signal == "BUY":
             tp = round(price + tp_dist, 2)
@@ -200,11 +222,13 @@ class SweepScalper(BaseStrategy):
         rr = tp_dist / sl_dist if sl_dist > 0 else 0
 
         # === 11. Final spread re-check before returning signal ===
-        if self.tick_proc.spread_changed(spread, max_delta=0.03):
+        if cfg.TIER1_ENABLED and self.tick_proc.spread_changed(spread, max_delta=0.03):
             return _no("Spread widened since signal")
 
         # Record level as traded
-        self._traded_levels[level_key] = time.time()
+        if cfg.TIER1_ENABLED:
+            level_key = round(sweep_level * 2) / 2
+            self._traded_levels[level_key] = time.time()
         self._session_trades += 1
 
         reasons = [
@@ -237,8 +261,8 @@ class SweepScalper(BaseStrategy):
             },
             "_scalp": True,
             "_be_trigger": _BE_TRIGGER,
-            "_timeout": _TIMEOUT,
-            "_early_fail": _EARLY_FAIL_PTS,
+            "_timeout": _TIMEOUT if cfg.TIER1_ENABLED else 150,
+            "_early_fail": _EARLY_FAIL_PTS if cfg.TIER1_ENABLED else 0,
         }
 
     def _detect_sweep(self, h, l, c, o, price) -> Optional[Dict]:

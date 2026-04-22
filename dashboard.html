@@ -120,6 +120,11 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)">Strategy:</span>
   <div id="stratBtns" style="display:flex;gap:6px"></div>
   <div style="flex:1"></div>
+  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:var(--dim)" title="Toggle Tier 1 upgrades (spread model, dynamic SL/TP, first-sweep-only, early failure exit)">
+    <input type="checkbox" id="tier1Toggle" onchange="toggleTier1(this.checked)" style="cursor:pointer">
+    <span>Tier 1 Upgrades</span>
+    <span id="tier1Badge" class="badge b-on" style="font-size:9px">ON</span>
+  </label>
   <span id="stratInfo" style="font-size:11px;color:var(--dim)"></span>
 </div>
 
@@ -192,6 +197,10 @@ function render(d){
   const stratDesc={'AUTO':'Best of all strategies | auto-selects highest confidence','SMC_CONFLUENCE':'Swing | MTF bias + zones + sweeps | RR 1.5+','SWEEP_SCALPER':'Scalp | Liquidity sweeps | $3-$6 | London/NY open'};
   $('stratBtns').innerHTML=avail.map(s=>`<button class="btn" style="padding:6px 16px;font-size:12px;font-weight:700;background:${s===active?'var(--purple)':'#1e293b'};color:${s===active?'#fff':'#94a3b8'};border:1px solid ${s===active?'var(--purple)':'var(--border)'}" onclick="post('/strategy/${s}')">${s.replace('_',' ')}</button>`).join('');
   $('stratInfo').textContent=stratDesc[active]||'';
+  // Tier 1 toggle sync
+  const t1=d.tier1_enabled!==false;
+  const t1cb=$('tier1Toggle');if(t1cb&&t1cb!==document.activeElement)t1cb.checked=t1;
+  const t1b=$('tier1Badge');if(t1b){t1b.className='badge '+(t1?'b-on':'b-off');t1b.textContent=t1?'ON':'OFF';}
   $('btnStart').disabled=en;$('btnStop').disabled=!en;
 
   // Price card
@@ -400,6 +409,9 @@ async function saveConfig(){
   const body={};
   inputs.forEach(inp=>{const v=parseFloat(inp.value);if(!isNaN(v))body[inp.dataset.key]=v;});
   try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();$('cfgStatus').textContent='Saved ✓';setTimeout(()=>$('cfgStatus').textContent='',2000);get();}catch(e){$('cfgStatus').textContent='Failed';$('cfgStatus').style.color='var(--red)';}
+}
+async function toggleTier1(enabled){
+  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({TIER1_ENABLED:enabled})});setTimeout(get,200);}catch(e){alert('Failed to toggle Tier 1');}
 }
 setInterval(get,500);get();
 </script>

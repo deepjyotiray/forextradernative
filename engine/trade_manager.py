@@ -87,6 +87,7 @@ class TradeManager:
         self.open_trades: Dict[int, TradeRecord] = {}
         self.closed_trades: List[Dict] = []  # Deprecated - use MT5 history instead
         self._closing_tickets: set = set()
+        self._pending_close_reasons: Dict[int, str] = {}  # ticket -> reason from _close_early
         self.order_db = OrderDatabase()
         self.pnl_validator = PnLValidator(mt5_bridge)
         self._load_state()
@@ -127,18 +128,37 @@ class TradeManager:
 
         for ticket, trade in list(self.open_trades.items()):
             if ticket not in live_map:
-                # Position gone — ALWAYS fetch P&L from MT5 history (authoritative)
-                close_data = self._fetch_closed_pnl(ticket)
+                # Position gone — fetch P&L from MT5 deal history (authoritative)
+                # Retry up to 3 times with short delay for deal propagation
+                close_data = {"pnl": 0.0, "exit_price": 0.0, "swap": 0.0, "commission": 0.0}
+                for _attempt in range(3):
+                    close_data = self._fetch_closed_pnl(ticket)
+                    if close_data["exit_price"] > 0:
+                        break
+                    time.sleep(0.3)
+
                 pnl = close_data["pnl"]
-                # If MT5 history fetch fails, use last known live P&L as fallback
-                if pnl == 0.0 and trade.live_pnl != 0.0:
+                exit_price = close_data["exit_price"]
+
+                # Fallback: compute P&L from prices if deal history unavailable
+                if exit_price == 0.0 and trade.live_pnl != 0.0:
+                    # Use last known live P&L as exit price hint
                     pnl = trade.live_pnl
-                
+                elif exit_price > 0 and pnl == 0.0:
+                    # Have exit price but no deal P&L — compute it
+                    if trade.direction == "BUY":
+                        pnl = round((exit_price - trade.entry) * trade.initial_volume * cfg.PIP_VALUE_PER_LOT, 2)
+                    else:
+                        pnl = round((trade.entry - exit_price) * trade.initial_volume * cfg.PIP_VALUE_PER_LOT, 2)
+
+                # Determine close reason — preserve _close_early reason if set
+                close_reason = self._pending_close_reasons.pop(ticket, "MT5_CLOSED")
+
                 # Update database with final PnL + exit price
                 self.order_db.close_order(
-                    ticket, pnl, "MT5_CLOSED",
+                    ticket, pnl, close_reason,
                     swap=close_data["swap"], commission=close_data["commission"],
-                    exit_price=close_data["exit_price"]
+                    exit_price=exit_price
                 )
                 
                 closed.append((ticket, pnl, pnl > 0))
@@ -213,9 +233,9 @@ class TradeManager:
         age = time.time() - t.fill_ts
         price_move = pnl / (t.initial_volume * cfg.PIP_VALUE_PER_LOT) if t.initial_volume > 0 else 0
 
-        # Early failure: adverse move > $0.20 in first 15 seconds
+        # Early failure: adverse move in first 15 seconds (tier1 only)
         early_fail = getattr(t, 'early_fail', 0) or 0.20
-        if age < 15 and price_move < -early_fail:
+        if cfg.TIER1_ENABLED and age < 15 and price_move < -early_fail:
             self._close_early(t, f"Early fail: ${price_move:.2f} in {age:.0f}s")
             return
 
@@ -263,10 +283,13 @@ class TradeManager:
         if pnl >= 1.0 * r and not t.partial_closed:
             t.partial_closed = True
             close_vol = round(t.initial_volume * 0.5, 2)
-            # Only partial close if remaining volume stays above min lot
-            # Otherwise skip partial and just tighten SL to lock profit
-            if close_vol >= cfg.MIN_LOT and (t.volume - close_vol) >= cfg.MIN_LOT:
-                self._partial_close(t, close_vol, f"Partial 50% at 1R")
+            if cfg.TIER1_ENABLED:
+                # Tier 1: skip partial close at min lot, tighten SL instead
+                if close_vol >= cfg.MIN_LOT and (t.volume - close_vol) >= cfg.MIN_LOT:
+                    self._partial_close(t, close_vol, f"Partial 50% at 1R")
+            else:
+                if close_vol >= cfg.MIN_LOT:
+                    self._partial_close(t, close_vol, f"Partial 50% at 1R")
             # Set runner TP at 2R + tighten SL to lock 0.5R
             rr = 2.0
             if t.direction == "BUY":
@@ -324,11 +347,11 @@ class TradeManager:
         if not res.get("success"):
             self._closing_tickets.discard(t.ticket)
         else:
-            # Mark in database with close reason + exit price
-            self.order_db.close_order(
-                t.ticket, t.live_pnl, reason,
-                exit_price=res.get("close_price", 0)
-            )
+            # Store reason + exit price; manage_all will write authoritative P&L from MT5 deals
+            self._pending_close_reasons[t.ticket] = reason
+            close_price = res.get("close_price", 0)
+            if close_price:
+                self.order_db.update_exit_price(t.ticket, close_price)
 
     def _log_adopt(self, ticket: int):
         try:
