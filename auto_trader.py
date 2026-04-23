@@ -318,6 +318,14 @@ class AutoTrader:
                 self._last_sig_log = now
                 reason = sig.get("reason", "unknown")[:120]
                 score = sig.get("score", 0)
+                # Log arbitration context if present
+                arb = sig.get("_arb_log")
+                if arb:
+                    self.log("ARB", f"[{strat_name}] setup:{arb.get('setup_dir','?')} "
+                             f"bias:{arb.get('bias_dir','?')} Q:{arb.get('quality',0):.0%} "
+                             f"T:{arb.get('threshold',0):.0%} "
+                             f"{'CTR' if arb.get('counter') else 'WTR'} "
+                             f"PB:{arb.get('pullback',False)} | {reason[:80]}")
                 # In AUTO mode, show all strategy results
                 auto_results = sig.get("_auto_results", {})
                 if auto_results:

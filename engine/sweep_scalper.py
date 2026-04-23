@@ -19,6 +19,7 @@ from .indicators import ema, atr
 from .tick_processor import TickProcessor
 import config as cfg
 
+_QUALITY_THRESHOLD = 0.65
 _SPREAD_MAX = 0.25
 _ATR_MIN = 0.30
 _ATR_MAX = 5.00
@@ -231,6 +232,41 @@ class SweepScalper(BaseStrategy):
             self._traded_levels[level_key] = time.time()
         self._session_trades += 1
 
+        # === Quality score ===
+        q_score = 0.0
+        q_score += 0.25  # sweep detected
+        q_score += min(0.20, body_ratio * 0.25)  # displacement
+        q_score += min(0.15, (dir_pct - 0.5) * 0.5) if dir_pct > 0.5 else 0  # tick direction
+        q_score += min(0.10, abs(ema20_slope) * 0.5)  # M1 EMA momentum
+        if m5_bias == direction:
+            q_score += 0.15  # M5 alignment
+        if ts.get("velocity", 0) > 10:
+            q_score += 0.10  # tick velocity
+        q_score = round(min(1.0, q_score), 3)
+
+        if q_score < _QUALITY_THRESHOLD:
+            return _no(f"Quality {q_score:.0%} < {_QUALITY_THRESHOLD:.0%}")
+
+        # === LTF pullback blocker ===
+        pullback_against = 0
+        if m5_bias and m5_bias != direction:
+            pullback_against += 1
+        if m1 is not None and len(m1) >= 5:
+            c1 = m1["close"].values.astype(float)
+            o1 = m1["open"].values.astype(float)
+            bearish_seq = sum(1 for i in range(-3, 0) if c1[i] < o1[i])
+            bullish_seq = sum(1 for i in range(-3, 0) if c1[i] > o1[i])
+            if direction == "LONG" and bearish_seq >= 3:
+                pullback_against += 1
+            elif direction == "SHORT" and bullish_seq >= 3:
+                pullback_against += 1
+        if dir_pct < 0.40 and direction == "LONG":
+            pullback_against += 1
+        elif dir_pct > 0.60 and direction == "SHORT":
+            pullback_against += 1
+        if pullback_against >= 2:
+            return _no(f"Pullback active against {direction} (signals:{pullback_against})")
+
         reasons = [
             f"Sweep {direction} @ {sweep_level:.2f}",
             f"Body {body_ratio:.0%}",
@@ -239,6 +275,7 @@ class SweepScalper(BaseStrategy):
             f"ATR {atr_val:.3f}",
             f"Spread {spread_mean:.3f}",
             f"SL:{sl_dist:.2f} TP:{tp_dist:.2f}",
+            f"[Q:{q_score:.0%}]",
         ]
 
         return {
