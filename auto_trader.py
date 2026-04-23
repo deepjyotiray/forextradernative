@@ -479,6 +479,70 @@ class AutoTrader:
         self.log("STATUS", f"[{self.strat_mgr.active_name}] {s} | {p:.2f} | {r} | Bias:{b} | "
                  f"Open:{self.trades.open_count} | Daily:${self.trades.order_db.get_today_stats().get('total_pnl', 0) if self.trades else 0:+.2f}")
 
+    def _get_xgb_live_prediction(self) -> Dict:
+        """Get live XGBoost prediction for current market conditions."""
+        if not xgb_model.is_trained or not self._last_tick:
+            return {"available": False, "reason": "Model not trained or no tick data"}
+        
+        try:
+            # Create a mock signal for prediction
+            mock_signal = {
+                "signal": "SELL",  # Default direction for prediction
+                "sl_distance": 0.5,
+                "volume": 0.01
+            }
+            
+            # Get prediction for SELL signal
+            sell_prob = xgb_model.predict_win_prob(
+                {**mock_signal, "signal": "SELL"}, 
+                self._indicators, 
+                self._regime, 
+                self._bias, 
+                self._last_tick
+            )
+            
+            # Get prediction for BUY signal
+            buy_prob = xgb_model.predict_win_prob(
+                {**mock_signal, "signal": "BUY"}, 
+                self._indicators, 
+                self._regime, 
+                self._bias, 
+                self._last_tick
+            )
+            
+            # Determine market sentiment
+            if sell_prob > 0.6 or buy_prob > 0.6:
+                sentiment = "FAVORABLE"
+                sentiment_color = "green"
+            elif sell_prob < 0.4 and buy_prob < 0.4:
+                sentiment = "UNFAVORABLE"
+                sentiment_color = "red"
+            else:
+                sentiment = "NEUTRAL"
+                sentiment_color = "yellow"
+            
+            return {
+                "available": True,
+                "buy_probability": round(buy_prob, 3),
+                "sell_probability": round(sell_prob, 3),
+                "sentiment": sentiment,
+                "sentiment_color": sentiment_color,
+                "model_confidence": "HIGH" if abs(buy_prob - sell_prob) > 0.2 else "LOW",
+                "features_used": {
+                    "session": get_session(),
+                    "atr": self._indicators.get("atr", 0),
+                    "atr_ratio": self._indicators.get("atr_ratio", 1),
+                    "rsi": self._indicators.get("rsi", 50),
+                    "ema_slope": self._indicators.get("ema9_slope", 0),
+                    "body_ratio": self._indicators.get("body_ratio", 0),
+                    "spread": self._last_tick.get("spread", 0),
+                    "regime": self._regime.get("state", ""),
+                    "bias_conf": self._bias.get("confidence", 0)
+                }
+            }
+        except Exception as e:
+            return {"available": False, "reason": f"Prediction error: {str(e)}"}
+
     def get_full_status(self) -> Dict:
         # Daily PNL from DB (single source of truth, IST-based)
         db_today = self.trades.order_db.get_today_stats() if self.trades else {}
@@ -584,6 +648,7 @@ class AutoTrader:
             "mt5_floating_pnl": self.bridge.get_floating_pnl() if self._mt5_connected else {},
             "closed_history": closed_for_dash,
             "xgb": xgb_model.get_feature_importance(),
+            "xgb_live_prediction": self._get_xgb_live_prediction(),
             "performance": {
                 "total": len(pnls),
                 "wins": len(wins),

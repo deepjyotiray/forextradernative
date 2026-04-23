@@ -152,8 +152,9 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <div class="card"><h3>Correlation (DXY / Yields)</h3><div id="corrCard">-</div></div>
 </div>
 
-<div class="grid g2">
+<div class="grid g3">
   <div class="card"><h3>Indicators (M1)</h3><div class="ind-grid" id="indGrid">-</div></div>
+  <div class="card"><h3>XGBoost Analysis</h3><div id="xgbCard">-</div></div>
   <div class="card"><h3>Zones</h3><div id="zonesCard" style="max-height:180px;overflow-y:auto">-</div></div>
 </div>
 
@@ -308,6 +309,47 @@ function render(d){
     {l:'Gap',v:ind.ema_gap,f:3},
   ];
   if(!hasSelectionIn($('indGrid')))$('indGrid').innerHTML=ii.map(i=>`<div class="ind-item"><div class="ind-val ${i.c||''}">${i.v!=null?Number(i.v).toFixed(i.f):'-'}</div><div class="ind-label">${i.l}</div></div>`).join('');
+
+  // XGBoost Analysis
+  const xgb=d.xgb||{};
+  const xgbLive=d.xgb_live_prediction||{};
+  if(!hasSelectionIn($('xgbCard'))){
+    if(!xgb.trained){
+      $('xgbCard').innerHTML='<div style="color:var(--dim);text-align:center;padding:20px">Model not trained<br><span style="font-size:10px">Need 15+ trades with features</span></div>';
+    }else{
+      const features=xgb.features||[];
+      const topFeatures=features.slice(0,4);
+      let xh=`<div style="font-size:14px;font-weight:700;margin-bottom:6px;color:var(--green)">✓ Model Trained</div>`;
+      xh+=`<div class="row"><span class="label">Training Data</span><span>${xgb.trades||0} trades</span></div>`;
+      
+      // Live Predictions
+      if(xgbLive.available){
+        const buyProb=Math.round(xgbLive.buy_probability*100);
+        const sellProb=Math.round(xgbLive.sell_probability*100);
+        const sentColor=xgbLive.sentiment_color==='green'?'green':xgbLive.sentiment_color==='red'?'red':'yellow';
+        xh+=`<div style="margin-top:8px;padding:6px;background:rgba(255,255,255,.03);border-radius:4px">`;
+        xh+=`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:var(--cyan)">LIVE PREDICTIONS:</div>`;
+        xh+=`<div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="font-size:10px">BUY Win Rate:</span><span style="font-weight:600;color:${buyProb>60?'var(--green)':buyProb<40?'var(--red)':'var(--yellow)'}">${buyProb}%</span></div>`;
+        xh+=`<div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="font-size:10px">SELL Win Rate:</span><span style="font-weight:600;color:${sellProb>60?'var(--green)':sellProb<40?'var(--red)':'var(--yellow)'}">${sellProb}%</span></div>`;
+        xh+=`<div style="display:flex;justify-content:space-between"><span style="font-size:10px">Market Sentiment:</span><span style="font-weight:600;color:var(--${sentColor})">${xgbLive.sentiment}</span></div>`;
+        xh+=`</div>`;
+      }else{
+        xh+=`<div style="margin-top:8px;padding:6px;background:rgba(255,0,0,.1);border-radius:4px;font-size:10px;color:var(--red)">Live predictions unavailable: ${xgbLive.reason||'Unknown error'}</div>`;
+      }
+      
+      // Top Features
+      if(topFeatures.length>0){
+        xh+=`<div style="margin-top:8px;font-size:10px;color:var(--dim);margin-bottom:4px">TOP FEATURES:</div>`;
+        topFeatures.forEach(f=>{
+          const pct=Math.round(f.importance*100);
+          const barColor=pct>15?'var(--green)':pct>10?'var(--yellow)':'var(--dim)';
+          xh+=`<div style="margin-bottom:2px"><div style="display:flex;justify-content:space-between;font-size:9px"><span>${f.name}</span><span>${pct}%</span></div><div style="height:2px;background:var(--border);border-radius:1px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${barColor};border-radius:1px"></div></div></div>`;
+        });
+      }
+      
+      $('xgbCard').innerHTML=xh;
+    }
+  }
 
   // Zones
   const sup=z.support||[],res=z.resistance||[];
