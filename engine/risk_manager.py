@@ -35,9 +35,9 @@ class RiskManager:
         self._daily_pnl = today_pnl.get("pnl", 0.0)
         self._daily_trades = today_pnl.get("trades", 0)
         # Compute trailing consecutive losses from actual trade sequence
-        # But don't overwrite if we're in an active pause (prevents reseed bypass)
-        if time.time() < self._loss_streak_pause_until:
-            pass  # keep current streak + pause timer
+        # Skip if pause is active OR was already served (streak was reset to 0)
+        if self._loss_streak_pause_until > 0:
+            pass  # pause active or already served this day — don't restore streak
         elif closed_trades:
             streak = 0
             for t in reversed(closed_trades):
@@ -142,6 +142,7 @@ class RiskManager:
             return False, f"Loss streak pause ({remaining:.0f}s remaining)"
         if self._consecutive_losses >= cfg.MAX_CONSECUTIVE_LOSSES:
             self._loss_streak_pause_until = now + cfg.LOSS_STREAK_PAUSE
+            self._consecutive_losses = 0  # reset so reseed doesn't re-trigger after pause
             return False, f"Loss streak pause ({cfg.LOSS_STREAK_PAUSE}s)"
 
         if now - self._last_trade_time < cfg.MIN_TRADE_COOLDOWN:
