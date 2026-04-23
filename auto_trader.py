@@ -732,6 +732,9 @@ class AutoTrader:
                         cfg.DAILY_TARGET_ENABLED = bool(body['DAILY_TARGET_ENABLED'])
                         updated['DAILY_TARGET_ENABLED'] = cfg.DAILY_TARGET_ENABLED
                     if updated:
+                        if any(k in updated for k in ('LOSS_STREAK_PAUSE', 'MAX_CONSECUTIVE_LOSSES')):
+                            trader.risk._loss_streak_pause_until = 0.0
+                            trader.risk._consecutive_losses = 0
                         trader.log("API", f"Config updated: {updated}")
                     s._j({"updated":updated})
                 elif p == "/shutdown":
