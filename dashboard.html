@@ -206,6 +206,23 @@ function hasSelectionIn(el){const s=window.getSelection();return s&&s.rangeCount
 let _state={};
 let _ws=null;
 let _wsRetry=0;
+let _renderQueued=false;
+let _pendingFullRender=false;
+const _htmlCache=new WeakMap();
+function setHTML(el,html){if(!el||hasSelectionIn(el)||_htmlCache.get(el)===html)return;el.innerHTML=html;_htmlCache.set(el,html);}
+function setText(el,text){if(el&&el.textContent!==String(text))el.textContent=text;}
+function scheduleRender(patch,opts={}){
+  Object.assign(_state,patch||{});
+  _pendingFullRender=_pendingFullRender||!!opts.full;
+  if(_renderQueued)return;
+  _renderQueued=true;
+  requestAnimationFrame(()=>{
+    _renderQueued=false;
+    const full=_pendingFullRender;
+    _pendingFullRender=false;
+    render(_state,{full,realtime:!full});
+  });
+}
 
 function connectWS(){
   const proto=location.protocol==='https:'?'wss:':'ws:';
@@ -217,8 +234,7 @@ function connectWS(){
   _ws.onmessage=(ev)=>{
     try{
       const d=JSON.parse(ev.data);
-      Object.assign(_state,d);
-      render(_state);
+      scheduleRender(d,{realtime:true});
       $('pulse').className='pulse pulse-on';$('conn').textContent='WS Connected';
     }catch(e){}
   };
@@ -236,8 +252,7 @@ connectWS();
 async function fetchFull(){
   try{
     const r=await fetch(A+'/status');const d=await r.json();
-    Object.assign(_state,d);
-    render(_state);
+    scheduleRender(d,{full:true});
   }catch(e){}
 }
 async function post(p){try{await fetch(A+p,{method:'POST'});setTimeout(fetchFull,300);}catch(e){alert('Failed');}}
@@ -246,10 +261,10 @@ function pc(v){return v>=0?'pnl-pos':'pnl-neg'}
 function ps(v){return(v>=0?'+':'')+v.toFixed(2)}
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 function initAnalyticsLinks(){
-  $('analyticsBaseLabel').textContent=ANALYTICS_BASE;
-  $('analyticsLinks').innerHTML=ANALYTICS_LINKS.map(link=>
+  setText($('analyticsBaseLabel'),ANALYTICS_BASE);
+  setHTML($('analyticsLinks'),ANALYTICS_LINKS.map(link=>
     `<a class="btn btn-link" href="${link.href}" target="_blank" rel="noopener" title="${esc(link.title)}">${esc(link.label)}</a>`
-  ).join('');
+  ).join(''));
 }
 function toIST(utcStr){
   if(!utcStr)return'-';
@@ -262,7 +277,8 @@ function toIST(utcStr){
   }catch(e){return'-';}
 }
 
-function render(d){
+function render(d,opts={}){
+  const full=opts.full!==false;
   const en=d.enabled,tk=d.tick||{},a=d.account||{},rk=d.risk||{},rg=d.regime||{},bi=d.bias||{},co=d.correlation||{},ca=d.calendar||{},ind=d.indicators||{},z=d.zones||{},tr=d.trades||{},st=d.stats||{};
   const blockers=d.live_blockers||{};
   const price=tk.bid||0;
@@ -270,21 +286,21 @@ function render(d){
   // Trading status + symbol & strategy buttons
   const mt5=d.mt5_connected!==false;
   const mt5Badge=mt5?'<span class="badge b-on">MT5</span>':'<span class="badge b-off">MT5 DISCONNECTED</span>';
-  $('tradingStatus').innerHTML=(en?'<span class="green">TRADING ACTIVE</span>':'<span class="red">TRADING OFF</span>')+' '+mt5Badge;
+  setHTML($('tradingStatus'),(en?'<span class="green">TRADING ACTIVE</span>':'<span class="red">TRADING OFF</span>')+' '+mt5Badge);
   
   // Symbol buttons
   const currentSymbol=d.symbol||'XAUUSD';
-  $('appTitle').innerHTML=`&#9889; ${currentSymbol} Auto Trader`;
+  setHTML($('appTitle'),`&#9889; ${currentSymbol} Auto Trader`);
   const availableSymbols=d.available_symbols||['XAUUSD'];
-  $('symbolBtns').innerHTML=availableSymbols.map(s=>`<button class="btn" style="padding:4px 12px;font-size:11px;font-weight:600;background:${s===currentSymbol?'var(--blue)':'#1e293b'};color:${s===currentSymbol?'#fff':'#94a3b8'};border:1px solid ${s===currentSymbol?'var(--blue)':'var(--border)'}" onclick="post('/symbol/${s}')">${s}</button>`).join('');
+  if(full)setHTML($('symbolBtns'),availableSymbols.map(s=>`<button class="btn" style="padding:4px 12px;font-size:11px;font-weight:600;background:${s===currentSymbol?'var(--blue)':'#1e293b'};color:${s===currentSymbol?'#fff':'#94a3b8'};border:1px solid ${s===currentSymbol?'var(--blue)':'var(--border)'}" onclick="post('/symbol/${s}')">${s}</button>`).join(''));
   
   // Strategy buttons
   const strats=d.strategies||{};
   const avail=strats.available||[];
   const active=strats.active||d.strategy||'';
   const stratDesc={'AUTO':'Best of all strategies | auto-selects highest confidence','SMC_CONFLUENCE':'Swing | MTF bias + zones + sweeps | RR 1.5+','SWEEP_SCALPER':'Scalp | Liquidity sweeps | $3-$6 | London/NY open'};
-  $('stratBtns').innerHTML=avail.map(s=>`<button class="btn" style="padding:4px 12px;font-size:11px;font-weight:600;background:${s===active?'var(--purple)':'#1e293b'};color:${s===active?'#fff':'#94a3b8'};border:1px solid ${s===active?'var(--purple)':'var(--border)'}" onclick="post('/strategy/${s}')">${s.replace('_',' ')}</button>`).join('');
-  $('stratInfo').textContent=stratDesc[active]||'';
+  if(full)setHTML($('stratBtns'),avail.map(s=>`<button class="btn" style="padding:4px 12px;font-size:11px;font-weight:600;background:${s===active?'var(--purple)':'#1e293b'};color:${s===active?'#fff':'#94a3b8'};border:1px solid ${s===active?'var(--purple)':'var(--border)'}" onclick="post('/strategy/${s}')">${s.replace('_',' ')}</button>`).join(''));
+  setText($('stratInfo'),stratDesc[active]||'');
   // Tier 1 toggle sync
   const t1=d.tier1_enabled!==false;
   const t1cb=$('tier1Toggle');if(t1cb&&t1cb!==document.activeElement)t1cb.checked=t1;
@@ -297,7 +313,7 @@ function render(d){
   // Price card
   const regState=rg.state||'?';
   const regCol=regState==='TRENDING'?'green':regState==='RANGING'?'yellow':regState==='EXPANSION'?'cyan':'red';
-  if(!hasSelectionIn($('priceCard')))$('priceCard').innerHTML=`
+  setHTML($('priceCard'),`
     <div class="big" style="margin-bottom:4px">${price?price.toFixed(2):'-'}</div>
     <div class="row"><span class="label">Spread</span><span>${tk.spread!=null?tk.spread.toFixed(2):'-'}</span></div>
     <div class="row"><span class="label">Session</span><span class="badge b-ses">${d.session||'-'}</span></div>
@@ -306,52 +322,52 @@ function render(d){
     <div class="row"><span class="label">Symbol</span><span class="purple" style="font-weight:600">${currentSymbol||'-'}</span></div>
     <div class="row"><span class="label">Strategy</span><span class="purple" style="font-weight:600">${d.strategy||'-'}</span></div>
     <div class="row"><span class="label">Cycles</span><span>${st.cycles||0}</span></div>
-  `;
+  `);
 
   // Regime card
-  if(!hasSelectionIn($('regimeCard')))$('regimeCard').innerHTML=`
+  if(full)setHTML($('regimeCard'),`
     <div style="font-size:18px;font-weight:700;margin-bottom:4px" class="${regCol}">${regState}</div>
     <div class="row"><span class="label">Direction</span><span class="${rg.direction==='LONG'?'green':rg.direction==='SHORT'?'red':'dim'}">${rg.direction||'NEUTRAL'}</span></div>
     <div class="row"><span class="label">ATR Ratio</span><span class="${(rg.atr_ratio||1)>2?'red':(rg.atr_ratio||1)>1.3?'yellow':'green'}">${(rg.atr_ratio||0).toFixed(2)}x</span></div>
     <div class="row"><span class="label">H4 Slope</span><span>${(rg.h4_slope||0).toFixed(3)}</span></div>
     <div class="row"><span class="label">Trade OK</span>${rg.trade_allowed?'<span class="green">YES</span>':'<span class="red">NO</span>'}</div>
     <div style="font-size:10px;color:var(--dim);margin-top:3px">${(rg.reasons||[]).join(' | ')}</div>
-  `;
+  `);
 
   // Bias card
   const biDir=bi.direction||'NEUTRAL';
   const biCol=biDir==='LONG'?'green':biDir==='SHORT'?'red':'dim';
   const biArrow=biDir==='LONG'?'&#9650;':biDir==='SHORT'?'&#9660;':'&#9644;';
-  if(!hasSelectionIn($('biasCard')))$('biasCard').innerHTML=`
+  if(full)setHTML($('biasCard'),`
     <div class="bias-arrow ${biCol}">${biArrow} ${biDir} <span style="font-size:14px">${((bi.confidence||0)*100).toFixed(0)}%</span></div>
     <div class="row"><span class="label">H4 Bias</span><span>${bi.h4_bias||'-'}</span></div>
     <div class="row"><span class="label">H1 Structure</span><span>${(bi.h1_structure||{}).pattern||'-'}</span></div>
     <div class="row"><span class="label">H1 BOS</span>${(bi.h1_structure||{}).bos?'<span class="green">YES '+((bi.h1_structure||{}).bos_direction||'')+'</span>':'<span class="dim">No</span>'}</div>
     <div class="row"><span class="label">M15 Pullback</span>${(bi.m15_pullback||{}).active?'<span class="cyan">'+((bi.m15_pullback||{}).direction||'')+'</span>':'<span class="dim">No</span>'}</div>
     <div style="font-size:10px;color:var(--dim);margin-top:3px">${(bi.reasons||[]).join(' | ')}</div>
-  `;
+  `);
 
   // Calendar card
   const calBlocked=ca.blocked;
   const nextEv=ca.next_event;
-  if(!hasSelectionIn($('calCard')))$('calCard').innerHTML=`
+  if(full)setHTML($('calCard'),`
     <div style="font-size:16px;font-weight:700;margin-bottom:4px" class="${calBlocked?'red':'green'}">${calBlocked?'&#9888; BLOCKED':'&#10003; CLEAR'}</div>
     ${calBlocked?'<div class="row"><span class="label">Reason</span><span class="yellow" style="font-size:11px">'+(ca.reason||'')+'</span></div>':''}
     ${nextEv?'<div class="row"><span class="label">Next Event</span><span style="font-size:11px">'+(nextEv.title||'-')+'</span></div>':''}
     ${ca.next_in_min?'<div class="row"><span class="label">In</span><span>'+ca.next_in_min+' min</span></div>':''}
     <div class="row"><span class="label">Events Today</span><span>${ca.events_today||0}</span></div>
-  `;
+  `);
 
   // Account
   const bal=a.balance||0,eq=a.equity||0,dd=bal>0?((bal-eq)/bal*100):0;
   const fp=d.mt5_floating_pnl||{};
-  if(!hasSelectionIn($('acctCard')))$('acctCard').innerHTML=`
+  setHTML($('acctCard'),`
     <div class="big" style="margin-bottom:4px">$${bal.toFixed(2)}</div>
     <div class="row"><span class="label">Equity</span><span class="${pc(eq-bal)}">$${eq.toFixed(2)}</span></div>
     <div class="row"><span class="label">Floating</span><span class="${pc(fp.total||0)}">${ps(fp.total||0)} (${fp.count||0} pos)</span></div>
     <div class="row"><span class="label">Drawdown</span><span class="${dd>3?'red':dd>1?'yellow':'green'}">${dd.toFixed(1)}%</span></div>
     <div class="row"><span class="label">Leverage</span><span>1:${a.leverage||'-'}</span></div>
-  `;
+  `);
 
   // Current blockers
   const latestByStrategy=blockers.latest_by_strategy||{};
@@ -368,7 +384,7 @@ function render(d){
     <div style="font-size:11px;color:var(--dim);margin:8px 0 6px">Most frequent recent blockers</div>
     ${topRows||'<div class="row"><span class="label">None</span><span>-</span></div>'}
   `:`<div class="row"><span class="label">Status</span><span>No blockers logged yet</span></div>`;
-  if(!hasSelectionIn($('blockersCard')))$('blockersCard').innerHTML=blockerHtml;
+  if(full)setHTML($('blockersCard'),blockerHtml);
 
   // Daily
   const tgt=d.daily_target||30;
@@ -379,7 +395,7 @@ function render(d){
   const dt=mt5pnl.trades||rk.trades||0;
   const pnlSrc=mt5pnl.source||'tracker';
   const pct=tgt>0?Math.min(100,Math.max(-100,dp/tgt*100)):0;
-  if(!hasSelectionIn($('dailyCard')))$('dailyCard').innerHTML=`
+  setHTML($('dailyCard'),`
     <div class="big ${pc(dp)}" style="margin-bottom:3px">$${ps(dp)}</div>
     <div class="progress"><div class="progress-fill" style="width:${Math.abs(pct)}%;background:${dp>=0?'var(--green)':'var(--red)'}"></div></div>
     <div style="font-size:10px;color:var(--dim);margin-top:3px">${pct.toFixed(0)}% of $${tgt} ${tgtEnabled?'':'<span class="yellow">(DISABLED)</span>'}</div>
@@ -390,18 +406,18 @@ function render(d){
     <div class="row"><span class="label">Risk Mult</span><span>${(rk.risk_multiplier||1).toFixed(2)}x</span></div>
     ${rk.target_hit?'<div class="row"><span class="label">Target</span><span class="green">HIT</span></div>':''}
     ${rk.loss_limit_hit?'<div class="row"><span class="label">Loss Limit</span><span class="red">HIT</span></div>':''}
-  `;
+  `);
 
   // Correlation
   const dxy=co.dxy||{},y10=co.us10y||{};
   const cBias=co.bias||'NEUTRAL';
   const cCol=cBias==='LONG'?'green':cBias==='SHORT'?'red':'dim';
-  if(!hasSelectionIn($('corrCard')))$('corrCard').innerHTML=`
+  if(full)setHTML($('corrCard'),`
     <div style="font-size:16px;font-weight:700;margin-bottom:4px" class="${cCol}">Gold bias: ${cBias} ${((co.confidence||0)*100).toFixed(0)}%</div>
     <div class="row"><span class="label">DXY (${dxy.symbol||'-'})</span><span class="${dxy.trend==='UP'?'green':dxy.trend==='DOWN'?'red':'dim'}">${dxy.available?dxy.price+' '+dxy.trend:'N/A'}</span></div>
     <div class="row"><span class="label">US10Y (${y10.symbol||'-'})</span><span class="${y10.trend==='UP'?'green':y10.trend==='DOWN'?'red':'dim'}">${y10.available?y10.price+' '+y10.trend:'N/A'}</span></div>
     <div style="font-size:10px;color:var(--dim);margin-top:3px">${(co.reasons||[]).join(' | ')||'No correlation data'}</div>
-  `;
+  `);
 
   // Indicators
   const ii=[
@@ -411,14 +427,14 @@ function render(d){
     {l:'Body',v:ind.body_ratio,f:2},{l:'Slope',v:ind.ema9_slope,f:4,c:(ind.ema9_slope||0)>0?'green':'red'},
     {l:'Gap',v:ind.ema_gap,f:3},
   ];
-  if(!hasSelectionIn($('indGrid')))$('indGrid').innerHTML=ii.map(i=>`<div class="ind-item"><div class="ind-val ${i.c||''}">${i.v!=null?Number(i.v).toFixed(i.f):'-'}</div><div class="ind-label">${i.l}</div></div>`).join('');
+  setHTML($('indGrid'),ii.map(i=>`<div class="ind-item"><div class="ind-val ${i.c||''}">${i.v!=null?Number(i.v).toFixed(i.f):'-'}</div><div class="ind-label">${i.l}</div></div>`).join(''));
 
   // XGBoost Analysis
   const xgb=d.xgb||{};
   const xgbLive=d.xgb_live_prediction||{};
-  if(!hasSelectionIn($('xgbCard'))){
+  if(full){
     if(!xgb.trained){
-      $('xgbCard').innerHTML='<div style="color:var(--dim);text-align:center;padding:20px">Model not trained<br><span style="font-size:10px">Need 15+ trades with features</span></div>';
+      setHTML($('xgbCard'),'<div style="color:var(--dim);text-align:center;padding:20px">Model not trained<br><span style="font-size:10px">Need 15+ trades with features</span></div>');
     }else{
       const features=xgb.features||[];
       const topFeatures=features.slice(0,4);
@@ -450,24 +466,26 @@ function render(d){
         });
       }
       
-      $('xgbCard').innerHTML=xh;
+      setHTML($('xgbCard'),xh);
     }
   }
 
   // Zones
-  const sup=z.support||[],res=z.resistance||[];
-  let zh='<table><th>Type</th><th>Low</th><th>High</th><th>Str</th><th>T</th>';
-  res.slice(0,4).reverse().forEach(z=>{const w=Math.round((z.strength||0)*100);zh+=`<tr><td class="red">R</td><td>${z.zone_low}</td><td>${z.zone_high}</td><td><div class="zone-bar zone-r" style="width:${w}%"></div>${w}%</td><td>${z.touches||0}</td></tr>`;});
-  if(price)zh+=`<tr style="background:rgba(255,255,255,.05)"><td colspan="5" style="text-align:center;font-weight:700;color:var(--yellow)">${price.toFixed(2)}</td></tr>`;
-  sup.slice(0,4).forEach(z=>{const w=Math.round((z.strength||0)*100);zh+=`<tr><td class="green">S</td><td>${z.zone_low}</td><td>${z.zone_high}</td><td><div class="zone-bar zone-s" style="width:${w}%"></div>${w}%</td><td>${z.touches||0}</td></tr>`;});
-  zh+='</table>';if(!hasSelectionIn($('zonesCard')))$('zonesCard').innerHTML=zh;
+  if(full){
+    const sup=z.support||[],res=z.resistance||[];
+    let zh='<table><th>Type</th><th>Low</th><th>High</th><th>Str</th><th>T</th>';
+    res.slice(0,4).reverse().forEach(z=>{const w=Math.round((z.strength||0)*100);zh+=`<tr><td class="red">R</td><td>${z.zone_low}</td><td>${z.zone_high}</td><td><div class="zone-bar zone-r" style="width:${w}%"></div>${w}%</td><td>${z.touches||0}</td></tr>`;});
+    if(price)zh+=`<tr style="background:rgba(255,255,255,.05)"><td colspan="5" style="text-align:center;font-weight:700;color:var(--yellow)">${price.toFixed(2)}</td></tr>`;
+    sup.slice(0,4).forEach(z=>{const w=Math.round((z.strength||0)*100);zh+=`<tr><td class="green">S</td><td>${z.zone_low}</td><td>${z.zone_high}</td><td><div class="zone-bar zone-s" style="width:${w}%"></div>${w}%</td><td>${z.touches||0}</td></tr>`;});
+    zh+='</table>';setHTML($('zonesCard'),zh);
+  }
 
   // Open trades — use MT5 positions as source of truth, enrich with trade manager data
   const mt5pos=d.mt5_positions||[];
   const tmTrades=tr.open_trades||[];
   const tmMap={}; tmTrades.forEach(t=>{tmMap[t.ticket]=t;});
   const op=mt5pos.length>0?mt5pos:tmTrades;
-  if(!op.length){if(!hasSelectionIn($('openT')))$('openT').innerHTML='<div style="color:var(--dim);padding:10px;text-align:center">No open trades</div>';}
+  if(!op.length){setHTML($('openT'),'<div style="color:var(--dim);padding:10px;text-align:center">No open trades</div>');}
   else{
   let totalPnl=0;op.forEach(t=>{totalPnl+=(t.net_profit!=null?t.net_profit:(t.live_pnl||0));});
   let h=`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;margin-bottom:6px;background:rgba(255,255,255,.03);border-radius:4px"><span style="font-size:11px;color:var(--dim)">${op.length} position${op.length>1?'s':''}</span><span style="font-size:15px;font-weight:700" class="${pc(totalPnl)}">Floating: ${ps(totalPnl)}</span></div>`;
@@ -483,7 +501,7 @@ function render(d){
   const otime=t.open_time||'';
   const age=tm.fill_ts?Math.round(Date.now()/1000-tm.fill_ts)+'s':'-';
   h+=`<tr><td>${t.ticket}</td><td class="${dir==='BUY'?'green':'red'}" style="font-weight:600">${dir}</td><td>${t.volume}</td><td>${Number(entry).toFixed(2)}</td><td>${sl?Number(sl).toFixed(2):'-'}</td><td>${tp?Number(tp).toFixed(2):'-'}</td><td class="${pc(pnl)}">${ps(pnl)}</td><td class="${pc(peak)}">${ps(peak)}</td><td>${age}</td><td style="font-size:9px"><span class="cyan">U:</span>${otime.includes('T')?otime.split('T')[1]?.substring(0,8):'-'}<br><span class="orange">I:</span>${toIST(otime)}</td></tr>`;});
-  h+='</table>';if(!hasSelectionIn($('openT')))$('openT').innerHTML=h;}
+  h+='</table>';setHTML($('openT'),h);}
 
   // Performance summary from MT5 data
   const perf=d.performance||{};
@@ -498,51 +516,53 @@ function render(d){
   </div>`:'';
 
   // Closed trades — MT5 deal history, grouped by IST date with daily P&L
-  const cl=d.closed_history||[];
-  if(!cl.length){if(!hasSelectionIn($('closedT')))$('closedT').innerHTML=perfHtml+'<div style="color:var(--dim);padding:10px;text-align:center">No closed trades</div>';}
-  else{
-  function parseDate(raw){
-    if(!raw)return null;
-    try{
-      if(raw.includes('T'))return new Date(raw);
-      return new Date(raw.replace(/\./g,'-').replace(' ','T')+'Z');
-    }catch(e){return null;}
-  }
-  function fmtUTC(dt){return dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'UTC'});}
-  function fmtIST(dt){return dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});}
-  function istDateKey(dt){return dt.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});}
-  function istDateLabel(dt){return dt.toLocaleDateString('en',{timeZone:'Asia/Kolkata',year:'numeric',month:'short',day:'numeric',weekday:'short'});}
-  const grouped={};
-  cl.forEach(t=>{
-    const dt=parseDate(t.close_time);
-    const key=dt?istDateKey(dt):'unknown';
-    if(!grouped[key])grouped[key]={date:key,dateLabel:dt?istDateLabel(dt):key,trades:[],pnl:0,wins:0,losses:0};
-    grouped[key].trades.push({...t,_dt:dt});
-    grouped[key].pnl+=t.pnl||0;
-    if(t.won)grouped[key].wins++;else grouped[key].losses++;
-  });
-  const days=Object.values(grouped).sort((a,b)=>b.date.localeCompare(a.date));
-  let h=perfHtml+'<table><th>#</th><th>Dir</th><th>Vol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Date (IST)</th><th>UTC</th><th>IST</th>';
-  days.forEach(day=>{
-    const dp=day.pnl;
-    h+=`<tr style="background:rgba(255,255,255,.04)"><td colspan="6" style="font-weight:700;font-size:11px;padding:5px">${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="2" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td></tr>`;
-    day.trades.forEach(t=>{
-      const p=t.pnl||0;
-      const dt=t._dt;
-      const utcTime=dt?fmtUTC(dt):'-';
-      const istTime=dt?fmtIST(dt):'-';
-      const istDate=dt?istDateKey(dt):'-';
-      h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.volume||'-'}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):'-'}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px;color:var(--dim)">${istDate}</td><td style="font-size:10px" class="cyan">${utcTime}</td><td style="font-size:10px" class="orange">${istTime}</td></tr>`;
+  if(full){
+    const cl=d.closed_history||[];
+    if(!cl.length){setHTML($('closedT'),perfHtml+'<div style="color:var(--dim);padding:10px;text-align:center">No closed trades</div>');}
+    else{
+    function parseDate(raw){
+      if(!raw)return null;
+      try{
+        if(raw.includes('T'))return new Date(raw);
+        return new Date(raw.replace(/\./g,'-').replace(' ','T')+'Z');
+      }catch(e){return null;}
+    }
+    function fmtUTC(dt){return dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'UTC'});}
+    function fmtIST(dt){return dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});}
+    function istDateKey(dt){return dt.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});}
+    function istDateLabel(dt){return dt.toLocaleDateString('en',{timeZone:'Asia/Kolkata',year:'numeric',month:'short',day:'numeric',weekday:'short'});}
+    const grouped={};
+    cl.forEach(t=>{
+      const dt=parseDate(t.close_time);
+      const key=dt?istDateKey(dt):'unknown';
+      if(!grouped[key])grouped[key]={date:key,dateLabel:dt?istDateLabel(dt):key,trades:[],pnl:0,wins:0,losses:0};
+      grouped[key].trades.push({...t,_dt:dt});
+      grouped[key].pnl+=t.pnl||0;
+      if(t.won)grouped[key].wins++;else grouped[key].losses++;
     });
-  });
-  h+='</table>';if(!hasSelectionIn($('closedT')))$('closedT').innerHTML=h;}
+    const days=Object.values(grouped).sort((a,b)=>b.date.localeCompare(a.date));
+    let h=perfHtml+'<table><th>#</th><th>Dir</th><th>Vol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Date (IST)</th><th>UTC</th><th>IST</th>';
+    days.forEach(day=>{
+      const dp=day.pnl;
+      h+=`<tr style="background:rgba(255,255,255,.04)"><td colspan="6" style="font-weight:700;font-size:11px;padding:5px">${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="2" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td></tr>`;
+      day.trades.forEach(t=>{
+        const p=t.pnl||0;
+        const dt=t._dt;
+        const utcTime=dt?fmtUTC(dt):'-';
+        const istTime=dt?fmtIST(dt):'-';
+        const istDate=dt?istDateKey(dt):'-';
+        h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.volume||'-'}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):'-'}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px;color:var(--dim)">${istDate}</td><td style="font-size:10px" class="cyan">${utcTime}</td><td style="font-size:10px" class="orange">${istTime}</td></tr>`;
+      });
+    });
+    h+='</table>';setHTML($('closedT'),h);}
+  }
 
   // Logs
   const logs=d.log||[];
   const lb=$('logBox');
   if(!hasSelectionIn(lb)){
     const atBottom=lb.scrollHeight-lb.scrollTop-lb.clientHeight<30;
-    lb.innerHTML=logs.map(l=>`<div class="log-entry"><span class="log-time"><span class="cyan">${l.time}</span> <span class="orange">${l.time_ist||l.time}</span></span> <span class="log-tag tag-${l.tag}">${l.tag}</span>${esc(l.msg)}</div>`).join('');
+    setHTML(lb,logs.map(l=>`<div class="log-entry"><span class="log-time"><span class="cyan">${l.time}</span> <span class="orange">${l.time_ist||l.time}</span></span> <span class="log-tag tag-${l.tag}">${l.tag}</span>${esc(l.msg)}</div>`).join(''));
     if(atBottom)lb.scrollTop=lb.scrollHeight;
   }
 
@@ -550,8 +570,8 @@ function render(d){
   const rc=d.risk_config||{};
   const cfgLabels={'MAX_POSITIONS':'Max Positions','MAX_RISK_PCT':'Risk %','MAX_DRAWDOWN_PCT':'Max DD %','MAX_LOT':'Max Lot','MIN_LOT':'Min Lot','DAILY_TARGET_DOLLARS':'Daily Target $','DAILY_LOSS_LIMIT_PCT':'Daily Loss %','MAX_CONSECUTIVE_LOSSES':'Max Consec Losses','MIN_TRADE_COOLDOWN':'Trade Cooldown (s)','LOSS_STREAK_PAUSE':'Loss Pause (s)'};
   const cg=$('cfgGrid');
-  if(cg && !cg.dataset.init){cg.dataset.init='1';cg.innerHTML=Object.entries(cfgLabels).map(([k,l])=>`<div class="cfg-item"><label>${l}</label><input id="cfg_${k}" data-key="${k}" type="number" step="any" value="${rc[k]||''}"></div>`).join('');}
-  else if(cg&&cg.dataset.init){Object.keys(cfgLabels).forEach(k=>{const inp=document.getElementById('cfg_'+k);if(inp&&inp!==document.activeElement)inp.value=rc[k]!=null?rc[k]:'';});}
+  if(full&&cg && !cg.dataset.init){cg.dataset.init='1';setHTML(cg,Object.entries(cfgLabels).map(([k,l])=>`<div class="cfg-item"><label>${l}</label><input id="cfg_${k}" data-key="${k}" type="number" step="any" value="${rc[k]||''}"></div>`).join(''));}
+  else if(full&&cg&&cg.dataset.init){Object.keys(cfgLabels).forEach(k=>{const inp=document.getElementById('cfg_'+k);if(inp&&inp!==document.activeElement)inp.value=rc[k]!=null?rc[k]:'';});}
 
   const floatPnl=fp.total||0;
   const floatStr=floatPnl?` | Float ${ps(floatPnl)}`:(price?` | ${price.toFixed(2)}`:'');

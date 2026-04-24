@@ -20,7 +20,7 @@ Default on startup: `AUTO` (configurable via `config.DEFAULT_STRATEGY`).
 | 2 | **Market Regime** | H4, H1, M15 candles + tick snapshot | `regime.trade_allowed == True` | Reject if NEWS_VOLATILITY or ATR ratio > 3.0 |
 | 3 | **MTF Bias** | H4 EMA50/200, H1 structure (HH/HL/LH/LL + BOS), M15 pullback | `bias.direction != "NEUTRAL"` | Reject if no directional bias |
 | 4 | **Tick Chaos** | `tick_processor.is_chaotic()` | velocity ≤ 50 OR spread stable | Reject if chaotic (news-like) |
-| 5 | **Spread Model** | `tick_processor.check_spread_ok(0.30, max_pctl=0.6)` | spread_mean ≤ 0.30, spread_std ≤ 0.08, percentile ≤ 60% | Reject |
+| 5 | **Spread Model** | Strategy spread-quality gate | spread_mean < 0.50, spread_std ≤ 0.05, percentile ≤ 50% | Reject |
 | 6 | **Confluence Score** | See scoring table below | `score >= 0.55` | Reject with score + reasons |
 | 7 | **SL/TP Computation** | ATR, zones, liquidity sweeps, key levels | Valid SL and TP computed, SL distance ≥ 0.50 | Reject |
 | 8 | **Risk:Reward** | `tp_dist / sl_dist` | `RR >= 1.2` | Reject |
@@ -67,7 +67,7 @@ Default on startup: `AUTO` (configurable via `config.DEFAULT_STRATEGY`).
 |---|-------|-----------|----------------|-------------|
 | 1 | **Time Window** | UTC hour | 07-09 (London), 12-13 (Overlap), 13-15 (NY) | Reject outside windows |
 | 2 | **Session Trade Limit** | `_session_trades` | < 5 trades this session | Reject |
-| 3 | **Spread Model** | `tick_processor.check_spread_ok(0.25, max_pctl=0.5)` | spread_mean ≤ 0.25, spread_std ≤ 0.08, percentile ≤ 50% | Reject |
+| 3 | **Spread Model** | Strategy spread-quality gate | spread_mean < 0.50, spread_std ≤ 0.04, percentile ≤ 50% | Reject |
 | 4 | **ATR Filter** | M1 ATR(14) | `0.30 ≤ ATR ≤ 5.00` | Reject if too quiet or too volatile |
 | 5 | **EMA20 Bias** | M1 EMA(20) slope | `abs(slope) >= 0.05` | Reject if flat |
 | 6 | **M5 Bias** | M5 close vs EMA(20) | Must not conflict with sweep direction | Reject if conflicting |

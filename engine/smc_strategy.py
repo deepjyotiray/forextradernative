@@ -23,6 +23,7 @@ import config as cfg
 
 _THRESHOLD_WITH_TREND = 0.65
 _THRESHOLD_COUNTER = 0.70
+_SPREAD_MEAN_MAX = 0.50
 
 
 class SMCStrategy(BaseStrategy):
@@ -494,12 +495,12 @@ class SMCStrategy(BaseStrategy):
         if not tick_snap.get("ready"):
             # Fallback to simple check with anti-starvation
             relaxed_params = anti_starvation.get_relaxed_params()
-            spread_limit = 0.30
+            spread_limit = _SPREAD_MEAN_MAX
             if relaxed_params["active"] and relaxed_params["type"] == "spread_tolerance":
-                spread_limit += relaxed_params["spread_tolerance_bonus"]
+                spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], _SPREAD_MEAN_MAX)
             
-            if spread > spread_limit:
-                return False, f"Spread {spread:.3f} > {spread_limit:.3f}"
+            if spread >= spread_limit:
+                return False, f"Spread {spread:.3f} >= {spread_limit:.3f}"
             return True, "OK"
 
         spread_mean = tick_snap.get("spread_mean", spread)
@@ -508,13 +509,13 @@ class SMCStrategy(BaseStrategy):
 
         # Apply anti-starvation to spread limits
         relaxed_params = anti_starvation.get_relaxed_params()
-        spread_limit = 0.30
+        spread_limit = _SPREAD_MEAN_MAX
         if relaxed_params["active"] and relaxed_params["type"] == "spread_tolerance":
-            spread_limit += relaxed_params["spread_tolerance_bonus"]
+            spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], _SPREAD_MEAN_MAX)
 
         # SMC conditions with relaxation
-        if spread_mean > spread_limit:
-            return False, f"Mean spread {spread_mean:.3f} > {spread_limit:.3f}"
+        if spread_mean >= spread_limit:
+            return False, f"Mean spread {spread_mean:.3f} >= {spread_limit:.3f}"
         if spread_std > 0.05:  # Spike threshold
             return False, f"Spread volatility {spread_std:.3f} > 0.05"
         if spread_pctl > 0.50:

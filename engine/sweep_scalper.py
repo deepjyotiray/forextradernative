@@ -16,7 +16,7 @@ from .strategies.base_strategy import BaseStrategy
 from .tick_processor import TickProcessor
 
 _QUALITY_THRESHOLD = 0.65
-_SPREAD_MAX = 0.25
+_SPREAD_MAX = 0.50
 _ATR_MIN = 0.30
 _ATR_MAX = 5.00
 _BODY_MIN = 0.40
@@ -312,18 +312,18 @@ class SweepScalper(BaseStrategy):
         relaxed_params = anti_starvation.get_relaxed_params()
         spread_limit = _SPREAD_MAX
         if relaxed_params["active"] and relaxed_params["type"] == "spread_tolerance":
-            spread_limit += relaxed_params["spread_tolerance_bonus"]
+            spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], _SPREAD_MAX)
 
         if not tick_snap.get("ready"):
-            if spread > spread_limit:
-                return False, f"Spread {spread:.3f} > {spread_limit:.3f}"
+            if spread >= spread_limit:
+                return False, f"Spread {spread:.3f} >= {spread_limit:.3f}"
             return True, "OK"
 
         spread_mean = tick_snap.get("spread_mean", spread)
         spread_std = tick_snap.get("spread_std", 0)
         spread_pctl = tick_snap.get("spread_pctl", 0.5)
-        if spread_mean > spread_limit:
-            return False, f"Mean spread {spread_mean:.3f} > {spread_limit:.3f}"
+        if spread_mean >= spread_limit:
+            return False, f"Mean spread {spread_mean:.3f} >= {spread_limit:.3f}"
         if spread_std > 0.04:
             return False, f"Spread volatility {spread_std:.3f} > 0.04"
         if spread_pctl > 0.50:

@@ -55,6 +55,21 @@ _PERF_CACHE_TTL = 10.0
 
 router = APIRouter(tags=["trading"])
 
+def _invalidate_status_cache(include_slow: bool = False):
+    """Force the next dashboard/status request and WS tick to reflect control changes."""
+    global _status_cache, _status_cache_time, _ws_latest_cycle
+    global _blockers_cache, _blockers_cache_time, _xgb_cache, _xgb_cache_time, _perf_cache, _perf_cache_time
+    _status_cache = None
+    _status_cache_time = 0.0
+    _ws_latest_cycle = -1
+    if include_slow:
+        _blockers_cache = None
+        _blockers_cache_time = 0.0
+        _xgb_cache = None
+        _xgb_cache_time = 0.0
+        _perf_cache = None
+        _perf_cache_time = 0.0
+
 def convert_numpy_types(obj):
     """Convert numpy types to native Python types for JSON serialization."""
     if isinstance(obj, np.bool_):
@@ -357,6 +372,7 @@ async def start_trading():
     trader = get_auto_trader()
     trader.enabled = True
     trader.log("API", "Trading ENABLED")
+    _invalidate_status_cache()
     return {"enabled": True}
 
 @router.post("/stop")
@@ -365,6 +381,7 @@ async def stop_trading():
     trader = get_auto_trader()
     trader.enabled = False
     trader.log("API", "Trading DISABLED")
+    _invalidate_status_cache()
     return {"enabled": False}
 
 @router.post("/emergency")
@@ -375,6 +392,7 @@ async def emergency_stop():
     if trader.trades:
         trader.trades.close_all()
     trader.log("API", "EMERGENCY STOP")
+    _invalidate_status_cache(include_slow=True)
     return {"enabled": False}
 
 @router.post("/strategy/{strategy_name}")
@@ -384,6 +402,7 @@ async def set_strategy(strategy_name: str):
     name = strategy_name.upper()
     if trader.strat_mgr.set_active(name):
         trader.log("API", f"Strategy -> {name}")
+        _invalidate_status_cache()
         return {"active": name, "available": trader.strat_mgr.available}
     else:
         raise HTTPException(
@@ -427,6 +446,7 @@ async def set_symbol(symbol: str):
             trader.log("API", f"Symbol data refresh failed: {e}")
         
         trader.log("API", f"Symbol -> {symbol} (cache cleared, data refreshed)")
+        _invalidate_status_cache(include_slow=True)
         return {"symbol": symbol, "available": cfg.AVAILABLE_SYMBOLS}
     else:
         raise HTTPException(status_code=500, detail=f"Failed to set {symbol}")
@@ -470,6 +490,7 @@ async def update_config(request: Request):
             trader.risk._loss_streak_pause_until = 0.0
             trader.risk._consecutive_losses = 0
         trader.log("API", f"Config updated: {updated}")
+        _invalidate_status_cache(include_slow=True)
     
     return {"updated": updated}
 
@@ -482,6 +503,7 @@ async def shutdown():
     if trader.trades:
         trader.trades.close_all()
     trader.log("API", "SHUTDOWN")
+    _invalidate_status_cache(include_slow=True)
     
     # Schedule shutdown
     import threading
@@ -499,6 +521,7 @@ async def hot_reload():
     
     # Stop current trading
     trader.enabled = False
+    _invalidate_status_cache()
     
     # Close any open positions (optional - comment out if you want to keep positions)
     # if trader.trades:
@@ -556,6 +579,7 @@ async def hot_reload():
             trader._recompute_all()
             
             trader.log("API", "HOT RELOAD completed - engine restarted")
+            _invalidate_status_cache(include_slow=True)
             
         except Exception as e:
             trader.log("ERROR", f"Hot reload failed: {e}")
