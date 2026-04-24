@@ -10,3 +10,5 @@ cloudflared.exe
 *.json
 !xgb_model.json
 !xgb_model.json.meta
+decision_log.jsonl
+trade_attribution.jsonl
