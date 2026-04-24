@@ -137,9 +137,9 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 </div>
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px;padding:6px 10px;background:var(--card);border:1px solid var(--border);border-radius:8px">
   <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)">Symbol:</span>
-  <div id="symbolBtns" style="display:flex;gap:6px"></div>
+  <div id="symbolBtns" style="display:flex;gap:6px"><span style="font-size:11px;color:var(--dim)">Initializing symbols...</span></div>
   <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-left:12px">Strategy:</span>
-  <div id="stratBtns" style="display:flex;gap:6px"></div>
+  <div id="stratBtns" style="display:flex;gap:6px"><span style="font-size:11px;color:var(--dim)">Initializing strategies...</span></div>
   <div style="flex:1"></div>
   <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:var(--dim)" title="Toggle Tier 1 upgrades (spread model, dynamic SL/TP, first-sweep-only, early failure exit)">
     <input type="checkbox" id="tier1Toggle" onchange="toggleTier1(this.checked)" style="cursor:pointer">
@@ -156,7 +156,14 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 
 <div class="card" style="margin-bottom:8px">
   <h3>Risk Config <span id="cfgStatus" style="font-size:10px;color:var(--green);margin-left:8px"></span></h3>
-  <div class="cfg-grid" id="cfgGrid"></div>
+  <div class="cfg-grid" id="cfgGrid"><span style="font-size:11px;color:var(--dim)">Initializing risk config...</span></div>
+  <div style="margin-top:8px;text-align:right"><button class="btn-save" onclick="saveConfig()">Save</button></div>
+</div>
+
+<div class="card" style="margin-bottom:8px">
+  <h3>Gate Overrides & Spread Config <span id="gateCfgStatus" style="font-size:10px;color:var(--green);margin-left:8px"></span></h3>
+  <div class="cfg-grid" id="gateToggleGrid"><span style="font-size:11px;color:var(--dim)">Initializing gate overrides...</span></div>
+  <div class="cfg-grid" id="gateCfgGrid" style="margin-top:8px"><span style="font-size:11px;color:var(--dim)">Initializing gate thresholds...</span></div>
   <div style="margin-top:8px;text-align:right"><button class="btn-save" onclick="saveConfig()">Save</button></div>
 </div>
 
@@ -208,9 +215,23 @@ let _ws=null;
 let _wsRetry=0;
 let _renderQueued=false;
 let _pendingFullRender=false;
+let _configVersion=0;
+let _configFlight=false;
 const _htmlCache=new WeakMap();
 function setHTML(el,html){if(!el||hasSelectionIn(el)||_htmlCache.get(el)===html)return;el.innerHTML=html;_htmlCache.set(el,html);}
 function setText(el,text){if(el&&el.textContent!==String(text))el.textContent=text;}
+function updateTabTitle(d){
+  const tk=d.tick||{};
+  const fp=d.mt5_floating_pnl||{};
+  const mt5=d.mt5_today_pnl||{};
+  const rk=d.risk||{};
+  const currentSymbol=d.symbol||'XAUUSD';
+  const dailyPnl=mt5.pnl!=null?mt5.pnl:(rk.pnl||0);
+  const floatPnl=fp.total||0;
+  const price=tk.bid||0;
+  const floatStr=floatPnl?` | Float ${ps(floatPnl)}`:(price?` | ${price.toFixed(2)}`:'');
+  document.title=`${ps(dailyPnl)}${floatStr} | ${currentSymbol}`;
+}
 function scheduleRender(patch,opts={}){
   Object.assign(_state,patch||{});
   _pendingFullRender=_pendingFullRender||!!opts.full;
@@ -234,6 +255,9 @@ function connectWS(){
   _ws.onmessage=(ev)=>{
     try{
       const d=JSON.parse(ev.data);
+      Object.assign(_state,d||{});
+      updateTabTitle(_state);
+      if(d.config_version&&d.config_version!==_configVersion)fetchConfig();
       scheduleRender(d,{realtime:true});
       $('pulse').className='pulse pulse-on';$('conn').textContent='WS Connected';
     }catch(e){}
@@ -255,7 +279,18 @@ async function fetchFull(){
     scheduleRender(d,{full:true});
   }catch(e){}
 }
-async function post(p){try{await fetch(A+p,{method:'POST'});setTimeout(fetchFull,300);}catch(e){alert('Failed');}}
+async function fetchConfig(){
+  if(_configFlight)return;
+  _configFlight=true;
+  try{
+    const r=await fetch(A+'/config');
+    const d=await r.json();
+    if(d.config_version)_configVersion=d.config_version;
+    scheduleRender(d,{full:true});
+  }catch(e){}finally{_configFlight=false;}
+}
+async function refreshAfterControlChange(){await fetchConfig();await fetchFull();}
+async function post(p){try{await fetch(A+p,{method:'POST'});setTimeout(refreshAfterControlChange,300);}catch(e){alert('Failed');}}
 function $(id){return document.getElementById(id)}
 function pc(v){return v>=0?'pnl-pos':'pnl-neg'}
 function ps(v){return(v>=0?'+':'')+v.toFixed(2)}
@@ -308,6 +343,8 @@ function render(d,opts={}){
   const sessionOverride=!!d.session_override_enabled;
   const socb=$('sessionOverrideToggle');if(socb&&socb!==document.activeElement)socb.checked=sessionOverride;
   const sob=$('sessionOverrideBadge');if(sob){sob.className='badge '+(sessionOverride?'b-warn':'b-off');sob.textContent=sessionOverride?'ON':'OFF';}
+  const gc=d.gate_config||{};
+  const gd=d.gate_defaults||{};
   $('btnStart').disabled=en;$('btnStop').disabled=!en;
 
   // Price card
@@ -318,6 +355,7 @@ function render(d,opts={}){
     <div class="row"><span class="label">Spread</span><span>${tk.spread!=null?tk.spread.toFixed(2):'-'}</span></div>
     <div class="row"><span class="label">Session</span><span class="badge b-ses">${d.session||'-'}</span></div>
     <div class="row"><span class="label">Session Gate</span>${sessionOverride?'<span class="badge b-warn">OVERRIDDEN</span>':'<span class="badge b-off">NORMAL</span>'}</div>
+    <div class="row"><span class="label">Time Gate</span>${(sessionOverride||gc.TIME_GATE_OVERRIDE_ENABLED||gc.ALL_GATES_OVERRIDE_ENABLED)?'<span class="badge b-warn">OVERRIDDEN</span>':'<span class="badge b-off">NORMAL</span>'}</div>
     <div class="row"><span class="label">Market</span>${d.market_open?'<span class="badge b-on">OPEN</span>':'<span class="badge b-off">CLOSED</span>'}</div>
     <div class="row"><span class="label">Symbol</span><span class="purple" style="font-weight:600">${currentSymbol||'-'}</span></div>
     <div class="row"><span class="label">Strategy</span><span class="purple" style="font-weight:600">${d.strategy||'-'}</span></div>
@@ -573,9 +611,183 @@ function render(d,opts={}){
   if(full&&cg && !cg.dataset.init){cg.dataset.init='1';setHTML(cg,Object.entries(cfgLabels).map(([k,l])=>`<div class="cfg-item"><label>${l}</label><input id="cfg_${k}" data-key="${k}" type="number" step="any" value="${rc[k]||''}"></div>`).join(''));}
   else if(full&&cg&&cg.dataset.init){Object.keys(cfgLabels).forEach(k=>{const inp=document.getElementById('cfg_'+k);if(inp&&inp!==document.activeElement)inp.value=rc[k]!=null?rc[k]:'';});}
 
+  // Gate overrides and spread config
+  const gateToggles={
+    'TIME_GATE_OVERRIDE_ENABLED':{
+      label:'Time Window',
+      title:'Bypasses the UTC trading window check, such as Outside trade window (UTC 9:xx). Same purpose as the top Session Override toggle.'
+    },
+    'SPREAD_MEAN_GATE_OVERRIDE_ENABLED':{
+      label:'Spread Mean',
+      title:'Bypasses only the average spread limit, for example spread_mean >= 0.50.'
+    },
+    'SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED':{
+      label:'Spread Volatility',
+      title:'Bypasses only the spread_std limit. This controls spread jumping around, not price volatility.'
+    },
+    'SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED':{
+      label:'Spread Percentile',
+      title:'Bypasses only the current spread percentile/rank check against recent spread history.'
+    },
+    'SPREAD_DELTA_GATE_OVERRIDE_ENABLED':{
+      label:'Spread Widening',
+      title:'Bypasses only the current spread above baseline/mean widening check.'
+    },
+    'POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED':{
+      label:'Post-Signal Spread',
+      title:'Bypasses only the Sweep Scalper recheck that blocks when spread widens after the signal.'
+    },
+    'COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED':{
+      label:'Compression Range10',
+      title:'Bypasses only the configured RangeN < ATR multiplier compression-width check.'
+    },
+    'ATR_RISING_GATE_OVERRIDE_ENABLED':{
+      label:'ATR Rising',
+      title:'Bypasses only the ATR slope/rising-volatility requirement inside the compression gate.'
+    },
+    'EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED':{
+      label:'Execution Quality',
+      title:'Bypasses only the Sweep Scalper execution-quality check: low/falling tick velocity, direction oscillation, or unstable execution spread.'
+    },
+    'TICK_DIRECTION_GATE_OVERRIDE_ENABLED':{
+      label:'Tick Direction',
+      title:'Bypasses only the Sweep Scalper tick-direction alignment check, such as needing 65% ticks in the trade direction.'
+    }
+  };
+  const gateLabels={
+    'SMC_SPREAD_MEAN_MAX':{
+      label:'SMC Spread Mean Max',
+      title:'Maximum average spread allowed for SMC. Trade is blocked when spread_mean is greater than or equal to this value.'
+    },
+    'SMC_SPREAD_STD_MAX':{
+      label:'SMC Spread Vol Max',
+      title:'Maximum spread volatility allowed for SMC. This is spread standard deviation over recent ticks, not price volatility.'
+    },
+    'SMC_SPREAD_PERCENTILE_MAX':{
+      label:'SMC Spread Percentile Max',
+      title:'Maximum current-spread rank versus recent spread history for SMC. 0.50 means the spread must be no worse than roughly median.'
+    },
+    'SMC_CURRENT_SPREAD_DELTA_MAX':{
+      label:'SMC Current Spread Delta',
+      title:'Maximum allowed widening of current spread above spread_mean before SMC blocks the trade.'
+    },
+    'SCALPER_SPREAD_MEAN_MAX':{
+      label:'Scalper Spread Mean Max',
+      title:'Maximum average spread allowed for Sweep Scalper. Trade is blocked when spread_mean is greater than or equal to this value.'
+    },
+    'SCALPER_SPREAD_STD_MAX':{
+      label:'Scalper Spread Vol Max',
+      title:'Maximum spread volatility allowed for Sweep Scalper. This is spread standard deviation over recent ticks.'
+    },
+    'SCALPER_SPREAD_PERCENTILE_MAX':{
+      label:'Scalper Spread Percentile Max',
+      title:'Maximum current-spread rank versus recent spread history for Sweep Scalper.'
+    },
+    'SCALPER_CURRENT_SPREAD_DELTA_MAX':{
+      label:'Scalper Current Spread Delta',
+      title:'Maximum allowed spread widening above baseline. Also used for the Sweep Scalper post-signal spread-widening recheck.'
+    },
+    'COMPRESSION_RANGE_LOOKBACK':{
+      label:'Compression Range Lookback',
+      title:'Number of recent M1 candles used for RangeN. Default 10 means Range10.'
+    },
+    'COMPRESSION_ATR_MULTIPLIER':{
+      label:'Compression ATR Multiplier',
+      title:'Compression threshold is RangeN < this value * ATR14. Default 1.80.'
+    },
+    'SMC_THRESHOLD_WITH_TREND':{
+      label:'SMC With-Trend Score',
+      title:'Minimum SMC quality score for with-trend trades.'
+    },
+    'SMC_THRESHOLD_COUNTER':{
+      label:'SMC Counter Score Base',
+      title:'Base minimum SMC quality score for counter-trend trades.'
+    },
+    'SMC_THRESHOLD_COUNTER_MAX':{
+      label:'SMC Counter Score Max',
+      title:'Maximum counter-trend score threshold after bias-confidence adjustment.'
+    },
+    'SMC_MIN_RR':{
+      label:'SMC Min RR',
+      title:'Minimum risk:reward required for SMC trades.'
+    },
+    'SMC_TIMEFRAME_EMA_SLOPE_MIN':{
+      label:'SMC EMA Slope Min',
+      title:'Minimum M1/M5 EMA20 slope used for SMC timeframe alignment.'
+    },
+    'SMC_LTF_TICK_CONFLICT_LONG_MAX':{
+      label:'SMC Long Tick Conflict Max',
+      title:'For LONG bias, LTF conflict triggers when buy tick ratio is at or below this value.'
+    },
+    'SMC_LTF_TICK_CONFLICT_SHORT_MIN':{
+      label:'SMC Short Tick Conflict Min',
+      title:'For SHORT bias, LTF conflict triggers when buy tick ratio is at or above this value.'
+    },
+    'SCALPER_QUALITY_THRESHOLD':{
+      label:'Scalper Quality Threshold',
+      title:'Minimum Sweep Scalper quality score.'
+    },
+    'SCALPER_ATR_MIN':{
+      label:'Scalper ATR Min',
+      title:'Minimum M1 ATR14 allowed for Sweep Scalper.'
+    },
+    'SCALPER_ATR_MAX':{
+      label:'Scalper ATR Max',
+      title:'Maximum M1 ATR14 allowed for Sweep Scalper.'
+    },
+    'SCALPER_EMA20_SLOPE_MIN':{
+      label:'Scalper EMA20 Slope Min',
+      title:'Minimum absolute M1 EMA20 slope required before sweep detection.'
+    },
+    'SCALPER_BODY_RATIO_MIN':{
+      label:'Scalper Body Ratio Min',
+      title:'Minimum displacement candle body ratio required after a sweep.'
+    },
+    'SCALPER_TICK_DIR_THRESHOLD':{
+      label:'Scalper Tick Direction',
+      title:'Required tick-direction ratio for Sweep Scalper. Default 0.65 means 65%.'
+    },
+    'SCALPER_SWEEP_LOOKBACK':{
+      label:'Scalper Sweep Lookback',
+      title:'Number of M1 candles scanned for equal highs/lows and sweep detection.'
+    },
+    'SCALPER_SWEEP_TOLERANCE':{
+      label:'Scalper Sweep Tolerance',
+      title:'Price tolerance used for equal highs/lows and sweep breaks.'
+    },
+    'SCALPER_MAX_TRADES_SESSION':{
+      label:'Scalper Max Trades Session',
+      title:'Maximum Sweep Scalper trades allowed per configured session.'
+    },
+    'SCALPER_LEVEL_COOLDOWN':{
+      label:'Scalper Level Cooldown',
+      title:'Seconds before a previously traded sweep level can be traded again.'
+    },
+    'MARKET_TICK_POLL_INTERVAL':{
+      label:'Market Tick Poll Interval',
+      title:'Seconds between MT5 tick polls for the live price feed. Lower is faster. Default 0.02 is about 50 checks per second.'
+    },
+    'DASHBOARD_WS_PUSH_INTERVAL':{
+      label:'Dashboard Push Interval',
+      title:'Seconds between dashboard WebSocket checks. Lower is faster. Default 0.03 is about 33 checks per second.'
+    }
+  };
+  const gt=$('gateToggleGrid');
+  if(full&&gt&&!gt.dataset.init){
+    gt.dataset.init='1';
+    setHTML(gt,Object.entries(gateToggles).map(([k,m])=>`<label title="${esc(m.title)}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:6px;padding:6px 8px;cursor:pointer"><span style="font-size:11px;color:var(--dim)">${esc(m.label)}</span><input class="toggle" id="gate_${k}" data-key="${k}" type="checkbox"></label>`).join(''));
+  }
+  if(full&&gt){Object.keys(gateToggles).forEach(k=>{const inp=document.getElementById('gate_'+k);if(inp&&inp!==document.activeElement)inp.checked=!!gc[k];});}
+  const gg=$('gateCfgGrid');
+  if(full&&gg&&!gg.dataset.init){
+    gg.dataset.init='1';
+    setHTML(gg,Object.entries(gateLabels).map(([k,m])=>`<div class="cfg-item" title="${esc(m.title)}"><label>${esc(m.label)}</label><div style="display:flex;gap:4px;align-items:center"><input id="gate_${k}" data-key="${k}" data-default="${gd[k]??''}" type="number" step="0.001" value="${gc[k]??''}"><button type="button" class="theme-btn" style="padding:3px 7px;font-size:11px" title="Reset ${esc(m.label)} to default ${gd[k]??''}" onclick="resetGateValue('${k}')">Reset</button></div></div>`).join(''));
+  }else if(full&&gg&&gg.dataset.init){
+    Object.keys(gateLabels).forEach(k=>{const inp=document.getElementById('gate_'+k);if(inp){inp.dataset.default=gd[k]??'';if(inp!==document.activeElement)inp.value=gc[k]!=null?gc[k]:'';}});
+  }
+
   const floatPnl=fp.total||0;
-  const floatStr=floatPnl?` | Float ${ps(floatPnl)}`:(price?` | ${price.toFixed(2)}`:'');
-  document.title=`${ps(dp)}${floatStr} | ${currentSymbol||'XAUUSD'}`;
+  updateTabTitle(d);
 }
 
 function toggleTheme(){const h=document.documentElement;const t=h.getAttribute('data-theme')==='light'?'dark':'light';h.setAttribute('data-theme',t==='light'?'light':'');localStorage.setItem('theme',t);$('themeToggle').innerHTML=t==='light'?'&#9728;':'&#9790;';}
@@ -584,24 +796,35 @@ function tickClocks(){const o={hour:'2-digit',minute:'2-digit',second:'2-digit',
 setInterval(tickClocks,1000);tickClocks();
 initAnalyticsLinks();
 async function saveConfig(){
-  const inputs=document.querySelectorAll('#cfgGrid input');
+  const inputs=document.querySelectorAll('#cfgGrid input,#gateCfgGrid input');
   const body={};
   inputs.forEach(inp=>{const v=parseFloat(inp.value);if(!isNaN(v))body[inp.dataset.key]=v;});
-  try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();$('cfgStatus').textContent='Saved ✓';setTimeout(()=>$('cfgStatus').textContent='',2000);fetchFull();}catch(e){$('cfgStatus').textContent='Failed';$('cfgStatus').style.color='var(--red)';}
+  document.querySelectorAll('#gateToggleGrid input').forEach(inp=>{body[inp.dataset.key]=inp.checked;});
+  const tier1=$('tier1Toggle');if(tier1)body.TIER1_ENABLED=tier1.checked;
+  const sessionOverride=$('sessionOverrideToggle');if(sessionOverride)body.SESSION_OVERRIDE_ENABLED=sessionOverride.checked;
+  const dailyTarget=$('dailyTargetToggle');if(dailyTarget)body.DAILY_TARGET_ENABLED=dailyTarget.checked;
+  try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(d.config_version)_configVersion=d.config_version;$('cfgStatus').textContent='Saved ✓';$('gateCfgStatus').textContent='Saved ✓';setTimeout(()=>{$('cfgStatus').textContent='';$('gateCfgStatus').textContent='';},2000);refreshAfterControlChange();}catch(e){$('cfgStatus').textContent='Failed';$('gateCfgStatus').textContent='Failed';$('cfgStatus').style.color='var(--red)';$('gateCfgStatus').style.color='var(--red)';}
+}
+function resetGateValue(key){
+  const inp=document.getElementById('gate_'+key);
+  if(!inp||inp.dataset.default==='')return;
+  inp.value=inp.dataset.default;
 }
 async function toggleTier1(enabled){
-  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({TIER1_ENABLED:enabled})});setTimeout(fetchFull,200);}catch(e){alert('Failed to toggle Tier 1');}
+  try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({TIER1_ENABLED:enabled})});const d=await r.json();if(d.config_version)_configVersion=d.config_version;setTimeout(refreshAfterControlChange,200);}catch(e){alert('Failed to toggle Tier 1');}
 }
 async function toggleSessionOverride(enabled){
-  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({SESSION_OVERRIDE_ENABLED:enabled})});setTimeout(fetchFull,200);}catch(e){alert('Failed to toggle Session Override');}
+  try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({SESSION_OVERRIDE_ENABLED:enabled})});const d=await r.json();if(d.config_version)_configVersion=d.config_version;setTimeout(refreshAfterControlChange,200);}catch(e){alert('Failed to toggle Session Override');}
 }
 async function toggleDailyTarget(enabled){
-  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({DAILY_TARGET_ENABLED:enabled})});setTimeout(fetchFull,200);}catch(e){alert('Failed to toggle Daily Target');}
+  try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({DAILY_TARGET_ENABLED:enabled})});const d=await r.json();if(d.config_version)_configVersion=d.config_version;setTimeout(refreshAfterControlChange,200);}catch(e){alert('Failed to toggle Daily Target');}
 }
-// /status polled at 5s for heavy data (config, XGB, blockers, closed history)
+// /config is persistent/control data and is fetched on load or when config_version changes.
+// /status is live/heavy data and stays on a slow poll.
 let _fullFlight=false;
 async function safeFull(){if(_fullFlight)return;_fullFlight=true;try{await fetchFull();}finally{_fullFlight=false;}}
 setInterval(safeFull,5000);
+fetchConfig();
 safeFull();
 </script>
 </body>

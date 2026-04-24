@@ -20,10 +20,11 @@ Default on startup: `AUTO` (configurable via `config.DEFAULT_STRATEGY`).
 | 2 | **Market Regime** | H4, H1, M15 candles + tick snapshot | `regime.trade_allowed == True` | Reject if NEWS_VOLATILITY or ATR ratio > 3.0 |
 | 3 | **MTF Bias** | H4 EMA50/200, H1 structure (HH/HL/LH/LL + BOS), M15 pullback | `bias.direction != "NEUTRAL"` | Reject if no directional bias |
 | 4 | **Tick Chaos** | `tick_processor.is_chaotic()` | velocity ≤ 50 OR spread stable | Reject if chaotic (news-like) |
-| 5 | **Spread Model** | Strategy spread-quality gate | spread_mean < 0.50, spread_std ≤ 0.05, percentile ≤ 50% | Reject |
-| 6 | **Confluence Score** | See scoring table below | `score >= 0.55` | Reject with score + reasons |
-| 7 | **SL/TP Computation** | ATR, zones, liquidity sweeps, key levels | Valid SL and TP computed, SL distance ≥ 0.50 | Reject |
-| 8 | **Risk:Reward** | `tp_dist / sl_dist` | `RR >= 1.2` | Reject |
+| 5 | **Spread Model** | Configurable strategy spread-quality gate | spread_mean < `SMC_SPREAD_MEAN_MAX`, spread_std ≤ `SMC_SPREAD_STD_MAX`, percentile ≤ `SMC_SPREAD_PERCENTILE_MAX` | Reject unless the matching individual spread override is enabled |
+| 6 | **Compression** | `COMPRESSION_RANGE_LOOKBACK`, `COMPRESSION_ATR_MULTIPLIER` | RangeN < multiplier × ATR and ATR rising | Reject unless matching override enabled |
+| 7 | **Confluence Score** | See scoring table below | score >= configured SMC threshold | Reject with score + reasons |
+| 8 | **SL/TP Computation** | ATR, zones, liquidity sweeps, key levels | Valid SL and TP computed, SL distance ≥ 0.50 | Reject |
+| 9 | **Risk:Reward** | `tp_dist / sl_dist` | `RR >= SMC_MIN_RR` | Reject |
 
 ### Confluence Scoring Breakdown
 
@@ -67,18 +68,18 @@ Default on startup: `AUTO` (configurable via `config.DEFAULT_STRATEGY`).
 |---|-------|-----------|----------------|-------------|
 | 1 | **Time Window** | UTC hour | 07-09 (London), 12-13 (Overlap), 13-15 (NY) | Reject outside windows |
 | 2 | **Session Trade Limit** | `_session_trades` | < 5 trades this session | Reject |
-| 3 | **Spread Model** | Strategy spread-quality gate | spread_mean < 0.50, spread_std ≤ 0.04, percentile ≤ 50% | Reject |
-| 4 | **ATR Filter** | M1 ATR(14) | `0.30 ≤ ATR ≤ 5.00` | Reject if too quiet or too volatile |
-| 5 | **EMA20 Bias** | M1 EMA(20) slope | `abs(slope) >= 0.05` | Reject if flat |
+| 3 | **Spread Model** | Configurable strategy spread-quality gate | spread_mean < `SCALPER_SPREAD_MEAN_MAX`, spread_std ≤ `SCALPER_SPREAD_STD_MAX`, percentile ≤ `SCALPER_SPREAD_PERCENTILE_MAX` | Reject unless the matching individual spread override is enabled |
+| 4 | **ATR Filter** | M1 ATR(14) | `SCALPER_ATR_MIN ≤ ATR ≤ SCALPER_ATR_MAX` | Reject if too quiet or too volatile |
+| 5 | **EMA20 Bias** | M1 EMA(20) slope | `abs(slope) >= SCALPER_EMA20_SLOPE_MIN` | Reject if flat |
 | 6 | **M5 Bias** | M5 close vs EMA(20) | Must not conflict with sweep direction | Reject if conflicting |
-| 7 | **Sweep Detection** | M1 OHLC, lookback=15, tolerance=0.30 | Equal highs/lows swept + price reclaimed | No signal if no sweep |
+| 7 | **Sweep Detection** | `SCALPER_SWEEP_LOOKBACK`, `SCALPER_SWEEP_TOLERANCE` | Equal highs/lows swept + price reclaimed | No signal if no sweep |
 | 8 | **First-Sweep-Only** | `_traded_levels` dict | Level not traded in last 20 min (±$0.50) | Reject duplicate level |
 | 9 | **EMA Direction Agreement** | EMA20 slope vs sweep direction | Slope positive for LONG, negative for SHORT | Reject if conflicting |
-| 10 | **Displacement Candle** | Last M1 candle | body_ratio ≥ 0.40, body > avg(last 10), bullish for LONG / bearish for SHORT | Reject |
+| 10 | **Displacement Candle** | Last M1 candle | body_ratio ≥ `SCALPER_BODY_RATIO_MIN`, body > avg(last 10), bullish for LONG / bearish for SHORT | Reject |
 | 11 | **Price vs EMA20** | M1 close vs EMA20 | Price above EMA20 for LONG, below for SHORT | Reject |
 | 12 | **Execution Quality** | `tick_processor.check_execution_quality()` | velocity ≥ 3 (or increasing), direction stable, spread stable | Reject |
-| 13 | **Tick Direction** | `tick_snapshot.dir_pct` | ≥ 65% ticks in trade direction | Reject |
-| 14 | **Spread Re-check** | `tick_processor.spread_changed(spread, 0.03)` | Spread hasn't widened > $0.03 since signal | Reject |
+| 13 | **Tick Direction** | `tick_snapshot.dir_pct` | Meets `SCALPER_TICK_DIR_THRESHOLD` in trade direction | Reject unless tick-direction override enabled |
+| 14 | **Spread Re-check** | `tick_processor.spread_changed(...)` | Spread has not widened beyond `SCALPER_CURRENT_SPREAD_DELTA_MAX` since signal | Reject unless post-signal spread override enabled |
 
 ### SL/TP Logic
 

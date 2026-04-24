@@ -75,6 +75,9 @@ class AutoTrader:
         self._last_log_time = 0
         self._log: deque = deque(maxlen=500)
         self._last_tick: Dict = {}
+        self._tick_seq = 0
+        self._last_tick_signature = None
+        self._tick_pump_started = False
         self._last_account: Dict = {}
 
         # MT5 history cache (polled every 5s in engine loop)
@@ -152,6 +155,7 @@ class AutoTrader:
 
     def _engine_loop(self):
         """Main trading engine loop."""
+        self._start_tick_pump()
         while self._running:
             t0 = time.time()
             try:
@@ -184,16 +188,37 @@ class AutoTrader:
             if elapsed < 0.01:
                 time.sleep(0.01)
 
+    def _start_tick_pump(self):
+        if self._tick_pump_started:
+            return
+        self._tick_pump_started = True
+        threading.Thread(target=self._tick_pump_loop, daemon=True, name="MarketTickPump").start()
+
+    def _tick_pump_loop(self):
+        while self._running:
+            try:
+                if self._mt5_connected:
+                    tick = self.bridge.get_tick()
+                    if tick:
+                        signature = (tick.get("bid"), tick.get("ask"), tick.get("time"), tick.get("volume"))
+                        self._last_tick = tick
+                        if signature != self._last_tick_signature:
+                            self._last_tick_signature = signature
+                            self._tick_seq += 1
+                            self.tick_proc.feed(tick)
+            except Exception:
+                pass
+            time.sleep(max(0.005, float(getattr(cfg, "MARKET_TICK_POLL_INTERVAL", 0.02))))
+
     def _cycle_once(self):
         """Single trading cycle."""
         self._cycle += 1
         self._stats["cycles"] += 1
 
-        tick = self.bridge.get_tick()
+        tick = self._last_tick or self.bridge.get_tick()
         if not tick:
             return
         self._last_tick = tick
-        self.tick_proc.feed(tick)
 
         account = self.bridge.get_account()
         if not account:

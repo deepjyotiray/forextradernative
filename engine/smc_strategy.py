@@ -21,17 +21,11 @@ from .anti_starvation import anti_starvation
 from .signal_quality import quality_score
 import config as cfg
 
-_THRESHOLD_WITH_TREND = 0.65
-_THRESHOLD_COUNTER = 0.70
-_SPREAD_MEAN_MAX = 0.50
-
-
 class SMCStrategy(BaseStrategy):
     name = "SMC_CONFLUENCE"
 
     def __init__(self):
         self.tick_proc = TickProcessor(buffer_size=300)
-        self._min_rr = 1.2
 
     def generate_signal(self, data: Dict) -> Dict:
         tick = data.get("tick")
@@ -92,7 +86,7 @@ class SMCStrategy(BaseStrategy):
         now = datetime.now(timezone.utc)
         h = now.hour
         in_window = (7 <= h < 9) or (12 <= h < 13) or (13 <= h < 15)
-        if not in_window and not cfg.SESSION_OVERRIDE_ENABLED:
+        if not in_window and not (cfg.SESSION_OVERRIDE_ENABLED or cfg.TIME_GATE_OVERRIDE_ENABLED or cfg.ALL_GATES_OVERRIDE_ENABLED):
             return skip(f"Outside trade window (UTC {h}:xx)")
 
         # === 2. Spread engine (execution quality) ===
@@ -181,8 +175,8 @@ class SMCStrategy(BaseStrategy):
 
         tp_dist = abs(tp - price)
         rr = tp_dist / sl_dist if sl_dist > 0 else 0
-        if rr < self._min_rr:
-            return skip(f"RR {rr:.1f} < {self._min_rr}", setup_direction=direction,
+        if rr < cfg.SMC_MIN_RR:
+            return skip(f"RR {rr:.1f} < {cfg.SMC_MIN_RR}", setup_direction=direction,
                         bias_direction=bias["direction"], quality_score_value=score,
                         threshold=threshold, compression_ok=True, setup_features=setup)
 
@@ -432,11 +426,11 @@ class SMCStrategy(BaseStrategy):
         m1_aligned = self._check_timeframe_alignment(m1, direction, "M1")
         m5_aligned = self._check_timeframe_alignment(m5, direction, "M5")
         relaxed_params = anti_starvation.get_relaxed_params()
-        tick_threshold = relaxed_params.get("tick_ratio_threshold", 0.65) if relaxed_params["active"] else 0.65
+        tick_threshold = relaxed_params.get("tick_ratio_threshold", cfg.SCALPER_TICK_DIR_THRESHOLD) if relaxed_params["active"] else cfg.SCALPER_TICK_DIR_THRESHOLD
         compression_ok = (
             ind.get("range_10", 0) > 0 and
             ind.get("atr14", ind.get("atr", 2.0)) > 0 and
-            ind.get("range_10", 0) < 1.8 * ind.get("atr14", ind.get("atr", 2.0)) and
+            ind.get("range_10", 0) < cfg.COMPRESSION_ATR_MULTIPLIER * ind.get("atr14", ind.get("atr", 2.0)) and
             ind.get("atr_slope", 0) > 0
         )
         score, score_reasons = quality_score(
@@ -476,15 +470,15 @@ class SMCStrategy(BaseStrategy):
         slope = ema20[-1] - ema20[-3] if len(ema20) >= 3 else 0
 
         if direction == "LONG":
-            return price >= ema_val and slope > 0.1
+            return price >= ema_val and slope > cfg.SMC_TIMEFRAME_EMA_SLOPE_MIN
         else:  # SHORT
-            return price <= ema_val and slope < -0.1
+            return price <= ema_val and slope < -cfg.SMC_TIMEFRAME_EMA_SLOPE_MIN
 
     def _resolve_threshold(self, bias: Dict, counter_trend: bool) -> float:
         if not counter_trend:
-            return _THRESHOLD_WITH_TREND
+            return cfg.SMC_THRESHOLD_WITH_TREND
         bias_conf = max(0.0, min(1.0, float(bias.get("confidence", 0) or 0)))
-        return round(min(0.75, _THRESHOLD_COUNTER + max(0.0, bias_conf - 0.5) * 0.1), 2)
+        return round(min(cfg.SMC_THRESHOLD_COUNTER_MAX, cfg.SMC_THRESHOLD_COUNTER + max(0.0, bias_conf - 0.5) * 0.1), 2)
 
     # ------------------------------------------------------------------
     # Spread engine (execution quality)
@@ -492,14 +486,17 @@ class SMCStrategy(BaseStrategy):
 
     def _check_spread_quality(self, spread: float, tick_snap: Dict) -> Tuple[bool, str]:
         """Check spread quality using rolling window statistics with anti-starvation."""
+        if cfg.ALL_GATES_OVERRIDE_ENABLED or cfg.SPREAD_GATE_OVERRIDE_ENABLED:
+            return True, "Spread gate overridden"
+
         if not tick_snap.get("ready"):
             # Fallback to simple check with anti-starvation
             relaxed_params = anti_starvation.get_relaxed_params()
-            spread_limit = _SPREAD_MEAN_MAX
+            spread_limit = cfg.SMC_SPREAD_MEAN_MAX
             if relaxed_params["active"] and relaxed_params["type"] == "spread_tolerance":
-                spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], _SPREAD_MEAN_MAX)
+                spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], cfg.SMC_SPREAD_MEAN_MAX)
             
-            if spread >= spread_limit:
+            if spread >= spread_limit and not cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED:
                 return False, f"Spread {spread:.3f} >= {spread_limit:.3f}"
             return True, "OK"
 
@@ -509,21 +506,21 @@ class SMCStrategy(BaseStrategy):
 
         # Apply anti-starvation to spread limits
         relaxed_params = anti_starvation.get_relaxed_params()
-        spread_limit = _SPREAD_MEAN_MAX
+        spread_limit = cfg.SMC_SPREAD_MEAN_MAX
         if relaxed_params["active"] and relaxed_params["type"] == "spread_tolerance":
-            spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], _SPREAD_MEAN_MAX)
+            spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], cfg.SMC_SPREAD_MEAN_MAX)
 
         # SMC conditions with relaxation
-        if spread_mean >= spread_limit:
+        if spread_mean >= spread_limit and not cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED:
             return False, f"Mean spread {spread_mean:.3f} >= {spread_limit:.3f}"
-        if spread_std > 0.05:  # Spike threshold
-            return False, f"Spread volatility {spread_std:.3f} > 0.05"
-        if spread_pctl > 0.50:
-            return False, f"Spread percentile {spread_pctl:.0%} > 50%"
+        if spread_std > cfg.SMC_SPREAD_STD_MAX and not cfg.SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED:
+            return False, f"Spread volatility {spread_std:.3f} > {cfg.SMC_SPREAD_STD_MAX:.3f}"
+        if spread_pctl > cfg.SMC_SPREAD_PERCENTILE_MAX and not cfg.SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED:
+            return False, f"Spread percentile {spread_pctl:.0%} > {cfg.SMC_SPREAD_PERCENTILE_MAX:.0%}"
         
         # Pre-send check: current spread vs entry spread
-        if spread > spread_mean + 0.03:
-            return False, f"Current spread {spread:.3f} > entry+0.03"
+        if spread > spread_mean + cfg.SMC_CURRENT_SPREAD_DELTA_MAX and not cfg.SPREAD_DELTA_GATE_OVERRIDE_ENABLED:
+            return False, f"Current spread {spread:.3f} > entry+{cfg.SMC_CURRENT_SPREAD_DELTA_MAX:.3f}"
 
         return True, "Spread OK"
 
@@ -532,26 +529,29 @@ class SMCStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     def _check_compression_gate(self, m1: pd.DataFrame, ind: Dict) -> Tuple[bool, str]:
-        """Check compression gate: range_10 < 1.8 × ATR AND ATR slope rising."""
-        if m1 is None or len(m1) < 15:
+        """Check compression gate: RangeN < configured ATR multiple AND ATR slope rising."""
+        if cfg.ALL_GATES_OVERRIDE_ENABLED or cfg.COMPRESSION_GATE_OVERRIDE_ENABLED:
+            return True, "Compression gate overridden"
+
+        lookback = max(2, int(cfg.COMPRESSION_RANGE_LOOKBACK))
+        if m1 is None or len(m1) < lookback + 5:
             return False, "Insufficient M1 data for compression check"
 
-        # Calculate 10-candle range
-        last_10 = m1.iloc[-10:]
-        range_10 = float(last_10["high"].max() - last_10["low"].min())
+        recent = m1.iloc[-lookback:]
+        range_n = float(recent["high"].max() - recent["low"].min())
         
         atr_val = ind.get("atr14", ind.get("atr", 2.0))
-        atr_threshold = 1.8 * atr_val
+        atr_threshold = cfg.COMPRESSION_ATR_MULTIPLIER * atr_val
         
-        if range_10 >= atr_threshold:
-            return False, f"Range10 {range_10:.1f} >= {atr_threshold:.1f} (too wide)"
+        if range_n >= atr_threshold and not cfg.COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED:
+            return False, f"Range{lookback} {range_n:.1f} >= {atr_threshold:.1f} (too wide)"
 
         # Check ATR slope (rising)
         atr_slope = ind.get("atr_slope", 0)
-        if atr_slope <= 0:
+        if atr_slope <= 0 and not cfg.ATR_RISING_GATE_OVERRIDE_ENABLED:
             return False, f"ATR slope {atr_slope:.3f} not rising"
 
-        return True, f"Compression OK (R10:{range_10:.1f} < {atr_threshold:.1f}, ATR+)"
+        return True, f"Compression OK (R{lookback}:{range_n:.1f} < {atr_threshold:.1f}, ATR+)"
 
     # ------------------------------------------------------------------
     # LTF conflict blocker
@@ -594,9 +594,9 @@ class SMCStrategy(BaseStrategy):
         if tick_snap.get("ready"):
             dir_pct = tick_snap.get("dir_pct", 0.5)
             if bias_dir == "SHORT":
-                tick_conflict = dir_pct >= 0.60
+                tick_conflict = dir_pct >= cfg.SMC_LTF_TICK_CONFLICT_SHORT_MIN
             else:
-                tick_conflict = dir_pct <= 0.40
+                tick_conflict = dir_pct <= cfg.SMC_LTF_TICK_CONFLICT_LONG_MAX
 
         return m5_conflict and m1_conflict and tick_conflict
 

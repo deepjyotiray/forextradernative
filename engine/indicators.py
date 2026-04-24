@@ -4,6 +4,7 @@ Technical indicators — fast numpy-based calculations.
 import numpy as np
 import pandas as pd
 from typing import Dict
+import config as cfg
 
 
 def ema(series: np.ndarray, period: int) -> np.ndarray:
@@ -61,12 +62,13 @@ def compute_indicators(df: pd.DataFrame) -> Dict:
     upper_wick = (h[last] - max(o[last], c[last])) / candle_range if candle_range > 0 else 0
     lower_wick = (min(o[last], c[last]) - l[last]) / candle_range if candle_range > 0 else 0
 
-    # Calculate 10-candle range for compression gate
+    # Calculate configured range lookback for compression gate.
     range_10 = 0
-    if len(h) >= 10:
-        last_10_high = h[-10:].max()
-        last_10_low = l[-10:].min()
-        range_10 = last_10_high - last_10_low
+    range_lookback = max(2, int(getattr(cfg, "COMPRESSION_RANGE_LOOKBACK", 10)))
+    if len(h) >= range_lookback:
+        recent_high = h[-range_lookback:].max()
+        recent_low = l[-range_lookback:].min()
+        range_10 = recent_high - recent_low
 
     # Calculate ATR slope for compression gate
     atr_slope = 0

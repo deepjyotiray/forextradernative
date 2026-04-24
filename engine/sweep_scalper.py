@@ -14,20 +14,11 @@ from .indicators import atr, ema
 from .signal_quality import quality_score
 from .strategies.base_strategy import BaseStrategy
 from .tick_processor import TickProcessor
+import config as cfg
 
-_QUALITY_THRESHOLD = 0.65
-_SPREAD_MAX = 0.50
-_ATR_MIN = 0.30
-_ATR_MAX = 5.00
-_BODY_MIN = 0.40
-_TICK_DIR_PCT = 0.65
-_SWEEP_LOOKBACK = 15
-_SWEEP_TOL = 0.30
-_MAX_TRADES_SESSION = 5
 _BE_TRIGGER = 0.30
 _TIMEOUT = 60
 _EARLY_FAIL_PTS = 0.20
-_LEVEL_COOLDOWN = 1200
 
 
 class SweepScalper(BaseStrategy):
@@ -80,7 +71,7 @@ class SweepScalper(BaseStrategy):
         now = datetime.now(timezone.utc)
         hour = now.hour
         in_window = (7 <= hour < 9) or (12 <= hour < 13) or (13 <= hour < 15)
-        if not in_window and not cfg.SESSION_OVERRIDE_ENABLED:
+        if not in_window and not (cfg.SESSION_OVERRIDE_ENABLED or cfg.TIME_GATE_OVERRIDE_ENABLED or cfg.ALL_GATES_OVERRIDE_ENABLED):
             return skip(f"Outside trade window (UTC {hour}:xx)")
 
         session = "LONDON" if hour < 12 else "OVERLAP" if hour < 13 else "NY"
@@ -90,8 +81,8 @@ class SweepScalper(BaseStrategy):
             self._last_session = session
             self._session_date = today
 
-        if self._session_trades >= _MAX_TRADES_SESSION:
-            return skip(f"Max {_MAX_TRADES_SESSION} trades this session")
+        if self._session_trades >= cfg.SCALPER_MAX_TRADES_SESSION:
+            return skip(f"Max {cfg.SCALPER_MAX_TRADES_SESSION} trades this session")
 
         spread_ok, spread_reason = self._check_spread_quality(spread, tick_snap)
         if not spread_ok:
@@ -102,10 +93,10 @@ class SweepScalper(BaseStrategy):
         lows = m1["low"].values.astype(float)
         opens = m1["open"].values.astype(float)
         atr_val = atr(highs, lows, closes, 14)[-1]
-        if atr_val < _ATR_MIN:
-            return skip(f"ATR {atr_val:.3f} < {_ATR_MIN}")
-        if atr_val > _ATR_MAX:
-            return skip(f"ATR {atr_val:.3f} > {_ATR_MAX}")
+        if atr_val < cfg.SCALPER_ATR_MIN:
+            return skip(f"ATR {atr_val:.3f} < {cfg.SCALPER_ATR_MIN}")
+        if atr_val > cfg.SCALPER_ATR_MAX:
+            return skip(f"ATR {atr_val:.3f} > {cfg.SCALPER_ATR_MAX}")
 
         compression_ok, comp_reason = self._check_compression_gate(m1, atr_val)
         if not compression_ok:
@@ -114,7 +105,7 @@ class SweepScalper(BaseStrategy):
         ema20 = ema(closes, 20)
         ema20_val = ema20[-1]
         ema20_slope = ema20[-1] - ema20[-3] if len(ema20) >= 3 else 0
-        if abs(ema20_slope) < 0.05:
+        if abs(ema20_slope) < cfg.SCALPER_EMA20_SLOPE_MIN:
             return skip(f"EMA20 flat ({ema20_slope:.3f})")
 
         sweep = self._detect_sweep(highs, lows, closes, opens)
@@ -137,8 +128,8 @@ class SweepScalper(BaseStrategy):
         candle_range = highs[last] - lows[last]
         body_ratio = body / candle_range if candle_range > 0 else 0
         avg_body = np.abs(closes[last - 10:last] - opens[last - 10:last]).mean()
-        if body_ratio < _BODY_MIN:
-            return skip(f"Body ratio {body_ratio:.2f} < {_BODY_MIN}", setup_direction=direction,
+        if body_ratio < cfg.SCALPER_BODY_RATIO_MIN:
+            return skip(f"Body ratio {body_ratio:.2f} < {cfg.SCALPER_BODY_RATIO_MIN}", setup_direction=direction,
                         compression_ok=True, sweep_level=sweep_level)
         if body < avg_body:
             return skip(f"Body {body:.3f} < avg {avg_body:.3f}", setup_direction=direction,
@@ -154,12 +145,16 @@ class SweepScalper(BaseStrategy):
             return skip("Tick buffer not ready", setup_direction=direction,
                         compression_ok=True, sweep_level=sweep_level)
         eq_ok, eq_reason = self.tick_proc.check_execution_quality()
-        if not eq_ok:
+        if not eq_ok and not (
+            cfg.ALL_GATES_OVERRIDE_ENABLED
+            or cfg.EXECUTION_GATE_OVERRIDE_ENABLED
+            or cfg.EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED
+        ):
             return skip(f"Exec quality: {eq_reason}", setup_direction=direction,
                         compression_ok=True, sweep_level=sweep_level)
 
         relaxed_params = anti_starvation.get_relaxed_params()
-        tick_threshold = 0.65
+        tick_threshold = cfg.SCALPER_TICK_DIR_THRESHOLD
         if relaxed_params["active"] and relaxed_params["type"] == "tick_ratio":
             tick_threshold = relaxed_params["tick_ratio_threshold"]
 
@@ -168,7 +163,11 @@ class SweepScalper(BaseStrategy):
             (direction == "LONG" and dir_pct >= tick_threshold)
             or (direction == "SHORT" and dir_pct <= (1.0 - tick_threshold))
         )
-        if not directional_ok:
+        if not directional_ok and not (
+            cfg.ALL_GATES_OVERRIDE_ENABLED
+            or cfg.EXECUTION_GATE_OVERRIDE_ENABLED
+            or cfg.TICK_DIRECTION_GATE_OVERRIDE_ENABLED
+        ):
             target = tick_threshold if direction == "LONG" else (1.0 - tick_threshold)
             return skip(
                 f"Tick direction {dir_pct:.0%} not aligned with {direction} threshold {target:.0%}",
@@ -186,9 +185,9 @@ class SweepScalper(BaseStrategy):
             compression_ok=compression_ok,
             tick_snap=tick_snap,
         )
-        if q_score < _QUALITY_THRESHOLD:
+        if q_score < cfg.SCALPER_QUALITY_THRESHOLD:
             return skip(
-                f"Quality {q_score:.0%} < {_QUALITY_THRESHOLD:.0%}",
+                f"Quality {q_score:.0%} < {cfg.SCALPER_QUALITY_THRESHOLD:.0%}",
                 setup_direction=direction,
                 quality_score_value=q_score,
                 compression_ok=compression_ok,
@@ -204,7 +203,15 @@ class SweepScalper(BaseStrategy):
 
         tp_dist = abs(tp - price)
         rr = tp_dist / sl_dist if sl_dist > 0 else 0
-        if self.tick_proc.spread_changed(spread, max_delta=0.03):
+        if (
+            self.tick_proc.spread_changed(spread, max_delta=cfg.SCALPER_CURRENT_SPREAD_DELTA_MAX)
+            and not (
+                cfg.ALL_GATES_OVERRIDE_ENABLED
+                or cfg.SPREAD_GATE_OVERRIDE_ENABLED
+                or cfg.SPREAD_DELTA_GATE_OVERRIDE_ENABLED
+                or cfg.POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED
+            )
+        ):
             return skip("Spread widened since signal", setup_direction=direction,
                         quality_score_value=q_score, compression_ok=compression_ok,
                         sweep_level=sweep_level)
@@ -247,7 +254,7 @@ class SweepScalper(BaseStrategy):
             "_early_fail": _EARLY_FAIL_PTS,
             "_setup_direction": direction,
             "_quality_score": q_score,
-            "_threshold": _QUALITY_THRESHOLD,
+            "_threshold": cfg.SCALPER_QUALITY_THRESHOLD,
             "_entry_tick_velocity": tick_snap.get("velocity", 0),
             "_entry_spread": spread,
         }
@@ -277,7 +284,7 @@ class SweepScalper(BaseStrategy):
         tick_snap: Dict,
     ) -> Tuple[float, list]:
         relaxed_params = anti_starvation.get_relaxed_params()
-        tick_threshold = 0.65
+        tick_threshold = cfg.SCALPER_TICK_DIR_THRESHOLD
         if relaxed_params["active"] and relaxed_params["type"] == "tick_ratio":
             tick_threshold = relaxed_params["tick_ratio_threshold"]
         score, reasons = quality_score(
@@ -309,47 +316,54 @@ class SweepScalper(BaseStrategy):
         return price <= ema_val and slope < -0.1
 
     def _check_spread_quality(self, spread: float, tick_snap: Dict) -> Tuple[bool, str]:
+        if cfg.ALL_GATES_OVERRIDE_ENABLED or cfg.SPREAD_GATE_OVERRIDE_ENABLED:
+            return True, "Spread gate overridden"
+
         relaxed_params = anti_starvation.get_relaxed_params()
-        spread_limit = _SPREAD_MAX
+        spread_limit = cfg.SCALPER_SPREAD_MEAN_MAX
         if relaxed_params["active"] and relaxed_params["type"] == "spread_tolerance":
-            spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], _SPREAD_MAX)
+            spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], cfg.SCALPER_SPREAD_MEAN_MAX)
 
         if not tick_snap.get("ready"):
-            if spread >= spread_limit:
+            if spread >= spread_limit and not cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED:
                 return False, f"Spread {spread:.3f} >= {spread_limit:.3f}"
             return True, "OK"
 
         spread_mean = tick_snap.get("spread_mean", spread)
         spread_std = tick_snap.get("spread_std", 0)
         spread_pctl = tick_snap.get("spread_pctl", 0.5)
-        if spread_mean >= spread_limit:
+        if spread_mean >= spread_limit and not cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED:
             return False, f"Mean spread {spread_mean:.3f} >= {spread_limit:.3f}"
-        if spread_std > 0.04:
-            return False, f"Spread volatility {spread_std:.3f} > 0.04"
-        if spread_pctl > 0.50:
-            return False, f"Spread percentile {spread_pctl:.0%} > 50%"
-        if spread > spread_mean + 0.03:
-            return False, f"Current spread {spread:.3f} > baseline+0.03"
+        if spread_std > cfg.SCALPER_SPREAD_STD_MAX and not cfg.SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED:
+            return False, f"Spread volatility {spread_std:.3f} > {cfg.SCALPER_SPREAD_STD_MAX:.3f}"
+        if spread_pctl > cfg.SCALPER_SPREAD_PERCENTILE_MAX and not cfg.SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED:
+            return False, f"Spread percentile {spread_pctl:.0%} > {cfg.SCALPER_SPREAD_PERCENTILE_MAX:.0%}"
+        if spread > spread_mean + cfg.SCALPER_CURRENT_SPREAD_DELTA_MAX and not cfg.SPREAD_DELTA_GATE_OVERRIDE_ENABLED:
+            return False, f"Current spread {spread:.3f} > baseline+{cfg.SCALPER_CURRENT_SPREAD_DELTA_MAX:.3f}"
         return True, "Spread OK"
 
     def _check_compression_gate(self, m1: pd.DataFrame, atr_val: float) -> Tuple[bool, str]:
-        if m1 is None or len(m1) < 17:
+        if cfg.ALL_GATES_OVERRIDE_ENABLED or cfg.COMPRESSION_GATE_OVERRIDE_ENABLED:
+            return True, "Compression gate overridden"
+
+        lookback = max(2, int(cfg.COMPRESSION_RANGE_LOOKBACK))
+        if m1 is None or len(m1) < lookback + 7:
             return False, "Insufficient M1 data for compression check"
 
-        last_10 = m1.iloc[-10:]
-        range_10 = float(last_10["high"].max() - last_10["low"].min())
-        atr_threshold = 1.8 * atr_val
-        if range_10 >= atr_threshold:
-            return False, f"Range10 {range_10:.1f} >= {atr_threshold:.1f} (too wide)"
+        recent = m1.iloc[-lookback:]
+        range_n = float(recent["high"].max() - recent["low"].min())
+        atr_threshold = cfg.COMPRESSION_ATR_MULTIPLIER * atr_val
+        if range_n >= atr_threshold and not cfg.COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED:
+            return False, f"Range{lookback} {range_n:.1f} >= {atr_threshold:.1f} (too wide)"
 
         highs = m1["high"].values.astype(float)
         lows = m1["low"].values.astype(float)
         closes = m1["close"].values.astype(float)
         atr_series = atr(highs, lows, closes, 14)
         atr_prev = atr_series[-4] if len(atr_series) >= 4 else atr_series[-1]
-        if atr_series[-1] <= atr_prev:
+        if atr_series[-1] <= atr_prev and not cfg.ATR_RISING_GATE_OVERRIDE_ENABLED:
             return False, f"ATR not rising ({atr_series[-1]:.3f} <= {atr_prev:.3f})"
-        return True, f"Compression OK (R10:{range_10:.1f} < {atr_threshold:.1f}, ATR+)"
+        return True, f"Compression OK (R{lookback}:{range_n:.1f} < {atr_threshold:.1f}, ATR+)"
 
     def _compute_cost_aware_sl_tp(
         self,
@@ -388,19 +402,20 @@ class SweepScalper(BaseStrategy):
         opens: np.ndarray,
     ) -> Optional[Dict]:
         n = len(highs)
-        if n < _SWEEP_LOOKBACK + 2:
+        sweep_lookback = max(3, int(cfg.SCALPER_SWEEP_LOOKBACK))
+        if n < sweep_lookback + 2:
             return None
 
-        start = n - _SWEEP_LOOKBACK - 1
+        start = n - sweep_lookback - 1
         end = n - 2
         curr = n - 1
 
         for i in range(start, end - 2):
             for j in range(i + 2, end):
-                if abs(lows[i] - lows[j]) < _SWEEP_TOL:
+                if abs(lows[i] - lows[j]) < cfg.SCALPER_SWEEP_TOLERANCE:
                     eq_low = min(lows[i], lows[j])
                     for k in range(j + 1, curr + 1):
-                        if lows[k] < eq_low - _SWEEP_TOL and closes[curr] > eq_low and closes[curr] > opens[curr]:
+                        if lows[k] < eq_low - cfg.SCALPER_SWEEP_TOLERANCE and closes[curr] > eq_low and closes[curr] > opens[curr]:
                             return {
                                 "direction": "LONG",
                                 "level": round(float(lows[k]), 2),
@@ -409,10 +424,10 @@ class SweepScalper(BaseStrategy):
 
         for i in range(start, end - 2):
             for j in range(i + 2, end):
-                if abs(highs[i] - highs[j]) < _SWEEP_TOL:
+                if abs(highs[i] - highs[j]) < cfg.SCALPER_SWEEP_TOLERANCE:
                     eq_high = max(highs[i], highs[j])
                     for k in range(j + 1, curr + 1):
-                        if highs[k] > eq_high + _SWEEP_TOL and closes[curr] < eq_high and closes[curr] < opens[curr]:
+                        if highs[k] > eq_high + cfg.SCALPER_SWEEP_TOLERANCE and closes[curr] < eq_high and closes[curr] < opens[curr]:
                             return {
                                 "direction": "SHORT",
                                 "level": round(float(highs[k]), 2),
@@ -422,7 +437,7 @@ class SweepScalper(BaseStrategy):
 
     def _cleanup_levels(self):
         now = time.time()
-        expired = [level for level, ts in self._traded_levels.items() if now - ts > _LEVEL_COOLDOWN]
+        expired = [level for level, ts in self._traded_levels.items() if now - ts > cfg.SCALPER_LEVEL_COOLDOWN]
         for level in expired:
             del self._traded_levels[level]
 

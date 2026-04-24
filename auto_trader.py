@@ -92,6 +92,9 @@ class AutoTrader:
         self._last_log_time = 0
         self._log: deque = deque(maxlen=500)
         self._last_tick: Dict = {}
+        self._tick_seq = 0
+        self._last_tick_signature = None
+        self._tick_pump_started = False
         self._last_account: Dict = {}
 
         # MT5 history cache (polled every 5s in engine loop)
@@ -162,6 +165,7 @@ class AutoTrader:
 
     def _engine_loop(self):
         self.log("ENGINE", "Trading engine started")
+        self._start_tick_pump()
         while self._running:
             t0 = time.time()
             try:
@@ -192,15 +196,36 @@ class AutoTrader:
             if elapsed < 0.01:
                 time.sleep(0.01)
 
+    def _start_tick_pump(self):
+        if self._tick_pump_started:
+            return
+        self._tick_pump_started = True
+        threading.Thread(target=self._tick_pump_loop, daemon=True, name="MarketTickPump").start()
+
+    def _tick_pump_loop(self):
+        while self._running:
+            try:
+                if self._mt5_connected:
+                    tick = self.bridge.get_tick()
+                    if tick:
+                        signature = (tick.get("bid"), tick.get("ask"), tick.get("time"), tick.get("volume"))
+                        self._last_tick = tick
+                        if signature != self._last_tick_signature:
+                            self._last_tick_signature = signature
+                            self._tick_seq += 1
+                            self.tick_proc.feed(tick)
+            except Exception:
+                pass
+            time.sleep(max(0.005, float(getattr(cfg, "MARKET_TICK_POLL_INTERVAL", 0.02))))
+
     def _cycle_once(self):
         self._cycle += 1
         self._stats["cycles"] += 1
 
-        tick = self.bridge.get_tick()
+        tick = self._last_tick or self.bridge.get_tick()
         if not tick:
             return
         self._last_tick = tick
-        self.tick_proc.feed(tick)
 
         account = self.bridge.get_account()
         if not account:
@@ -727,6 +752,51 @@ class AutoTrader:
                 "MIN_TRADE_COOLDOWN": cfg.MIN_TRADE_COOLDOWN,
                 "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE,
             },
+            "gate_config": {
+                "ALL_GATES_OVERRIDE_ENABLED": cfg.ALL_GATES_OVERRIDE_ENABLED,
+                "SPREAD_GATE_OVERRIDE_ENABLED": cfg.SPREAD_GATE_OVERRIDE_ENABLED,
+                "COMPRESSION_GATE_OVERRIDE_ENABLED": cfg.COMPRESSION_GATE_OVERRIDE_ENABLED,
+                "EXECUTION_GATE_OVERRIDE_ENABLED": cfg.EXECUTION_GATE_OVERRIDE_ENABLED,
+                "TIME_GATE_OVERRIDE_ENABLED": cfg.TIME_GATE_OVERRIDE_ENABLED,
+                "SPREAD_MEAN_GATE_OVERRIDE_ENABLED": cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED,
+                "SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED": cfg.SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED,
+                "SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED": cfg.SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED,
+                "SPREAD_DELTA_GATE_OVERRIDE_ENABLED": cfg.SPREAD_DELTA_GATE_OVERRIDE_ENABLED,
+                "COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED": cfg.COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED,
+                "ATR_RISING_GATE_OVERRIDE_ENABLED": cfg.ATR_RISING_GATE_OVERRIDE_ENABLED,
+                "EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED": cfg.EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED,
+                "TICK_DIRECTION_GATE_OVERRIDE_ENABLED": cfg.TICK_DIRECTION_GATE_OVERRIDE_ENABLED,
+                "POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED": cfg.POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED,
+                "SMC_SPREAD_MEAN_MAX": cfg.SMC_SPREAD_MEAN_MAX,
+                "SMC_SPREAD_STD_MAX": cfg.SMC_SPREAD_STD_MAX,
+                "SMC_SPREAD_PERCENTILE_MAX": cfg.SMC_SPREAD_PERCENTILE_MAX,
+                "SMC_CURRENT_SPREAD_DELTA_MAX": cfg.SMC_CURRENT_SPREAD_DELTA_MAX,
+                "SCALPER_SPREAD_MEAN_MAX": cfg.SCALPER_SPREAD_MEAN_MAX,
+                "SCALPER_SPREAD_STD_MAX": cfg.SCALPER_SPREAD_STD_MAX,
+                "SCALPER_SPREAD_PERCENTILE_MAX": cfg.SCALPER_SPREAD_PERCENTILE_MAX,
+                "SCALPER_CURRENT_SPREAD_DELTA_MAX": cfg.SCALPER_CURRENT_SPREAD_DELTA_MAX,
+                "COMPRESSION_RANGE_LOOKBACK": cfg.COMPRESSION_RANGE_LOOKBACK,
+                "COMPRESSION_ATR_MULTIPLIER": cfg.COMPRESSION_ATR_MULTIPLIER,
+                "SMC_THRESHOLD_WITH_TREND": cfg.SMC_THRESHOLD_WITH_TREND,
+                "SMC_THRESHOLD_COUNTER": cfg.SMC_THRESHOLD_COUNTER,
+                "SMC_THRESHOLD_COUNTER_MAX": cfg.SMC_THRESHOLD_COUNTER_MAX,
+                "SMC_MIN_RR": cfg.SMC_MIN_RR,
+                "SMC_TIMEFRAME_EMA_SLOPE_MIN": cfg.SMC_TIMEFRAME_EMA_SLOPE_MIN,
+                "SMC_LTF_TICK_CONFLICT_LONG_MAX": cfg.SMC_LTF_TICK_CONFLICT_LONG_MAX,
+                "SMC_LTF_TICK_CONFLICT_SHORT_MIN": cfg.SMC_LTF_TICK_CONFLICT_SHORT_MIN,
+                "SCALPER_QUALITY_THRESHOLD": cfg.SCALPER_QUALITY_THRESHOLD,
+                "SCALPER_ATR_MIN": cfg.SCALPER_ATR_MIN,
+                "SCALPER_ATR_MAX": cfg.SCALPER_ATR_MAX,
+                "SCALPER_EMA20_SLOPE_MIN": cfg.SCALPER_EMA20_SLOPE_MIN,
+                "SCALPER_BODY_RATIO_MIN": cfg.SCALPER_BODY_RATIO_MIN,
+                "SCALPER_TICK_DIR_THRESHOLD": cfg.SCALPER_TICK_DIR_THRESHOLD,
+                "SCALPER_SWEEP_LOOKBACK": cfg.SCALPER_SWEEP_LOOKBACK,
+                "SCALPER_SWEEP_TOLERANCE": cfg.SCALPER_SWEEP_TOLERANCE,
+                "SCALPER_MAX_TRADES_SESSION": cfg.SCALPER_MAX_TRADES_SESSION,
+                "SCALPER_LEVEL_COOLDOWN": cfg.SCALPER_LEVEL_COOLDOWN,
+                "MARKET_TICK_POLL_INTERVAL": cfg.MARKET_TICK_POLL_INTERVAL,
+                "DASHBOARD_WS_PUSH_INTERVAL": cfg.DASHBOARD_WS_PUSH_INTERVAL,
+            },
             "tier1_enabled": cfg.TIER1_ENABLED,
             "session_override_enabled": cfg.SESSION_OVERRIDE_ENABLED,
             "mt5_today_pnl": {
@@ -799,7 +869,52 @@ class AutoTrader:
                     "strategies":trader.strat_mgr.status(),"risk_pct":cfg.MAX_RISK_PCT,
                     "daily_target":cfg.DAILY_TARGET_DOLLARS,
                     "tier1_enabled":cfg.TIER1_ENABLED,
-                    "session_override_enabled":cfg.SESSION_OVERRIDE_ENABLED})
+                    "session_override_enabled":cfg.SESSION_OVERRIDE_ENABLED,
+                    "gate_config":{
+                        "ALL_GATES_OVERRIDE_ENABLED":cfg.ALL_GATES_OVERRIDE_ENABLED,
+                        "SPREAD_GATE_OVERRIDE_ENABLED":cfg.SPREAD_GATE_OVERRIDE_ENABLED,
+                        "COMPRESSION_GATE_OVERRIDE_ENABLED":cfg.COMPRESSION_GATE_OVERRIDE_ENABLED,
+                        "EXECUTION_GATE_OVERRIDE_ENABLED":cfg.EXECUTION_GATE_OVERRIDE_ENABLED,
+                        "TIME_GATE_OVERRIDE_ENABLED":cfg.TIME_GATE_OVERRIDE_ENABLED,
+                        "SPREAD_MEAN_GATE_OVERRIDE_ENABLED":cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED,
+                        "SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED":cfg.SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED,
+                        "SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED":cfg.SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED,
+                        "SPREAD_DELTA_GATE_OVERRIDE_ENABLED":cfg.SPREAD_DELTA_GATE_OVERRIDE_ENABLED,
+                        "COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED":cfg.COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED,
+                        "ATR_RISING_GATE_OVERRIDE_ENABLED":cfg.ATR_RISING_GATE_OVERRIDE_ENABLED,
+                        "EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED":cfg.EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED,
+                        "TICK_DIRECTION_GATE_OVERRIDE_ENABLED":cfg.TICK_DIRECTION_GATE_OVERRIDE_ENABLED,
+                        "POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED":cfg.POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED,
+                        "SMC_SPREAD_MEAN_MAX":cfg.SMC_SPREAD_MEAN_MAX,
+                        "SMC_SPREAD_STD_MAX":cfg.SMC_SPREAD_STD_MAX,
+                        "SMC_SPREAD_PERCENTILE_MAX":cfg.SMC_SPREAD_PERCENTILE_MAX,
+                        "SMC_CURRENT_SPREAD_DELTA_MAX":cfg.SMC_CURRENT_SPREAD_DELTA_MAX,
+                        "SCALPER_SPREAD_MEAN_MAX":cfg.SCALPER_SPREAD_MEAN_MAX,
+                        "SCALPER_SPREAD_STD_MAX":cfg.SCALPER_SPREAD_STD_MAX,
+                        "SCALPER_SPREAD_PERCENTILE_MAX":cfg.SCALPER_SPREAD_PERCENTILE_MAX,
+                        "SCALPER_CURRENT_SPREAD_DELTA_MAX":cfg.SCALPER_CURRENT_SPREAD_DELTA_MAX,
+                        "COMPRESSION_RANGE_LOOKBACK":cfg.COMPRESSION_RANGE_LOOKBACK,
+                        "COMPRESSION_ATR_MULTIPLIER":cfg.COMPRESSION_ATR_MULTIPLIER,
+                        "SMC_THRESHOLD_WITH_TREND":cfg.SMC_THRESHOLD_WITH_TREND,
+                        "SMC_THRESHOLD_COUNTER":cfg.SMC_THRESHOLD_COUNTER,
+                        "SMC_THRESHOLD_COUNTER_MAX":cfg.SMC_THRESHOLD_COUNTER_MAX,
+                        "SMC_MIN_RR":cfg.SMC_MIN_RR,
+                        "SMC_TIMEFRAME_EMA_SLOPE_MIN":cfg.SMC_TIMEFRAME_EMA_SLOPE_MIN,
+                        "SMC_LTF_TICK_CONFLICT_LONG_MAX":cfg.SMC_LTF_TICK_CONFLICT_LONG_MAX,
+                        "SMC_LTF_TICK_CONFLICT_SHORT_MIN":cfg.SMC_LTF_TICK_CONFLICT_SHORT_MIN,
+                        "SCALPER_QUALITY_THRESHOLD":cfg.SCALPER_QUALITY_THRESHOLD,
+                        "SCALPER_ATR_MIN":cfg.SCALPER_ATR_MIN,
+                        "SCALPER_ATR_MAX":cfg.SCALPER_ATR_MAX,
+                        "SCALPER_EMA20_SLOPE_MIN":cfg.SCALPER_EMA20_SLOPE_MIN,
+                        "SCALPER_BODY_RATIO_MIN":cfg.SCALPER_BODY_RATIO_MIN,
+                        "SCALPER_TICK_DIR_THRESHOLD":cfg.SCALPER_TICK_DIR_THRESHOLD,
+                        "SCALPER_SWEEP_LOOKBACK":cfg.SCALPER_SWEEP_LOOKBACK,
+                        "SCALPER_SWEEP_TOLERANCE":cfg.SCALPER_SWEEP_TOLERANCE,
+                        "SCALPER_MAX_TRADES_SESSION":cfg.SCALPER_MAX_TRADES_SESSION,
+                        "SCALPER_LEVEL_COOLDOWN":cfg.SCALPER_LEVEL_COOLDOWN,
+                        "MARKET_TICK_POLL_INTERVAL":cfg.MARKET_TICK_POLL_INTERVAL,
+                        "DASHBOARD_WS_PUSH_INTERVAL":cfg.DASHBOARD_WS_PUSH_INTERVAL,
+                    }})
                 elif p == "/analytics":
                     days = int((q.get("days") or ["30"])[0])
                     refresh = int((q.get("refresh") or ["0"])[0])
@@ -912,10 +1027,43 @@ class AutoTrader:
                         'MAX_LOT':float,'MIN_LOT':float,'DAILY_TARGET_DOLLARS':float,
                         'DAILY_LOSS_LIMIT_PCT':float,'MAX_CONSECUTIVE_LOSSES':int,
                         'MIN_TRADE_COOLDOWN':float,'LOSS_STREAK_PAUSE':int}
+                    _GATE_FLOAT_KEYS = {'SMC_SPREAD_MEAN_MAX','SMC_SPREAD_STD_MAX','SMC_SPREAD_PERCENTILE_MAX',
+                        'SMC_CURRENT_SPREAD_DELTA_MAX','SCALPER_SPREAD_MEAN_MAX','SCALPER_SPREAD_STD_MAX',
+                        'SCALPER_SPREAD_PERCENTILE_MAX','SCALPER_CURRENT_SPREAD_DELTA_MAX',
+                        'COMPRESSION_ATR_MULTIPLIER','SMC_THRESHOLD_WITH_TREND','SMC_THRESHOLD_COUNTER',
+                        'SMC_THRESHOLD_COUNTER_MAX','SMC_MIN_RR','SMC_TIMEFRAME_EMA_SLOPE_MIN',
+                        'SMC_LTF_TICK_CONFLICT_LONG_MAX','SMC_LTF_TICK_CONFLICT_SHORT_MIN',
+                        'SCALPER_QUALITY_THRESHOLD','SCALPER_ATR_MIN','SCALPER_ATR_MAX',
+                        'SCALPER_EMA20_SLOPE_MIN','SCALPER_BODY_RATIO_MIN',
+                        'SCALPER_TICK_DIR_THRESHOLD','SCALPER_SWEEP_TOLERANCE',
+                        'MARKET_TICK_POLL_INTERVAL','DASHBOARD_WS_PUSH_INTERVAL'}
+                    _GATE_INT_KEYS = {'COMPRESSION_RANGE_LOOKBACK','SCALPER_SWEEP_LOOKBACK',
+                        'SCALPER_MAX_TRADES_SESSION','SCALPER_LEVEL_COOLDOWN'}
+                    _GATE_BOOL_KEYS = {'ALL_GATES_OVERRIDE_ENABLED','SPREAD_GATE_OVERRIDE_ENABLED',
+                        'COMPRESSION_GATE_OVERRIDE_ENABLED','EXECUTION_GATE_OVERRIDE_ENABLED',
+                        'TIME_GATE_OVERRIDE_ENABLED','SPREAD_MEAN_GATE_OVERRIDE_ENABLED',
+                        'SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED','SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED',
+                        'SPREAD_DELTA_GATE_OVERRIDE_ENABLED','COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED',
+                        'ATR_RISING_GATE_OVERRIDE_ENABLED','EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED',
+                        'TICK_DIRECTION_GATE_OVERRIDE_ENABLED','POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED'}
                     updated = {}
                     for k,v in body.items():
                         if k in _RISK_KEYS:
                             val = _RISK_KEYS[k](v)
+                            setattr(cfg, k, val)
+                            updated[k] = val
+                        elif k in _GATE_FLOAT_KEYS:
+                            val = max(0.0, float(v))
+                            if k.endswith('_PERCENTILE_MAX'):
+                                val = min(1.0, val)
+                            setattr(cfg, k, val)
+                            updated[k] = val
+                        elif k in _GATE_INT_KEYS:
+                            val = max(1, int(v))
+                            setattr(cfg, k, val)
+                            updated[k] = val
+                        elif k in _GATE_BOOL_KEYS:
+                            val = bool(v)
                             setattr(cfg, k, val)
                             updated[k] = val
                     if 'TIER1_ENABLED' in body:
@@ -928,6 +1076,10 @@ class AutoTrader:
                         cfg.DAILY_TARGET_ENABLED = bool(body['DAILY_TARGET_ENABLED'])
                         updated['DAILY_TARGET_ENABLED'] = cfg.DAILY_TARGET_ENABLED
                     if updated:
+                        try:
+                            cfg.save_runtime_config()
+                        except Exception as e:
+                            trader.log("API", f"Config persistence failed: {e}")
                         if any(k in updated for k in ('LOSS_STREAK_PAUSE', 'MAX_CONSECUTIVE_LOSSES')):
                             trader.risk._loss_streak_pause_until = 0.0
                             trader.risk._consecutive_losses = 0

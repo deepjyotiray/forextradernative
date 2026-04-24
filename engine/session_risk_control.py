@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 import os
+import config as cfg
 from .trade_attribution import get_recent_attributions
 
 
@@ -89,7 +90,11 @@ class SessionRiskController:
         """Check if a new trade is allowed based on risk limits."""
         self.update_session()
         
-        if self._current_session == "CLOSED":
+        if self._current_session == "CLOSED" and not (
+            cfg.SESSION_OVERRIDE_ENABLED
+            or cfg.TIME_GATE_OVERRIDE_ENABLED
+            or cfg.ALL_GATES_OVERRIDE_ENABLED
+        ):
             return {
                 "allowed": False,
                 "reason": "Outside trading hours",
