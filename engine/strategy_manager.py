@@ -117,6 +117,8 @@ class StrategyManager:
             if sig.get("signal") in ("BUY", "SELL"):
                 sig["_auto_selected"] = True
                 sig["_auto_results"] = result["all_results"]
+            else:
+                sig["_auto_results"] = result["all_results"]
         else:
             strat = self._strategies[self._active]
             sig = _normalize_signal(strat.generate_signal(data), strat.name)
