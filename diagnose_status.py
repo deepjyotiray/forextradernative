@@ -5,7 +5,7 @@ Diagnostic script to check current trading system status.
 import requests
 import json
 
-BASE_URL = "http://127.0.0.1:8899"
+BASE_URL = "http://127.0.0.1:8000"
 
 def diagnose_status():
     print("🔍 Diagnosing trading system status...")

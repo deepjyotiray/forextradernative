@@ -122,6 +122,7 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <button class="btn btn-start" id="btnStart" onclick="post('/start')">&#9654; START</button>
   <button class="btn btn-stop" id="btnStop" onclick="post('/stop')">&#9632; STOP</button>
   <button class="btn btn-emergency" id="btnEmg" onclick="if(confirm('CLOSE ALL positions and stop?'))post('/emergency')">&#9940; EMERGENCY</button>
+  <button class="btn" style="background:#f97316;color:#fff" onclick="if(confirm('Restart the trading engine? (keeps positions open)'))post('/reload')" title="Hot reload - restart engine without closing positions">&#8635; HOT RELOAD</button>
   <button class="btn" style="background:#374151;color:#9ca3af" onclick="if(confirm('Shutdown the entire service?'))post('/shutdown')">&#9211; Shutdown</button>
   <div style="flex:1"></div>
   <div id="tradingStatus" style="font-size:14px;font-weight:700"></div>
