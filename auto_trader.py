@@ -714,6 +714,7 @@ class AutoTrader:
                 max_dd = dd
 
         return {
+            "app_version": cfg.APP_VERSION,
             "enabled": self.enabled,
             "mt5_connected": self._mt5_connected,
             "strategy": self.strat_mgr.active_name,
@@ -864,8 +865,8 @@ class AutoTrader:
                 elif p == "/logs": s._j({"logs": list(trader._log)[-200:]})
                 elif p == "/trades": s._j(trader.trades.status if trader.trades else {})
                 elif p == "/performance": s._j(trader.perf.get_stats())
-                elif p == "/health": s._j({"status":"healthy","service":"auto_trader"})
-                elif p == "/config": s._j({"symbol":cfg.SYMBOL,"strategy":trader.strat_mgr.active_name,
+                elif p == "/health": s._j({"status":"healthy","service":"auto_trader","app_version":cfg.APP_VERSION})
+                elif p == "/config": s._j({"app_version":cfg.APP_VERSION,"symbol":cfg.SYMBOL,"strategy":trader.strat_mgr.active_name,
                     "strategies":trader.strat_mgr.status(),"risk_pct":cfg.MAX_RISK_PCT,
                     "daily_target":cfg.DAILY_TARGET_DOLLARS,
                     "tier1_enabled":cfg.TIER1_ENABLED,

@@ -6,8 +6,9 @@ from fastapi.staticfiles import StaticFiles
 from engine.analytics_api import router as analytics_router
 from engine.order_api import router as order_router
 from engine.trader_api import router as trader_router
+import config as cfg
 
-app = FastAPI(title="Trading System API", version="1.0.0")
+app = FastAPI(title="Trading System API", version=cfg.APP_VERSION)
 _BASE_DIR = Path(__file__).resolve().parent
 _ANALYTICS_DIR = _BASE_DIR / "analytics_outputs"
 _ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
@@ -23,7 +24,7 @@ app.mount("/analytics-assets", StaticFiles(directory=str(_ANALYTICS_DIR)), name=
 async def root():
     return {
         "message": "Trading System API",
-        "version": "1.0.0",
+        "version": cfg.APP_VERSION,
         "analytics_dashboard": "/analytics",
         "trading_dashboard": "/dashboard",
         "status": "/status",
@@ -33,4 +34,4 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "trading_system"}
+    return {"status": "healthy", "service": "trading_system", "app_version": cfg.APP_VERSION}

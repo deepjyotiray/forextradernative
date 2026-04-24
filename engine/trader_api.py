@@ -252,6 +252,7 @@ def _build_tick_data(trader) -> dict:
     import config as cfg
     from engine.session_filter import get_session, is_market_open
     return {
+        "app_version": cfg.APP_VERSION,
         "enabled": trader.enabled,
         "mt5_connected": trader._mt5_connected,
         "tick": trader._last_tick,
@@ -331,6 +332,7 @@ def _build_full_status_sync() -> dict:
 
     status = trader.get_full_status()
     status.update({
+        "app_version": cfg.APP_VERSION,
         "symbol": trader.bridge.current_symbol if trader.bridge else cfg.SYMBOL,
         "strategy": trader.strat_mgr.active_name if trader.strat_mgr else "AUTO",
         "config_version": _config_version,
@@ -395,6 +397,7 @@ async def get_config():
     trader = get_auto_trader()
     import config as cfg
     return {
+        "app_version": cfg.APP_VERSION,
         "symbol": trader.bridge.current_symbol if trader.bridge else cfg.SYMBOL,
         "strategy": trader.strat_mgr.active_name,
         "strategies": trader.strat_mgr.status(),
