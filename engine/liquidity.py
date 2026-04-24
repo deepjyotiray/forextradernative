@@ -135,11 +135,32 @@ def compute_liquidity(m5_df: pd.DataFrame, m15_df: pd.DataFrame,
     fvgs = detect_fvg(m15_df) if m15_df is not None else []
     levels = detect_key_levels(h1_df, d1_df)
 
+    recent_buy_sweep_m5 = any(
+        s["type"] == "BUY_SWEEP" and s["idx"] >= (len(m5_df) - 5)
+        for s in sweeps_m5
+    ) if sweeps_m5 and m5_df is not None else False
+    recent_sell_sweep_m5 = any(
+        s["type"] == "SELL_SWEEP" and s["idx"] >= (len(m5_df) - 5)
+        for s in sweeps_m5
+    ) if sweeps_m5 and m5_df is not None else False
+    recent_buy_sweep_m15 = any(
+        s["type"] == "BUY_SWEEP" and s["idx"] >= (len(m15_df) - 3)
+        for s in sweeps_m15
+    ) if sweeps_m15 and m15_df is not None else False
+    recent_sell_sweep_m15 = any(
+        s["type"] == "SELL_SWEEP" and s["idx"] >= (len(m15_df) - 3)
+        for s in sweeps_m15
+    ) if sweeps_m15 and m15_df is not None else False
+
     return {
         "sweeps": sweeps_m5 + sweeps_m15,
         "order_blocks": obs,
         "fvg": fvgs,
         "key_levels": levels,
-        "recent_buy_sweep": any(s["type"] == "BUY_SWEEP" and s["idx"] >= (len(m5_df) - 5) for s in sweeps_m5) if sweeps_m5 and m5_df is not None else False,
-        "recent_sell_sweep": any(s["type"] == "SELL_SWEEP" and s["idx"] >= (len(m5_df) - 5) for s in sweeps_m5) if sweeps_m5 and m5_df is not None else False,
+        "recent_buy_sweep": recent_buy_sweep_m5 or recent_buy_sweep_m15,
+        "recent_sell_sweep": recent_sell_sweep_m5 or recent_sell_sweep_m15,
+        "recent_buy_sweep_m5": recent_buy_sweep_m5,
+        "recent_sell_sweep_m5": recent_sell_sweep_m5,
+        "recent_buy_sweep_m15": recent_buy_sweep_m15,
+        "recent_sell_sweep_m15": recent_sell_sweep_m15,
     }

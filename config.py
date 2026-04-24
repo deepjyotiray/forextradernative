@@ -1,5 +1,5 @@
 """
-Config — shared + per-strategy parameters.
+Shared configuration.
 """
 
 # MT5 connection
@@ -10,11 +10,12 @@ MT5_SERVER = None
 
 # Trading
 SYMBOL = "XAUUSD"
+AVAILABLE_SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "BTCUSD", "ETHUSD"]
 MAGIC_NUMBER = 234000
 DEVIATION = 20
 PIP_VALUE_PER_LOT = 100
 
-# Risk (defaults — strategies can override via their own params)
+# Risk defaults
 MAX_POSITIONS = 4
 MAX_RISK_PCT = 0.5
 MAX_DRAWDOWN_PCT = 5.0
@@ -34,7 +35,14 @@ NY_START = 13
 SESSION_BLOCK_MINUTES = 3
 
 # Data
-MAX_CANDLES = 1000  # ~3 days M5, ~16 hours M1 — recent data only
+MAX_CANDLES = 1000
+CANDLE_LIMITS = {
+    "M1": 300,
+    "M5": 200,
+    "M15": 200,
+    "H1": 200,
+    "H4": 200,
+}
 
 # API
 API_HOST = "127.0.0.1"
@@ -45,3 +53,6 @@ DEFAULT_STRATEGY = "AUTO"
 
 # Tier 1 upgrades toggle
 TIER1_ENABLED = True
+
+# Manual override for strategy session gate
+SESSION_OVERRIDE_ENABLED = False

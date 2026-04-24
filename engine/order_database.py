@@ -355,7 +355,7 @@ class OrderDatabase:
             if row:
                 stats = {k: row[k] for k in row.keys()}
             else:
-                stats = {}
+                stats = {'trades': 0, 'wins': 0, 'losses': 0, 'total_pnl': 0, 'avg_pnl': 0, 'best_trade': 0, 'worst_trade': 0}
             
             cursor = conn.execute("""
                 SELECT COUNT(*) as open_count, SUM(live_pnl) as open_pnl
@@ -364,6 +364,8 @@ class OrderDatabase:
             row = cursor.fetchone()
             if row:
                 stats.update({k: row[k] for k in row.keys()})
+            else:
+                stats.update({'open_count': 0, 'open_pnl': 0})
             
             for key in ['trades', 'wins', 'losses', 'open_count']:
                 stats[key] = stats[key] or 0

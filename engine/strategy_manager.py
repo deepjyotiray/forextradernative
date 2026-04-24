@@ -1,14 +1,30 @@
 """
-Strategy Manager — registry, hot-switch, and AUTO mode.
+Strategy Manager — registry, hot-switch, and AUTO mode with integrated control systems.
 
 Modes:
   Single strategy: only the active strategy runs
   AUTO: all strategies run every cycle, best signal wins
+  
+Integrated with:
+  - Master Control System for validation and logging
+  - Risk controls and trade pacing
+  - Parameter calibration and over-filtering detection
 """
 from typing import Dict, List, Optional
 from engine.strategies.base_strategy import BaseStrategy
+from engine.master_control import pre_trade_validation, log_trade_decision_comprehensive
 
 _AUTO = "AUTO"
+
+
+def _normalize_signal(sig, strategy_name: str) -> Dict:
+    if isinstance(sig, dict):
+        return sig
+    if sig is None:
+        reason = f"{strategy_name} returned no signal payload"
+    else:
+        reason = f"{strategy_name} returned invalid signal type: {type(sig).__name__}"
+    return {"signal": "NO_TRADE", "reason": reason}
 
 
 class StrategyManager:
@@ -64,7 +80,7 @@ class StrategyManager:
 
         for name, strat in self._strategies.items():
             try:
-                sig = strat.generate_signal(data)
+                sig = _normalize_signal(strat.generate_signal(data), name)
             except Exception as e:
                 sig = {"signal": "NO_TRADE", "reason": str(e)}
             results[name] = sig
@@ -90,9 +106,8 @@ class StrategyManager:
 
     def generate_signal(self, data: Dict) -> tuple:
         """
-        Main entry point. Returns (signal_dict, strategy_name).
-        In AUTO mode, evaluates all and picks best.
-        In single mode, runs only the active strategy.
+        Main entry point with integrated control systems.
+        Returns (signal_dict, strategy_name, trade_id)
         """
         if self._active == _AUTO:
             result = self.evaluate_all(data)
@@ -102,11 +117,66 @@ class StrategyManager:
             if sig.get("signal") in ("BUY", "SELL"):
                 sig["_auto_selected"] = True
                 sig["_auto_results"] = result["all_results"]
-            return sig, name
         else:
             strat = self._strategies[self._active]
-            sig = strat.generate_signal(data)
-            return sig, strat.name
+            sig = _normalize_signal(strat.generate_signal(data), strat.name)
+            name = strat.name
+        
+        trade_id = None
+        
+        # Apply comprehensive validation and logging
+        if sig.get("signal") in ("BUY", "SELL"):
+            # Pre-trade validation
+            allowed, validation_result = pre_trade_validation(sig, name, data)
+            
+            if allowed:
+                # Log trade taken
+                trade_id = log_trade_decision_comprehensive(
+                    strategy=name,
+                    signal=sig,
+                    market_data=data,
+                    decision="TRADE_TAKEN",
+                    reason=sig.get("reason", "Signal generated"),
+                    validation_result=validation_result
+                )
+                
+                # Add trade management info
+                sig["_trade_id"] = trade_id
+                sig["_validation_result"] = validation_result
+                
+            else:
+                # Log trade skipped
+                skip_reasons = [block["reason"] for block in validation_result.get("blocks", [])]
+                skip_reason = " | ".join(skip_reasons)
+                
+                log_trade_decision_comprehensive(
+                    strategy=name,
+                    signal=sig,
+                    market_data=data,
+                    decision="TRADE_SKIPPED",
+                    reason=f"Validation failed: {skip_reason}",
+                    validation_result=validation_result
+                )
+                
+                # Convert to NO_TRADE
+                sig = {
+                    "signal": "NO_TRADE",
+                    "reason": f"Blocked by validation: {skip_reason}",
+                    "_original_signal": sig,
+                    "_validation_result": validation_result
+                }
+        
+        elif sig.get("signal") == "NO_TRADE":
+            # Log decision skipped
+            log_trade_decision_comprehensive(
+                strategy=name,
+                signal=sig,
+                market_data=data,
+                decision="TRADE_SKIPPED",
+                reason=sig.get("reason", "No signal generated")
+            )
+        
+        return sig, name, trade_id
 
     def status(self) -> Dict:
         return {

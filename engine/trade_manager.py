@@ -27,12 +27,13 @@ class TradeRecord:
         "open_time", "open_time_ist", "fill_ts", "peak_pnl", "live_pnl",
         "sl_breakeven", "partial_closed", "trail_active",
         "initial_volume", "scalp", "be_trigger_price", "timeout_seconds",
-        "features",
+        "features", "manage_updates", "entry_tick_velocity", "current_price",
+        "early_fail_points",
     )
 
     def __init__(self, ticket, direction, volume, entry, sl, tp, sl_distance,
                  strategy="", confidence=0, reason="",
-                 scalp=False, be_trigger=0, timeout=0, features=None):
+                 scalp=False, be_trigger=0, timeout=0, early_fail=0, features=None):
         self.ticket = ticket
         self.direction = direction
         self.volume = volume
@@ -57,6 +58,10 @@ class TradeRecord:
         self.be_trigger_price = be_trigger
         self.timeout_seconds = timeout
         self.features = features or {}
+        self.manage_updates = 0
+        self.entry_tick_velocity = float(self.features.get("entry_tick_velocity", 0) or 0)
+        self.current_price = entry
+        self.early_fail_points = float(early_fail or self.features.get("early_fail_points", 0) or 0)
 
     def to_dict(self) -> Dict:
         return {s: getattr(self, s) for s in self.__slots__}
@@ -67,7 +72,7 @@ class TradeRecord:
                 d["sl"], d["tp"], d["sl_distance"], d.get("strategy", ""),
                 d.get("confidence", 0), d.get("reason", ""),
                 d.get("scalp", False), d.get("be_trigger_price", 0),
-                d.get("timeout_seconds", 0))
+                d.get("timeout_seconds", 0), d.get("early_fail_points", 0))
         t.initial_volume = d.get("initial_volume", d["volume"])
         t.open_time = d.get("open_time", "")
         t.open_time_ist = d.get("open_time_ist", "")
@@ -78,6 +83,9 @@ class TradeRecord:
         t.partial_closed = d.get("partial_closed", False)
         t.trail_active = d.get("trail_active", False)
         t.features = d.get("features", {})
+        t.manage_updates = d.get("manage_updates", 0)
+        t.entry_tick_velocity = float(d.get("entry_tick_velocity", t.features.get("entry_tick_velocity", 0)) or 0)
+        t.current_price = d.get("current_price", t.entry)
         return t
 
 
@@ -94,12 +102,12 @@ class TradeManager:
 
     def register_trade(self, ticket, direction, volume, entry, sl, tp, sl_distance,
                        strategy="", confidence=0, reason="",
-                       scalp=False, be_trigger=0, timeout=0, features=None,
+                       scalp=False, be_trigger=0, timeout=0, early_fail=0, features=None,
                        session_type="", market_phase=""):
         # Store in memory for active management
         self.open_trades[ticket] = TradeRecord(
             ticket, direction, volume, entry, sl, tp, sl_distance,
-            strategy, confidence, reason, scalp, be_trigger, timeout, features,
+            strategy, confidence, reason, scalp, be_trigger, timeout, early_fail, features,
         )
         
         # Store in database for permanent record
@@ -111,9 +119,10 @@ class TradeManager:
         
         self._save_state()
 
-    def manage_all(self, live_positions: List[Dict]):
+    def manage_all(self, live_positions: List[Dict], tick_metrics: Dict = None):
         live_map = {p["ticket"]: p for p in live_positions}
         closed = []
+        tick_metrics = tick_metrics or {}
 
         # Auto-adopt bot positions that exist in MT5 but aren't tracked
         for p in live_positions:
@@ -169,6 +178,7 @@ class TradeManager:
                 pnl = pos["net_profit"]
                 trade.live_pnl = pnl
                 trade.volume = pos["volume"]
+                trade.current_price = pos.get("current_price", trade.current_price)
                 
                 # Update SL/TP from MT5 (may have been modified by broker/EA)
                 if pos.get("sl"):
@@ -186,7 +196,7 @@ class TradeManager:
         for ticket, trade in list(self.open_trades.items()):
             if ticket in self._closing_tickets:
                 continue
-            self._manage_trade(trade)
+            self._manage_trade(trade, tick_metrics)
 
         if closed:
             self._save_state()
@@ -222,41 +232,55 @@ class TradeManager:
         except Exception:
             return result
 
-    def _manage_trade(self, t: TradeRecord):
+    def _manage_trade(self, t: TradeRecord, tick_metrics: Dict):
+        if self._apply_universal_management(t, tick_metrics):
+            return
         if t.scalp:
             self._manage_scalp(t)
         else:
             self._manage_swing(t)
 
+    def _apply_universal_management(self, t: TradeRecord, tick_metrics: Dict) -> bool:
+        age = time.time() - t.fill_ts
+        t.manage_updates += 1
+        current_price = t.current_price or t.entry
+        points_move = (current_price - t.entry) if t.direction == "BUY" else (t.entry - current_price)
+        current_tick_count = int(tick_metrics.get("tick_count", 0) or 0)
+        entry_tick_count = int(t.features.get("entry_tick_count", 0) or 0)
+        ticks_since_entry = (current_tick_count - entry_tick_count) if entry_tick_count and current_tick_count else t.manage_updates
+
+        early_fail = t.early_fail_points or 0.20
+        if cfg.TIER1_ENABLED and ticks_since_entry <= 15 and points_move <= -early_fail:
+            self._close_early(t, f"Early fail: {points_move:.2f} points in first {ticks_since_entry} ticks")
+            return True
+
+        if t.be_trigger_price > 0 and not t.sl_breakeven and t.live_pnl >= t.be_trigger_price:
+            new_sl = round(t.entry, 2)
+            res = self.bridge.modify_trade(t.ticket, new_sl, t.tp)
+            if res.get("success"):
+                t.sl = new_sl
+                t.sl_breakeven = True
+                self.order_db.update_management_flags(t.ticket, sl_breakeven=True)
+            return True
+
+        timeout = t.timeout_seconds or 60
+        if age >= timeout and points_move < 0.30:
+            self._close_early(t, f"Speed exit: {points_move:.2f} points after {age:.0f}s")
+            return True
+
+        current_velocity = float(tick_metrics.get("velocity", 0) or 0)
+        if t.entry_tick_velocity > 0 and current_velocity > 0 and age >= 10:
+            if current_velocity <= max(1.0, t.entry_tick_velocity * 0.5) and points_move < 0.30:
+                self._close_early(
+                    t,
+                    f"Velocity drop: {current_velocity:.1f} from {t.entry_tick_velocity:.1f} ticks/s",
+                )
+                return True
+
+        return False
+
     def _manage_scalp(self, t: TradeRecord):
         pnl = t.live_pnl
-        age = time.time() - t.fill_ts
-        price_move = pnl / (t.initial_volume * cfg.PIP_VALUE_PER_LOT) if t.initial_volume > 0 else 0
-
-        # Early failure: adverse move in first 15 seconds (tier1 only)
-        early_fail = getattr(t, 'early_fail', 0) or 0.20
-        if cfg.TIER1_ENABLED and age < 15 and price_move < -early_fail:
-            self._close_early(t, f"Early fail: ${price_move:.2f} in {age:.0f}s")
-            return
-
-        # BE trigger
-        if t.be_trigger_price > 0 and not t.sl_breakeven:
-            if price_move >= t.be_trigger_price:
-                buf = 0.05
-                new_sl = round((t.entry + buf) if t.direction == "BUY" else (t.entry - buf), 2)
-                res = self.bridge.modify_trade(t.ticket, new_sl, t.tp)
-                if res.get("success"):
-                    t.sl = new_sl
-                    t.sl_breakeven = True
-                    self.order_db.update_management_flags(t.ticket, sl_breakeven=True)
-                return
-
-        # Speed exit: no +$0.30 move in 60s
-        timeout = t.timeout_seconds or 60
-        if age >= timeout and price_move < 0.30:
-            self._close_early(t, f"Speed exit: +${price_move:.2f} in {age:.0f}s")
-            return
-
         # Reversal protection
         if t.peak_pnl > 2.0 and pnl < 0.50:
             self._close_early(t, f"Scalp reversal (peak ${t.peak_pnl:.2f} -> ${pnl:.2f})")
@@ -404,10 +428,11 @@ class TradeManager:
 
     @property
     def status(self) -> Dict:
+        today_stats = self.order_db.get_today_stats() if self.order_db else {}
         return {
             "open_trades": [t.to_dict() for t in self.open_trades.values()],
             "open_count": self.open_count,
-            "today_stats": self.order_db.get_today_stats(),
+            "today_stats": today_stats or {},
         }
     
     def get_order_history(self, days: int = 30) -> List[Dict]:

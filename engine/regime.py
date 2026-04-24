@@ -52,8 +52,8 @@ def classify_regime(h4_df: pd.DataFrame, h1_df: pd.DataFrame,
 
     # --- Tick chaos (news detection) ---
     tick_chaotic = False
-    if tick_snap and tick_snap.get("ready"):
-        if tick_snap["velocity"] > 50 and not tick_snap["spread_stable"]:
+    if tick_snap and isinstance(tick_snap, dict) and tick_snap.get("ready"):
+        if tick_snap.get("velocity", 0) > 50 and not tick_snap.get("spread_stable", True):
             tick_chaotic = True
         if tick_snap.get("max_spread", 0) > 1.0:
             tick_chaotic = True

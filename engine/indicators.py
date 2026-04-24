@@ -46,6 +46,7 @@ def compute_indicators(df: pd.DataFrame) -> Dict:
 
     ema9 = ema(c, 9)
     ema15 = ema(c, 15)
+    ema20 = ema(c, 20)
     ema50 = ema(c, 50) if len(c) >= 50 else ema9
     ema200 = ema(c, 200) if len(c) >= 200 else None
     atr7 = atr(h, l, c, 7)
@@ -60,21 +61,37 @@ def compute_indicators(df: pd.DataFrame) -> Dict:
     upper_wick = (h[last] - max(o[last], c[last])) / candle_range if candle_range > 0 else 0
     lower_wick = (min(o[last], c[last]) - l[last]) / candle_range if candle_range > 0 else 0
 
+    # Calculate 10-candle range for compression gate
+    range_10 = 0
+    if len(h) >= 10:
+        last_10_high = h[-10:].max()
+        last_10_low = l[-10:].min()
+        range_10 = last_10_high - last_10_low
+
+    # Calculate ATR slope for compression gate
+    atr_slope = 0
+    if len(atr14) >= 4:
+        atr_slope = atr14[-1] - atr14[-4]
+
     return {
         "ema9": round(ema9[last], 2),
         "ema15": round(ema15[last], 2),
+        "ema20": round(ema20[last], 2),
         "ema50": round(ema50[last], 2) if len(c) >= 50 else None,
         "ema200": round(ema200[last], 2) if ema200 is not None else None,
         "ema9_slope": round(ema9[last] - ema9[last - 1], 4) if last > 0 else 0,
+        "ema20_slope": round(ema20[last] - ema20[last - 1], 4) if last > 0 else 0,
         "ema_gap": round(abs(ema9[last] - ema15[last]), 4),
         "atr": round(atr7[last], 4),
         "atr14": round(atr14[last], 4),
         "atr20": round(atr20[last], 4),
         "atr_ratio": round(atr7[last] / atr20[last], 4) if atr20[last] > 0 else 1.0,
+        "atr_slope": round(atr_slope, 4),
         "rsi": round(rsi14[last], 2),
         "body_ratio": round(body_ratio, 4),
         "upper_wick": round(upper_wick, 4),
         "lower_wick": round(lower_wick, 4),
+        "range_10": round(range_10, 4),
         "close": c[last],
         "open": o[last],
         "high": h[last],
@@ -82,3 +99,30 @@ def compute_indicators(df: pd.DataFrame) -> Dict:
         "is_bullish": c[last] > o[last],
         "candle_range": round(candle_range, 4),
     }
+
+
+def compute_timeframe_context(m1_df: pd.DataFrame = None,
+                              m5_df: pd.DataFrame = None,
+                              h1_df: pd.DataFrame = None) -> Dict:
+    """Add the required live context metrics without changing strategy architecture."""
+    ctx: Dict = {}
+
+    if m1_df is not None and len(m1_df) >= 21:
+        c1 = m1_df["close"].values.astype(float)
+        ema20_m1 = ema(c1, 20)
+        ctx["m1_ema20"] = round(ema20_m1[-1], 2)
+        ctx["m1_ema20_slope"] = round(ema20_m1[-1] - ema20_m1[-3], 4) if len(ema20_m1) >= 3 else 0.0
+
+    if m5_df is not None and len(m5_df) >= 21:
+        c5 = m5_df["close"].values.astype(float)
+        ema20_m5 = ema(c5, 20)
+        ctx["m5_ema20"] = round(ema20_m5[-1], 2)
+        ctx["m5_ema20_slope"] = round(ema20_m5[-1] - ema20_m5[-3], 4) if len(ema20_m5) >= 3 else 0.0
+
+    if h1_df is not None and len(h1_df) >= 50:
+        c_h1 = h1_df["close"].values.astype(float)
+        ema50_h1 = ema(c_h1, 50)
+        ctx["h1_ema50"] = round(ema50_h1[-1], 2)
+        ctx["h1_ema50_slope"] = round(ema50_h1[-1] - ema50_h1[-3], 4) if len(ema50_h1) >= 3 else 0.0
+
+    return ctx

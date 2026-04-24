@@ -208,5 +208,28 @@ class XGBModel:
             self.is_trained = False
 
 
+def apply_xgb_filter(signal: Dict, indicators: Dict, regime: Dict, bias: Dict, tick: Dict) -> Dict:
+    """Apply XGBoost as a filter only. Returns modified signal or blocks it."""
+    if signal.get("signal") not in ("BUY", "SELL"):
+        return signal
+    
+    win_prob = xgb_model.predict_win_prob(signal, indicators, regime, bias, tick)
+    
+    # Use XGBoost only as a filter with threshold
+    threshold = 0.55  # Only trade if win probability > 55%
+    
+    if win_prob < threshold:
+        return {
+            "signal": "NO_TRADE",
+            "reason": f"XGBoost filter: win probability {win_prob:.0%} < {threshold:.0%}",
+            "xgb_prob": win_prob,
+            "xgb_threshold": threshold
+        }
+    
+    # Add XGB info to signal but don't modify confidence
+    signal["_xgb_prob"] = win_prob
+    signal["_xgb_threshold"] = threshold
+    return signal
+
 # Singleton
 xgb_model = XGBModel()

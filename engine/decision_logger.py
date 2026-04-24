@@ -232,3 +232,51 @@ def get_session_stats(hours: int = 24) -> Dict:
         stats["error"] = str(e)
     
     return stats
+
+
+def get_recent_decisions(limit: int = 20) -> list:
+    """Return the most recent decision log entries, newest first."""
+    if not os.path.exists(_LOG_PATH):
+        return []
+    entries = []
+    try:
+        with open(_LOG_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entries.append(json.loads(line.strip()))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return list(reversed(entries[-limit:]))
+
+
+def get_live_blockers(limit: int = 20) -> Dict:
+    """Summarize the latest blockers so the UI can explain why no trades are firing."""
+    recent = get_recent_decisions(limit)
+    skipped = [e for e in recent if e.get("decision") == "TRADE_SKIPPED"]
+    latest_by_strategy = {}
+    counts = {}
+
+    for entry in skipped:
+        strategy = entry.get("strategy", "UNKNOWN")
+        if strategy not in latest_by_strategy:
+            latest_by_strategy[strategy] = {
+                "reason": entry.get("reason", ""),
+                "timestamp": entry.get("timestamp"),
+                "spread_mean": entry.get("spread_mean"),
+                "compression_ok": entry.get("compression_ok"),
+            }
+        reason = entry.get("reason", "Unknown")
+        counts[reason] = counts.get(reason, 0) + 1
+
+    top_reasons = [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:5]
+    ]
+
+    return {
+        "latest_by_strategy": latest_by_strategy,
+        "top_reasons": top_reasons,
+        "recent_skipped_count": len(skipped),
+    }

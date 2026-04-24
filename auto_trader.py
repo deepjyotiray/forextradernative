@@ -16,16 +16,19 @@ import sys
 import threading
 import json
 import os
+import mimetypes
 from collections import deque
 from typing import Dict
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs, unquote
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 import config as cfg
+from engine.analytics_api import _build_analytics_page, _LATEST_DIR, _OUTPUT_ROOT
 from engine.mt5_bridge import MT5Bridge
-from engine.indicators import compute_indicators
+from engine.indicators import compute_indicators, compute_timeframe_context
 from engine.zones import ZoneDetector
 from engine.session_filter import get_session, is_session_open_blocked, is_market_open
 from engine.risk_manager import RiskManager
@@ -40,10 +43,18 @@ from engine.smc_strategy import SMCStrategy
 from engine.sweep_scalper import SweepScalper
 from engine.calendar import calendar as eco_calendar
 from engine.correlation import correlation as corr_engine
+from engine.order_database import OrderDatabase
+from engine.visual_analytics import generate_visual_suite
 from engine.xgb_model import xgb_model
+from engine.anti_starvation import record_trade_taken
+from engine.decision_logger import get_live_blockers
 
-_TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "H1": 60, "H4": 120, "D1": 300}
+_TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "H1": 60, "H4": 120}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _safe_dict(value):
+    return value if isinstance(value, dict) else {}
 
 
 class AutoTrader:
@@ -65,6 +76,7 @@ class AutoTrader:
         self._candles: Dict = {}
         self._candle_counts: Dict = {}
         self._indicators: Dict = {}
+        self._tf_context: Dict = {}
         self._zones: Dict = {}
         self._regime: Dict = {}
         self._bias: Dict = {}
@@ -100,11 +112,12 @@ class AutoTrader:
             pass
 
     def run_service(self):
-        self.log("INIT", "Starting XAUUSD Auto Trader service...")
+        self.log("INIT", f"Starting {cfg.SYMBOL} Auto Trader service...")
         if self.bridge.connect():
             self._mt5_connected = True
             acct = self.bridge.get_account()
-            self.risk.set_start_balance(acct.get("balance", 0))
+            if acct:
+                self.risk.set_start_balance(acct.get("balance", 0))
             self.risk.set_risk_multiplier(self.perf.risk_multiplier())
             # Seed daily P&L from MT5 deal history (single source of truth)
             # Initial MT5 history poll
@@ -161,7 +174,9 @@ class AutoTrader:
                     if self.bridge.connect():
                         self._mt5_connected = True
                         corr_engine.init_symbols()
-                        self.risk.set_start_balance(self.bridge.get_account().get("balance", 0))
+                        acct = self.bridge.get_account()
+                        if acct:
+                            self.risk.set_start_balance(acct.get("balance", 0))
                         self.log("ENGINE", "MT5 reconnected")
                     else:
                         time.sleep(5)
@@ -208,18 +223,36 @@ class AutoTrader:
             if new_count != old_count:
                 self._candle_counts[tf] = new_count
                 if tf == "M1":
-                    self._indicators = compute_indicators(df)
+                    try:
+                        self._indicators = compute_indicators(df)
+                    except Exception as e:
+                        self.log("ERR", f"Indicators computation failed for {tf}: {e}")
+                        self._indicators = {}
+                    self._refresh_timeframe_context()
                 if tf == "M5":
                     zones_dirty = True
+                    self._refresh_timeframe_context()
                 if tf in ("M15", "H1", "H4"):
                     regime_dirty = True
+                    if tf == "H1":
+                        self._refresh_timeframe_context()
 
         if zones_dirty:
             m5 = self._candles.get("M5")
             if m5 is not None and len(m5) >= 50:
-                self._zones = self.zone_detector.detect(m5)
+                try:
+                    self._zones = self.zone_detector.detect(m5)
+                except Exception as e:
+                    self.log("ERR", f"Zone detection failed: {e}")
+                    self._zones = {}
         if regime_dirty or self._cycle % 30 == 0:
-            self._recompute_regime_bias()
+            try:
+                self._recompute_regime_bias()
+            except Exception as e:
+                self.log("ERR", f"Regime/bias computation failed: {e}")
+                self._regime = {}
+                self._bias = {}
+                self._liquidity = {}
         if self._cycle % 60 == 0:
             eco_calendar.poll()
             self._calendar = eco_calendar.check()
@@ -227,17 +260,17 @@ class AutoTrader:
             self._correlation = corr_engine.compute()
 
         # Feed floating P&L to risk manager for combined target check
-        floating = sum(p["net_profit"] for p in all_positions if p.get("magic") == cfg.MAGIC_NUMBER)
+        floating = sum(p.get("net_profit", 0) for p in (all_positions or []) if p.get("magic") == cfg.MAGIC_NUMBER)
         self.risk.update_floating_pnl(floating)
 
         # Close all open trades if daily target/loss limit breached (realized+floating)
-        if self.risk.should_close_all() and self.trades.open_count > 0:
+        if self.trades and self.risk.should_close_all() and self.trades.open_count > 0:
             reason = self.risk.should_close_all_reason()
             self.log("RISK", f"{reason}. Closing all.")
             self.trades.close_all()
 
         # Close all if equity drawdown exceeds limit
-        if self.risk.should_close_drawdown(account) and self.trades.open_count > 0:
+        if self.trades and account and self.risk.should_close_drawdown(account) and self.trades.open_count > 0:
             bal = account.get('balance', 0)
             eq = account.get('equity', bal)
             dd = (bal - eq) / bal * 100 if bal > 0 else 0
@@ -245,7 +278,7 @@ class AutoTrader:
             self.trades.close_all()
 
         # Manage open trades (ALWAYS) — pass ALL positions for P&L matching
-        closed = self.trades.manage_all(all_positions)
+        closed = self.trades.manage_all(all_positions or [], tick_metrics=self.tick_proc.snapshot())
         for ticket, pnl, won in closed:
             # Record to performance tracker with MT5-sourced P&L + features from DB
             record = {"ticket": ticket, "pnl": pnl, "won": won,
@@ -289,12 +322,13 @@ class AutoTrader:
                 self._last_gate_log = now
                 self.log("GATE", f"Session blocked: {block_reason}")
             return
-        if self._calendar.get("blocked"):
+        calendar_state = _safe_dict(self._calendar)
+        if calendar_state.get("blocked"):
             if now - getattr(self, '_last_gate_log', 0) > 60:
                 self._last_gate_log = now
-                self.log("GATE", f"Calendar blocked: {self._calendar.get('reason', '')}")
+                self.log("GATE", f"Calendar blocked: {calendar_state.get('reason', '')}")
             return
-        allowed, risk_reason = self.risk.can_trade(account, len(positions))  # count only our positions
+        allowed, risk_reason = self.risk.can_trade(account, len(positions or []))  # count only our positions
         if not allowed:
             if now - getattr(self, '_last_gate_log', 0) > 60:
                 self._last_gate_log = now
@@ -305,12 +339,13 @@ class AutoTrader:
         strat_data = {
             "m1_df": self._candles.get("M1"), "m5_df": self._candles.get("M5"),
             "m15_df": self._candles.get("M15"), "h1_df": self._candles.get("H1"),
-            "h4_df": self._candles.get("H4"), "d1_df": self._candles.get("D1"),
+            "h4_df": self._candles.get("H4"),
             "tick": tick, "zones": self._zones, "indicators": self._indicators,
-            "account": account, "positions": positions,
+            "tf_context": self._tf_context,
+            "account": account, "positions": positions or [],
             "correlation": self._correlation, "calendar": self._calendar,
         }
-        sig, strat_name = self.strat_mgr.generate_signal(strat_data)
+        sig, strat_name, trade_id = self.strat_mgr.generate_signal(strat_data)
         action = sig.get("signal", "NO_TRADE")
 
         if action not in ("BUY", "SELL"):
@@ -358,7 +393,7 @@ class AutoTrader:
 
         # Lot sizing — scalper caps at 0.05, SMC uses full risk calc
         is_scalp = sig.get("_scalp", False)
-        lot = self.risk.calculate_lot(account, sl_distance)
+        lot = self.risk.calculate_lot(account or {}, sl_distance)
         if is_scalp:
             lot = min(0.05, lot)
         elif get_session() == "ASIAN":
@@ -366,7 +401,7 @@ class AutoTrader:
         lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
 
         # Execute with retry + spread re-check
-        signal_spread = tick.get("spread", 0)
+        signal_spread = sig.get("_entry_spread", (tick or {}).get("spread", 0))
         if cfg.TIER1_ENABLED and self.tick_proc.spread_changed(signal_spread, max_delta=0.03):
             self.log("BLOCKED", f"[{strat_name}] Spread widened since signal")
             return
@@ -381,6 +416,7 @@ class AutoTrader:
         if result and result.get("success"):
             t = result["ticket"]
             fp = result["price"]
+            live_tick_metrics = self.tick_proc.snapshot() or {}
             self.trades.register_trade(
                 t, action, lot, fp, sl, tp, sl_distance,
                 strategy=strat_name, confidence=sig.get("confidence", 0),
@@ -388,18 +424,22 @@ class AutoTrader:
                 scalp=is_scalp,
                 be_trigger=sig.get("_be_trigger", 0),
                 timeout=sig.get("_timeout", 0),
+                early_fail=sig.get("_early_fail", 0),
                 features={
                     "atr": self._indicators.get("atr", 0),
                     "atr_ratio": self._indicators.get("atr_ratio", 1),
                     "rsi": self._indicators.get("rsi", 50),
                     "ema_slope": self._indicators.get("ema9_slope", 0),
                     "body_ratio": self._indicators.get("body_ratio", 0),
-                    "spread": tick.get("spread", 0),
+                    "spread": (tick or {}).get("spread", 0),
+                    "entry_tick_velocity": live_tick_metrics.get("velocity", 0),
+                    "entry_tick_count": live_tick_metrics.get("tick_count", 0),
                     "regime": self._regime.get("state", ""),
                     "bias_conf": self._bias.get("confidence", 0),
                     "session": get_session(),
                 },
             )
+            record_trade_taken()
             self.risk.record_trade_opened()
             self._stats["trades"] += 1
             self.log("TRADE", f"[{strat_name}] {action} {lot} lot @ {fp} | "
@@ -413,10 +453,21 @@ class AutoTrader:
         m1 = self._candles.get("M1")
         if m1 is not None and len(m1) >= 21:
             self._indicators = compute_indicators(m1)
+        self._refresh_timeframe_context()
         m5 = self._candles.get("M5")
         if m5 is not None and len(m5) >= 50:
             self._zones = self.zone_detector.detect(m5)
         self._recompute_regime_bias()
+
+    def _refresh_timeframe_context(self):
+        self._tf_context = compute_timeframe_context(
+            self._candles.get("M1"),
+            self._candles.get("M5"),
+            self._candles.get("H1"),
+        )
+        if self._indicators is None:
+            self._indicators = {}
+        self._indicators.update(self._tf_context)
 
     def _poll_mt5_history(self):
         """Poll MT5 deal history - SINGLE SOURCE OF TRUTH for closed trades."""
@@ -476,16 +527,30 @@ class AutoTrader:
 
     def _recompute_regime_bias(self):
         ts = self.tick_proc.snapshot()
-        self._regime = classify_regime(self._candles.get("H4"), self._candles.get("H1"), self._candles.get("M15"), ts)
-        self._bias = compute_bias(self._candles.get("H4"), self._candles.get("H1"), self._candles.get("M15"))
-        self._liquidity = compute_liquidity(self._candles.get("M5"), self._candles.get("M15"),
-                                             self._candles.get("H1"), self._candles.get("D1"))
+        # Ensure ts is not None before passing to classify_regime
+        if ts is None:
+            ts = {"ready": False}
+        self._regime = _safe_dict(classify_regime(self._candles.get("H4"), self._candles.get("H1"), self._candles.get("M15"), ts))
+        self._bias = _safe_dict(compute_bias(self._candles.get("H4"), self._candles.get("H1"), self._candles.get("M15")))
+        self._liquidity = _safe_dict(compute_liquidity(
+            self._candles.get("M5"),
+            self._candles.get("M15"),
+            self._candles.get("H1"),
+            None,
+        ))
 
     def _log_status(self, tick):
-        s, p = get_session(), tick["bid"]
-        r, b = self._regime.get("state", "?"), self._bias.get("direction", "?")
+        s, p = get_session(), (tick or {}).get("bid", 0)
+        regime = _safe_dict(self._regime)
+        bias = _safe_dict(self._bias)
+        r, b = regime.get("state", "?"), bias.get("direction", "?")
+        daily_pnl = 0
+        if self.trades and self.trades.order_db:
+            today_stats = self.trades.order_db.get_today_stats()
+            if today_stats:
+                daily_pnl = today_stats.get('total_pnl', 0)
         self.log("STATUS", f"[{self.strat_mgr.active_name}] {s} | {p:.2f} | {r} | Bias:{b} | "
-                 f"Open:{self.trades.open_count} | Daily:${self.trades.order_db.get_today_stats().get('total_pnl', 0) if self.trades else 0:+.2f}")
+                 f"Open:{self.trades and self.trades.open_count or 0} | Daily:${daily_pnl:+.2f}")
 
     def _get_xgb_live_prediction(self) -> Dict:
         """Get live XGBoost prediction for current market conditions."""
@@ -493,6 +558,9 @@ class AutoTrader:
             return {"available": False, "reason": "Model not trained or no tick data"}
         
         try:
+            indicators = _safe_dict(self._indicators)
+            regime = _safe_dict(self._regime)
+            bias = _safe_dict(self._bias)
             # Create a mock signal for prediction
             mock_signal = {
                 "signal": "SELL",  # Default direction for prediction
@@ -503,18 +571,18 @@ class AutoTrader:
             # Get prediction for SELL signal
             sell_prob = xgb_model.predict_win_prob(
                 {**mock_signal, "signal": "SELL"}, 
-                self._indicators, 
-                self._regime, 
-                self._bias, 
+                indicators, 
+                regime, 
+                bias, 
                 self._last_tick
             )
             
             # Get prediction for BUY signal
             buy_prob = xgb_model.predict_win_prob(
                 {**mock_signal, "signal": "BUY"}, 
-                self._indicators, 
-                self._regime, 
-                self._bias, 
+                indicators, 
+                regime, 
+                bias, 
                 self._last_tick
             )
             
@@ -538,30 +606,44 @@ class AutoTrader:
                 "model_confidence": "HIGH" if abs(buy_prob - sell_prob) > 0.2 else "LOW",
                 "features_used": {
                     "session": get_session(),
-                    "atr": self._indicators.get("atr", 0),
-                    "atr_ratio": self._indicators.get("atr_ratio", 1),
-                    "rsi": self._indicators.get("rsi", 50),
-                    "ema_slope": self._indicators.get("ema9_slope", 0),
-                    "body_ratio": self._indicators.get("body_ratio", 0),
-                    "spread": self._last_tick.get("spread", 0),
-                    "regime": self._regime.get("state", ""),
-                    "bias_conf": self._bias.get("confidence", 0)
+                    "atr": indicators.get("atr", 0),
+                    "atr_ratio": indicators.get("atr_ratio", 1),
+                    "rsi": indicators.get("rsi", 50),
+                    "ema_slope": indicators.get("ema9_slope", 0),
+                    "body_ratio": indicators.get("body_ratio", 0),
+                    "spread": (self._last_tick or {}).get("spread", 0),
+                    "regime": regime.get("state", ""),
+                    "bias_conf": bias.get("confidence", 0)
                 }
             }
         except Exception as e:
             return {"available": False, "reason": f"Prediction error: {str(e)}"}
 
     def get_full_status(self) -> Dict:
+        # Debug: Log current symbol state
+        current_sym = self.bridge.current_symbol
+        if hasattr(self, '_last_logged_symbol') and self._last_logged_symbol != current_sym:
+            self.log("DEBUG", f"Symbol changed from {getattr(self, '_last_logged_symbol', 'unknown')} to {current_sym}")
+        self._last_logged_symbol = current_sym
+        indicators = _safe_dict(self._indicators)
+        zones = _safe_dict(self._zones)
+        regime = _safe_dict(self._regime)
+        bias = _safe_dict(self._bias)
+        liquidity = _safe_dict(self._liquidity)
+        calendar_state = _safe_dict(self._calendar)
+        correlation = _safe_dict(self._correlation)
         # Daily PNL from DB (single source of truth, IST-based)
-        db_today = self.trades.order_db.get_today_stats() if self.trades else {}
+        db_today = {}
+        if self.trades and self.trades.order_db:
+            db_today = self.trades.order_db.get_today_stats() or {}
         db_daily_pnl = db_today.get('total_pnl', 0)
         db_trades = db_today.get('trades', 0)
         db_wins = db_today.get('wins', 0)
         db_losses = db_today.get('losses', 0)
 
         # Closed history from DB for dashboard, enriched with MT5 data for missing fields
-        db_closed = self.trades.order_db.get_closed_orders(30) if self.trades else []
-        mt5_map = {t['ticket']: t for t in self._mt5_closed_history} if self._mt5_closed_history else {}
+        db_closed = self.trades.order_db.get_closed_orders(30) if self.trades and self.trades.order_db else []
+        mt5_map = {t['ticket']: t for t in (self._mt5_closed_history or [])}
         closed_for_dash = []
         for o in db_closed:
             mt5_t = mt5_map.get(o['ticket'], {})
@@ -611,23 +693,24 @@ class AutoTrader:
             "mt5_connected": self._mt5_connected,
             "strategy": self.strat_mgr.active_name,
             "strategies": self.strat_mgr.status(),
-            "symbol": cfg.SYMBOL,
+            "symbol": self.bridge.current_symbol,
+            "available_symbols": cfg.AVAILABLE_SYMBOLS,
             "session": get_session(),
             "market_open": is_market_open(),
             "tick": self._last_tick,
             "account": self._last_account,
-            "indicators": self._indicators,
-            "zones": self._zones,
-            "regime": self._regime,
-            "bias": self._bias,
+            "indicators": indicators,
+            "zones": zones,
+            "regime": regime,
+            "bias": bias,
             "liquidity": {
-                "sweeps": len(self._liquidity.get("sweeps", [])),
-                "order_blocks": len(self._liquidity.get("order_blocks", [])),
-                "fvg": len(self._liquidity.get("fvg", [])),
-                "key_levels": self._liquidity.get("key_levels", {}),
+                "sweeps": len(liquidity.get("sweeps", [])),
+                "order_blocks": len(liquidity.get("order_blocks", [])),
+                "fvg": len(liquidity.get("fvg", [])),
+                "key_levels": liquidity.get("key_levels", {}),
             },
-            "calendar": self._calendar,
-            "correlation": self._correlation,
+            "calendar": calendar_state,
+            "correlation": correlation,
             "candles": {tf: len(df) for tf, df in self._candles.items()},
             "risk": self.risk.daily_status,
             "daily_target": cfg.DAILY_TARGET_DOLLARS,
@@ -645,6 +728,7 @@ class AutoTrader:
                 "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE,
             },
             "tier1_enabled": cfg.TIER1_ENABLED,
+            "session_override_enabled": cfg.SESSION_OVERRIDE_ENABLED,
             "mt5_today_pnl": {
                 'pnl': db_daily_pnl,
                 'trades': db_trades,
@@ -653,7 +737,7 @@ class AutoTrader:
                 'source': 'orders_db',
             },
             "mt5_positions": self.bridge.get_positions() if self._mt5_connected else [],
-            "mt5_floating_pnl": self.bridge.get_floating_pnl() if self._mt5_connected else {},
+            "mt5_floating_pnl": self.bridge.get_floating_pnl() if self._mt5_connected else {"total": 0, "count": 0, "positions": []},
             "closed_history": closed_for_dash,
             "xgb": xgb_model.get_feature_importance(),
             "xgb_live_prediction": self._get_xgb_live_prediction(),
@@ -669,8 +753,9 @@ class AutoTrader:
                 "max_drawdown": round(max_dd, 2),
                 "avg_rr": round(avg_win / avg_loss, 2) if avg_loss > 0 else 0,
             },
-            "trades": self.trades.status if self.trades else {},
+            "trades": self.trades.status if self.trades else {"open_trades": [], "open_count": 0, "today_stats": {"trades": 0, "wins": 0, "losses": 0, "total_pnl": 0, "avg_pnl": 0, "best_trade": 0, "worst_trade": 0, "open_count": 0, "open_pnl": 0}},
             "stats": self._stats,
+            "live_blockers": get_live_blockers(30),
             "log": list(self._log)[-50:],
         }
 
@@ -679,6 +764,7 @@ class AutoTrader:
         with open(dash_path, encoding="utf-8") as f:
             dashboard_html = f.read()
         trader = self
+        fallback_order_db = OrderDatabase()
 
         class H(BaseHTTPRequestHandler):
             def log_message(self, *_): pass
@@ -689,16 +775,86 @@ class AutoTrader:
             def _h(s, c):
                 s.send_response(200); s.send_header("Content-Type","text/html; charset=utf-8")
                 s.end_headers(); s.wfile.write(c.encode("utf-8"))
+            def _bytes(s, payload, content_type="application/octet-stream", c=200):
+                s.send_response(c)
+                s.send_header("Content-Type", content_type)
+                s.send_header("Access-Control-Allow-Origin","*")
+                s.end_headers()
+                s.wfile.write(payload)
+            def _order_db(s):
+                if trader.trades and trader.trades.order_db:
+                    return trader.trades.order_db
+                return fallback_order_db
 
             def do_GET(s):
-                p = s.path
+                parsed = urlparse(s.path)
+                p = parsed.path
+                q = parse_qs(parsed.query)
                 if p == "/status": s._j(trader.get_full_status())
                 elif p == "/logs": s._j({"logs": list(trader._log)[-200:]})
                 elif p == "/trades": s._j(trader.trades.status if trader.trades else {})
                 elif p == "/performance": s._j(trader.perf.get_stats())
+                elif p == "/health": s._j({"status":"healthy","service":"auto_trader"})
                 elif p == "/config": s._j({"symbol":cfg.SYMBOL,"strategy":trader.strat_mgr.active_name,
                     "strategies":trader.strat_mgr.status(),"risk_pct":cfg.MAX_RISK_PCT,
-                    "daily_target":cfg.DAILY_TARGET_DOLLARS})
+                    "daily_target":cfg.DAILY_TARGET_DOLLARS,
+                    "tier1_enabled":cfg.TIER1_ENABLED,
+                    "session_override_enabled":cfg.SESSION_OVERRIDE_ENABLED})
+                elif p == "/analytics":
+                    days = int((q.get("days") or ["30"])[0])
+                    refresh = int((q.get("refresh") or ["0"])[0])
+                    manifest_path = _LATEST_DIR / "manifest.json"
+                    if refresh or not _LATEST_DIR.exists():
+                        result = generate_visual_suite(days=days, output_dir=str(_LATEST_DIR))
+                    else:
+                        if manifest_path.exists():
+                            result = json.loads(manifest_path.read_text(encoding="utf-8"))
+                            if result.get("period_days") != days:
+                                result = generate_visual_suite(days=days, output_dir=str(_LATEST_DIR))
+                        else:
+                            result = generate_visual_suite(days=days, output_dir=str(_LATEST_DIR))
+                    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                    manifest_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+                    s._h(_build_analytics_page(result, days))
+                elif p == "/analytics/api/generate":
+                    days = int((q.get("days") or ["30"])[0])
+                    result = generate_visual_suite(days=days, output_dir=str(_LATEST_DIR))
+                    manifest_path = _LATEST_DIR / "manifest.json"
+                    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                    manifest_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+                    s._j(result)
+                elif p.startswith("/analytics-assets/"):
+                    rel_path = unquote(p[len("/analytics-assets/"):]).lstrip("/")
+                    target = (_OUTPUT_ROOT / rel_path).resolve()
+                    if not str(target).startswith(str(_OUTPUT_ROOT.resolve())) or not target.is_file():
+                        s._j({"error":"Asset not found"},404)
+                    else:
+                        mime_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+                        s._bytes(target.read_bytes(), mime_type)
+                elif p == "/orders/open":
+                    s._j(s._order_db().get_open_orders())
+                elif p == "/orders/closed":
+                    days = int((q.get("days") or ["30"])[0])
+                    s._j(s._order_db().get_closed_orders(days))
+                elif p == "/orders/stats/today":
+                    s._j(s._order_db().get_today_stats() or {})
+                elif p == "/orders/stats/strategy":
+                    days = int((q.get("days") or ["30"])[0])
+                    s._j(s._order_db().get_strategy_performance(days))
+                elif p == "/orders/daily-pnl":
+                    days = int((q.get("days") or ["30"])[0])
+                    s._j(s._order_db().get_daily_pnl(days))
+                elif p == "/orders/summary":
+                    order_db = s._order_db()
+                    today_stats = order_db.get_today_stats() or {}
+                    open_orders = order_db.get_open_orders()
+                    s._j({
+                        "today": today_stats,
+                        "strategies_30d": order_db.get_strategy_performance(30),
+                        "open_orders_count": len(open_orders),
+                        "open_orders": open_orders[:5],
+                        "summary_generated_at": datetime.now().isoformat(),
+                    })
                 elif p in ("/","/dashboard"): s._h(dashboard_html)
                 else: s._j({"error":"Not found"},404)
 
@@ -719,6 +875,35 @@ class AutoTrader:
                         s._j({"active":name,"available":trader.strat_mgr.available})
                     else:
                         s._j({"error":f"Unknown: {name}","available":trader.strat_mgr.available},400)
+                elif p.startswith("/symbol/"):
+                    symbol = p.split("/symbol/")[1].upper()
+                    if symbol in cfg.AVAILABLE_SYMBOLS:
+                        if trader.bridge.set_symbol(symbol):
+                            # Clear all cached data when symbol changes
+                            trader._candles.clear()
+                            trader._candle_counts.clear()
+                            trader._indicators.clear()
+                            trader._zones.clear()
+                            trader._regime.clear()
+                            trader._bias.clear()
+                            trader._liquidity.clear()
+                            trader._last_tick = {}
+                            # Force immediate data refresh for new symbol
+                            try:
+                                for tf in ["M1", "M5", "M15", "H1", "H4"]:
+                                    df = trader.bridge.fetch_candles(tf)
+                                    if not df.empty:
+                                        trader._candles[tf] = df
+                                        trader._candle_counts[tf] = len(df)
+                                trader._recompute_all()
+                            except Exception as e:
+                                trader.log("API", f"Symbol data refresh failed: {e}")
+                            trader.log("API", f"Symbol -> {symbol} (cache cleared, data refreshed)")
+                            s._j({"symbol":symbol,"available":cfg.AVAILABLE_SYMBOLS})
+                        else:
+                            s._j({"error":f"Failed to set {symbol}"},500)
+                    else:
+                        s._j({"error":f"Unknown symbol: {symbol}","available":cfg.AVAILABLE_SYMBOLS},400)
                 elif p == "/config":
                     import json as _json
                     length = int(s.headers.get('Content-Length', 0))
@@ -736,6 +921,9 @@ class AutoTrader:
                     if 'TIER1_ENABLED' in body:
                         cfg.TIER1_ENABLED = bool(body['TIER1_ENABLED'])
                         updated['TIER1_ENABLED'] = cfg.TIER1_ENABLED
+                    if 'SESSION_OVERRIDE_ENABLED' in body:
+                        cfg.SESSION_OVERRIDE_ENABLED = bool(body['SESSION_OVERRIDE_ENABLED'])
+                        updated['SESSION_OVERRIDE_ENABLED'] = cfg.SESSION_OVERRIDE_ENABLED
                     if 'DAILY_TARGET_ENABLED' in body:
                         cfg.DAILY_TARGET_ENABLED = bool(body['DAILY_TARGET_ENABLED'])
                         updated['DAILY_TARGET_ENABLED'] = cfg.DAILY_TARGET_ENABLED

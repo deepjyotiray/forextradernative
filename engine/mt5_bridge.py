@@ -16,11 +16,12 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 class MT5Bridge:
     """Direct MT5 connection for data + execution."""
 
-    def __init__(self):
+    def __init__(self, symbol: str = None):
         self._connected = False
         self._last_tick: Optional[Dict] = None
         self._candle_cache: Dict[str, pd.DataFrame] = {}
         self._candle_mtimes: Dict[str, float] = {}
+        self._current_symbol = symbol or cfg.SYMBOL
 
     # --- Connection ---
 
@@ -38,8 +39,8 @@ class MT5Bridge:
             return False
 
         # Ensure symbol is visible in Market Watch
-        if not mt5.symbol_select(cfg.SYMBOL, True):
-            print(f"[MT5] Warning: could not select {cfg.SYMBOL}")
+        if not mt5.symbol_select(self._current_symbol, True):
+            print(f"[MT5] Warning: could not select {self._current_symbol}")
 
         self._connected = True
         info = mt5.account_info()
@@ -65,6 +66,32 @@ class MT5Bridge:
             self._connected = False
             return False
 
+    def set_symbol(self, symbol: str) -> bool:
+        """Change the trading symbol and clear cache."""
+        if symbol not in cfg.AVAILABLE_SYMBOLS:
+            print(f"[MT5] Symbol {symbol} not in available symbols: {cfg.AVAILABLE_SYMBOLS}")
+            return False
+        
+        old_symbol = self._current_symbol
+        self._current_symbol = symbol
+        self._candle_cache.clear()
+        self._candle_mtimes.clear()
+        self._last_tick = None
+        
+        # Ensure new symbol is visible in Market Watch
+        if self._connected:
+            if not mt5.symbol_select(symbol, True):
+                print(f"[MT5] Warning: could not select {symbol}")
+                # Don't fail completely, just warn
+        
+        print(f"[MT5] Symbol changed from {old_symbol} to {self._current_symbol}")
+        return True
+    
+    @property
+    def current_symbol(self) -> str:
+        """Get current trading symbol."""
+        return self._current_symbol
+    
     @property
     def connected(self) -> bool:
         return self._connected
@@ -90,7 +117,7 @@ class MT5Bridge:
     # --- Tick ---
 
     def get_tick(self) -> Optional[Dict]:
-        tick = mt5.symbol_info_tick(cfg.SYMBOL)
+        tick = mt5.symbol_info_tick(self._current_symbol)
         if not tick:
             return self._last_tick
         self._last_tick = {
@@ -107,16 +134,16 @@ class MT5Bridge:
     TF_MAP = {
         "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
         "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1,
-        "H4": mt5.TIMEFRAME_H4, "D1": mt5.TIMEFRAME_D1,
+        "H4": mt5.TIMEFRAME_H4,
     }
 
     def fetch_candles(self, timeframe: str = "M5", count: int = 0) -> pd.DataFrame:
         if count <= 0:
-            count = cfg.MAX_CANDLES
+            count = cfg.CANDLE_LIMITS.get(timeframe, cfg.MAX_CANDLES)
         tf = self.TF_MAP.get(timeframe)
         if tf is None:
             return pd.DataFrame()
-        rates = mt5.copy_rates_from_pos(cfg.SYMBOL, tf, 0, count)
+        rates = mt5.copy_rates_from_pos(self._current_symbol, tf, 0, count)
         if rates is None or len(rates) == 0:
             return self._candle_cache.get(timeframe, pd.DataFrame())
         df = pd.DataFrame(rates)
@@ -135,7 +162,7 @@ class MT5Bridge:
     # --- Positions ---
 
     def get_positions(self, symbol: str = None) -> List[Dict]:
-        symbol = symbol or cfg.SYMBOL
+        symbol = symbol or self._current_symbol
         positions = mt5.positions_get(symbol=symbol)
         if not positions:
             return []
@@ -191,7 +218,7 @@ class MT5Bridge:
 
     def open_trade(self, direction: str, volume: float, sl: float, tp: float,
                    comment: str = "FT_AUTO") -> Dict:
-        tick = mt5.symbol_info_tick(cfg.SYMBOL)
+        tick = mt5.symbol_info_tick(self._current_symbol)
         if not tick:
             return {"success": False, "error": "No tick data"}
 
@@ -200,7 +227,7 @@ class MT5Bridge:
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": cfg.SYMBOL,
+            "symbol": self._current_symbol,
             "volume": round(volume, 2),
             "type": order_type,
             "price": price,
@@ -441,7 +468,7 @@ class MT5Bridge:
 
     def _match_symbol(self, symbol: str) -> bool:
         """Check if a deal's symbol matches our configured symbol (handles suffixes like XAUUSDm)."""
-        return cfg.SYMBOL in (symbol or "")
+        return self._current_symbol in (symbol or "")
 
     def get_today_pnl(self) -> Dict:
         """Get today's realized P&L from bot trades. Day resets at IST midnight.

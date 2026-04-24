@@ -38,8 +38,11 @@ class TickProcessor:
         # Directional ticks
         dir_up = sum(1 for i in range(1, rn) if recent[i]["bid"] > recent[i-1]["bid"])
         dir_dn = sum(1 for i in range(1, rn) if recent[i]["bid"] < recent[i-1]["bid"])
+        total_directional = max(1, dir_up + dir_dn)
         dir_ticks = dir_up - dir_dn
-        dir_pct = max(dir_up, dir_dn) / (rn - 1) if rn > 1 else 0.5
+        buy_ratio = dir_up / total_directional
+        sell_ratio = dir_dn / total_directional
+        dir_pct = buy_ratio
 
         # Direction stability: count sign changes in last 20 ticks
         sign_changes = 0
@@ -86,6 +89,8 @@ class TickProcessor:
             "momentum": round(momentum, 4),
             "dir_ticks": dir_ticks,
             "dir_pct": round(dir_pct, 3),
+            "buy_ratio": round(buy_ratio, 3),
+            "sell_ratio": round(sell_ratio, 3),
             "dir_stable": dir_stable,
             "spread": round(current_spread, 3),
             "spread_mean": round(spread_mean, 3),

@@ -35,7 +35,8 @@ async def get_order_details(ticket: int):
 @router.get("/stats/today", response_model=Dict)
 async def get_today_stats():
     """Get today's trading statistics."""
-    return order_db.get_today_stats()
+    stats = order_db.get_today_stats()
+    return stats or {}
 
 
 @router.get("/stats/strategy", response_model=List[Dict])
@@ -81,7 +82,7 @@ async def get_daily_pnl(days: int = Query(30, ge=1, le=365)):
 @router.get("/summary", response_model=Dict)
 async def get_order_summary():
     """Get comprehensive order summary."""
-    today_stats = order_db.get_today_stats()
+    today_stats = order_db.get_today_stats() or {}
     strategy_perf = order_db.get_strategy_performance(30)
     open_orders = order_db.get_open_orders()
     
