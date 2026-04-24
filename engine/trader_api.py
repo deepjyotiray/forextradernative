@@ -2,16 +2,56 @@
 Auto Trader API routes for FastAPI integration.
 Consolidates all trading system endpoints onto a single port.
 """
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
-from typing import Dict, Any
+from starlette.responses import Response as _RawResponse
+from typing import Dict, Any, Set
 import json
 import os
+import time
+import asyncio
 import numpy as np
 from pathlib import Path
 
+try:
+    import orjson
+    def _fast_json(obj):
+        return orjson.dumps(obj, option=orjson.OPT_SERIALIZE_NUMPY).decode()
+except ImportError:
+    import json as _json
+    class _NumpyEncoder(_json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, (np.bool_, np.integer, np.floating)):
+                return o.item()
+            if isinstance(o, np.ndarray):
+                return o.tolist()
+            return super().default(o)
+    def _fast_json(obj):
+        return _json.dumps(obj, cls=_NumpyEncoder, separators=(',', ':'))
+
+# --- WebSocket broadcast infrastructure ---
+_ws_clients: Set[WebSocket] = set()
+_ws_latest_tick: str = '{}'
+_ws_latest_cycle: int = -1
+
 # This will be set by the main application when the auto_trader instance is available
 _auto_trader_instance = None
+_status_cache = None
+_status_cache_time = 0.0
+_STATUS_CACHE_TTL = 4.0  # seconds — full status is heavy, cache aggressively
+
+# Separate caches for slow-changing data
+_blockers_cache = None
+_blockers_cache_time = 0.0
+_BLOCKERS_CACHE_TTL = 10.0
+
+_xgb_cache = None
+_xgb_cache_time = 0.0
+_XGB_CACHE_TTL = 15.0
+
+_perf_cache = None
+_perf_cache_time = 0.0
+_PERF_CACHE_TTL = 10.0
 
 router = APIRouter(tags=["trading"])
 
@@ -43,16 +83,175 @@ def get_auto_trader():
         raise HTTPException(status_code=503, detail="Auto trader not initialized")
     return _auto_trader_instance
 
-@router.get("/status")
-async def get_status():
-    """Get full trading system status."""
+def _get_cached_blockers() -> dict:
+    """Get live blockers with caching (reads JSONL file — expensive)."""
+    global _blockers_cache, _blockers_cache_time
+    now = time.monotonic()
+    if _blockers_cache is not None and (now - _blockers_cache_time) < _BLOCKERS_CACHE_TTL:
+        return _blockers_cache
+    from engine.decision_logger import get_live_blockers
+    try:
+        _blockers_cache = get_live_blockers(50)
+    except Exception:
+        _blockers_cache = {"latest_by_strategy": {}, "top_reasons": [], "recent_skipped_count": 0}
+    _blockers_cache_time = now
+    return _blockers_cache
+
+
+def _get_cached_xgb(indicators: dict, regime: dict, bias: dict, tick: dict) -> tuple:
+    """Get XGB predictions with caching (model inference — expensive)."""
+    global _xgb_cache, _xgb_cache_time
+    now = time.monotonic()
+    if _xgb_cache is not None and (now - _xgb_cache_time) < _XGB_CACHE_TTL:
+        return _xgb_cache
+    from engine.xgb_model import xgb_model
+    xgb_info = xgb_model.get_feature_importance()
+    xgb_pred = {"available": False, "reason": "Model not trained yet (need 15+ trades with features)"}
+    if xgb_model.is_trained:
+        try:
+            dummy = {"volume": 0.01, "sl_distance": 0.5}
+            buy_prob = xgb_model.predict_win_prob({**dummy, "signal": "BUY"}, indicators, regime, bias, tick)
+            sell_prob = xgb_model.predict_win_prob({**dummy, "signal": "SELL"}, indicators, regime, bias, tick)
+            if buy_prob > 0.6 and buy_prob > sell_prob:
+                sentiment, sentiment_color = "BULLISH", "green"
+            elif sell_prob > 0.6 and sell_prob > buy_prob:
+                sentiment, sentiment_color = "BEARISH", "red"
+            else:
+                sentiment, sentiment_color = "NEUTRAL", "yellow"
+            xgb_pred = {"available": True, "buy_probability": buy_prob, "sell_probability": sell_prob,
+                        "sentiment": sentiment, "sentiment_color": sentiment_color}
+        except Exception as e:
+            xgb_pred = {"available": False, "reason": f"Prediction error: {str(e)}"}
+    _xgb_cache = (xgb_info, xgb_pred)
+    _xgb_cache_time = now
+    return _xgb_cache
+
+
+def _get_cached_perf(trader) -> dict:
+    """Get performance stats with caching."""
+    global _perf_cache, _perf_cache_time
+    now = time.monotonic()
+    if _perf_cache is not None and (now - _perf_cache_time) < _PERF_CACHE_TTL:
+        return _perf_cache
+    if trader.perf:
+        try:
+            _perf_cache = trader.perf.get_stats()
+        except Exception:
+            _perf_cache = {}
+    else:
+        _perf_cache = {}
+    _perf_cache_time = now
+    return _perf_cache
+
+
+def _build_risk_dict(trader) -> dict:
+    if trader.risk:
+        return {
+            "pnl": getattr(trader.risk, 'daily_pnl', 0),
+            "trades": getattr(trader.risk, 'daily_trades', 0),
+            "consecutive_losses": getattr(trader.risk, 'consecutive_losses', 0),
+            "risk_multiplier": getattr(trader.risk, 'risk_multiplier', 1.0),
+            "target_hit": getattr(trader.risk, 'target_hit', False),
+            "loss_limit_hit": getattr(trader.risk, 'loss_limit_hit', False),
+        }
+    return {"pnl": 0, "trades": 0, "consecutive_losses": 0,
+            "risk_multiplier": 1.0, "target_hit": False, "loss_limit_hit": False}
+
+
+def _build_config_dict() -> dict:
+    import config as cfg
+    return {
+        "MAX_POSITIONS": cfg.MAX_POSITIONS, "MAX_RISK_PCT": cfg.MAX_RISK_PCT,
+        "MAX_DRAWDOWN_PCT": cfg.MAX_DRAWDOWN_PCT, "MAX_LOT": cfg.MAX_LOT,
+        "MIN_LOT": cfg.MIN_LOT, "DAILY_TARGET_DOLLARS": cfg.DAILY_TARGET_DOLLARS,
+        "DAILY_LOSS_LIMIT_PCT": cfg.DAILY_LOSS_LIMIT_PCT,
+        "MAX_CONSECUTIVE_LOSSES": cfg.MAX_CONSECUTIVE_LOSSES,
+        "MIN_TRADE_COOLDOWN": cfg.MIN_TRADE_COOLDOWN,
+        "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE,
+    }
+
+
+def _build_tick_data(trader) -> dict:
+    """Build the tick payload dict from trader state. Pure memory reads."""
+    import config as cfg
+    from engine.session_filter import get_session, is_market_open
+    return {
+        "enabled": trader.enabled,
+        "mt5_connected": trader._mt5_connected,
+        "tick": trader._last_tick,
+        "account": trader._last_account,
+        "session": get_session(),
+        "market_open": is_market_open(),
+        "symbol": trader.bridge.current_symbol if trader.bridge else cfg.SYMBOL,
+        "strategy": trader.strat_mgr.active_name if trader.strat_mgr else "AUTO",
+        "mt5_positions": getattr(trader, '_cached_positions', None) or [],
+        "mt5_floating_pnl": getattr(trader, '_cached_floating_pnl', None) or {"total": 0, "count": 0},
+        "mt5_today_pnl": getattr(trader, '_mt5_today_pnl', None) or {},
+        "risk": _build_risk_dict(trader),
+        "indicators": trader._indicators or {},
+        "log": list(trader._log)[-50:],
+        "stats": trader._stats,
+    }
+
+
+def _refresh_tick_cache(trader) -> str:
+    """Serialize tick data once per engine cycle. Returns cached JSON string."""
+    global _ws_latest_tick, _ws_latest_cycle
+    cycle = trader._stats.get("cycles", 0)
+    if cycle == _ws_latest_cycle:
+        return _ws_latest_tick
+    _ws_latest_tick = _fast_json(_build_tick_data(trader))
+    _ws_latest_cycle = cycle
+    return _ws_latest_tick
+
+
+# --- WebSocket: server pushes tick data every engine cycle ---
+@router.websocket("/ws")
+async def ws_tick(ws: WebSocket):
+    await ws.accept()
+    _ws_clients.add(ws)
+
+    async def _reader():
+        """Drain incoming frames so we detect disconnect."""
+        try:
+            while True:
+                await ws.receive_text()
+        except (WebSocketDisconnect, Exception):
+            pass
+
+    reader_task = asyncio.create_task(_reader())
+    last_pushed_cycle = -1
+    try:
+        while not reader_task.done():
+            trader = _auto_trader_instance
+            if trader is not None:
+                cycle = trader._stats.get("cycles", 0)
+                if cycle != last_pushed_cycle:
+                    msg = _refresh_tick_cache(trader)
+                    await ws.send_text(msg)
+                    last_pushed_cycle = cycle
+            await asyncio.sleep(0.15)  # ~6-7 pushes/sec, only sends on new cycle
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        reader_task.cancel()
+        _ws_clients.discard(ws)
+
+
+# Keep /tick as HTTP fallback (e.g. curl, other clients)
+@router.get("/tick")
+async def get_tick():
+    """HTTP fallback for tick data. Prefer /ws WebSocket for real-time."""
+    trader = get_auto_trader()
+    return _RawResponse(content=_refresh_tick_cache(trader), media_type="application/json")
+
+
+def _build_full_status_sync() -> dict:
+    """Build full status dict — runs in thread pool to avoid blocking event loop."""
     trader = get_auto_trader()
     import config as cfg
-    from engine.xgb_model import xgb_model
-    
+
     status = trader.get_full_status()
-    
-    # Add missing data that dashboard expects
     status.update({
         "tier1_enabled": cfg.TIER1_ENABLED,
         "session_override_enabled": cfg.SESSION_OVERRIDE_ENABLED,
@@ -60,129 +259,38 @@ async def get_status():
         "daily_target": cfg.DAILY_TARGET_DOLLARS,
         "available_symbols": cfg.AVAILABLE_SYMBOLS,
         "symbol": trader.bridge.current_symbol if trader.bridge else cfg.SYMBOL,
-        # Add strategy data for UI
         "strategies": trader.strat_mgr.status() if trader.strat_mgr else {"available": ["AUTO"], "active": "AUTO"},
         "strategy": trader.strat_mgr.active_name if trader.strat_mgr else "AUTO",
-        "risk_config": {
-            "MAX_POSITIONS": cfg.MAX_POSITIONS,
-            "MAX_RISK_PCT": cfg.MAX_RISK_PCT,
-            "MAX_DRAWDOWN_PCT": cfg.MAX_DRAWDOWN_PCT,
-            "MAX_LOT": cfg.MAX_LOT,
-            "MIN_LOT": cfg.MIN_LOT,
-            "DAILY_TARGET_DOLLARS": cfg.DAILY_TARGET_DOLLARS,
-            "DAILY_LOSS_LIMIT_PCT": cfg.DAILY_LOSS_LIMIT_PCT,
-            "MAX_CONSECUTIVE_LOSSES": cfg.MAX_CONSECUTIVE_LOSSES,
-            "MIN_TRADE_COOLDOWN": cfg.MIN_TRADE_COOLDOWN,
-            "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE
-        }
+        "risk_config": _build_config_dict(),
     })
-    
-    # Add MT5 data if available
-    if trader.bridge:
-        try:
-            status["mt5_positions"] = trader.bridge.get_my_positions() or []
-            all_positions = trader.bridge.get_positions() or []
-            magic_positions = [p for p in all_positions if p.get("magic") == cfg.MAGIC_NUMBER]
-            status["mt5_floating_pnl"] = {
-                "total": sum(p.get("net_profit", 0) for p in magic_positions),
-                "count": len(magic_positions)
-            }
-        except Exception:
-            status["mt5_positions"] = []
-            status["mt5_floating_pnl"] = {"total": 0, "count": 0}
-    
-    # Add closed history and today's P&L
+    status["mt5_positions"] = getattr(trader, '_cached_positions', []) or []
+    status["mt5_floating_pnl"] = getattr(trader, '_cached_floating_pnl', {"total": 0, "count": 0})
     status["mt5_today_pnl"] = getattr(trader, '_mt5_today_pnl', {})
     status["closed_history"] = getattr(trader, '_mt5_closed_history', [])
-    
-    # Add performance data
-    if trader.perf:
-        try:
-            status["performance"] = trader.perf.get_stats()
-        except Exception:
-            status["performance"] = {}
-    else:
-        status["performance"] = {}
-    
-    # Add XGBoost data with live predictions
-    xgb_info = xgb_model.get_feature_importance()
+    status["performance"] = _get_cached_perf(trader)
+    status["risk"] = _build_risk_dict(trader)
+    xgb_info, xgb_pred = _get_cached_xgb(
+        status.get("indicators", {}), status.get("regime", {}),
+        status.get("bias", {}), status.get("tick", {}),
+    )
     status["xgb"] = xgb_info
-    
-    # Add live XGBoost predictions if model is trained
-    if xgb_model.is_trained:
-        try:
-            # Create a dummy signal for prediction
-            dummy_signal = {"signal": "BUY", "volume": 0.01, "sl_distance": 0.5}
-            indicators = status.get("indicators", {})
-            regime = status.get("regime", {})
-            bias = status.get("bias", {})
-            tick = status.get("tick", {})
-            
-            # Get predictions for both BUY and SELL
-            buy_signal = {**dummy_signal, "signal": "BUY"}
-            sell_signal = {**dummy_signal, "signal": "SELL"}
-            
-            buy_prob = xgb_model.predict_win_prob(buy_signal, indicators, regime, bias, tick)
-            sell_prob = xgb_model.predict_win_prob(sell_signal, indicators, regime, bias, tick)
-            
-            # Determine market sentiment
-            if buy_prob > 0.6 and buy_prob > sell_prob:
-                sentiment = "BULLISH"
-                sentiment_color = "green"
-            elif sell_prob > 0.6 and sell_prob > buy_prob:
-                sentiment = "BEARISH"
-                sentiment_color = "red"
-            else:
-                sentiment = "NEUTRAL"
-                sentiment_color = "yellow"
-            
-            status["xgb_live_prediction"] = {
-                "available": True,
-                "buy_probability": buy_prob,
-                "sell_probability": sell_prob,
-                "sentiment": sentiment,
-                "sentiment_color": sentiment_color
-            }
-        except Exception as e:
-            status["xgb_live_prediction"] = {
-                "available": False,
-                "reason": f"Prediction error: {str(e)}"
-            }
-    else:
-        status["xgb_live_prediction"] = {
-            "available": False,
-            "reason": "Model not trained yet (need 15+ trades with features)"
-        }
-    
-    # Add risk manager data
-    if trader.risk:
-        status["risk"] = {
-            "pnl": getattr(trader.risk, 'daily_pnl', 0),
-            "trades": getattr(trader.risk, 'daily_trades', 0),
-            "consecutive_losses": getattr(trader.risk, 'consecutive_losses', 0),
-            "risk_multiplier": getattr(trader.risk, 'risk_multiplier', 1.0),
-            "target_hit": getattr(trader.risk, 'target_hit', False),
-            "loss_limit_hit": getattr(trader.risk, 'loss_limit_hit', False)
-        }
-    else:
-        status["risk"] = {
-            "pnl": 0, "trades": 0, "consecutive_losses": 0,
-            "risk_multiplier": 1.0, "target_hit": False, "loss_limit_hit": False
-        }
-    
-    # Add live blockers from decision logger
-    from engine.decision_logger import get_live_blockers
-    try:
-        status["live_blockers"] = get_live_blockers(50)  # Get last 50 decisions
-    except Exception:
-        status["live_blockers"] = {
-            "latest_by_strategy": {},
-            "top_reasons": [],
-            "recent_skipped_count": 0
-        }
-    
-    # Convert numpy types to JSON-serializable types
+    status["xgb_live_prediction"] = xgb_pred
+    status["live_blockers"] = _get_cached_blockers()
     return convert_numpy_types(status)
+
+
+@router.get("/status")
+async def get_status():
+    """Full status — heavy, runs in thread pool."""
+    global _status_cache, _status_cache_time
+    now = time.monotonic()
+    if _status_cache is not None and (now - _status_cache_time) < _STATUS_CACHE_TTL:
+        return _status_cache
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _build_full_status_sync)
+    _status_cache = result
+    _status_cache_time = time.monotonic()
+    return result
 
 @router.get("/logs")
 async def get_logs():

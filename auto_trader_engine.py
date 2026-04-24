@@ -82,6 +82,10 @@ class AutoTrader:
         self._mt5_today_pnl: Dict = {}
         self._last_history_poll = 0.0
 
+        # Cached positions for API (updated every engine cycle, avoids MT5 IPC in API)
+        self._cached_positions: list = []
+        self._cached_floating_pnl: Dict = {"total": 0, "count": 0}
+
     def log(self, tag: str, msg: str):
         now = datetime.now(timezone.utc)
         utc_str = now.strftime("%H:%M:%S.%f")[:-3]
@@ -197,6 +201,14 @@ class AutoTrader:
         self._last_account = account
         positions = self.bridge.get_my_positions()
         all_positions = self.bridge.get_positions()  # ALL for P&L tracking
+
+        # Cache positions for the API layer (avoids MT5 IPC on every /tick call)
+        self._cached_positions = positions or []
+        magic_positions = [p for p in (all_positions or []) if p.get("magic") == cfg.MAGIC_NUMBER]
+        self._cached_floating_pnl = {
+            "total": round(sum(p.get("net_profit", 0) for p in magic_positions), 2),
+            "count": len(magic_positions),
+        }
 
         # Candle refresh logic
         zones_dirty = regime_dirty = False

@@ -203,13 +203,44 @@ const ANALYTICS_LINKS=[
   {label:'Daily PnL',href:`${ANALYTICS_BASE}/orders/daily-pnl?days=30`,title:'Open 30-day daily PnL JSON'}
 ];
 function hasSelectionIn(el){const s=window.getSelection();return s&&s.rangeCount>0&&!s.isCollapsed&&el.contains(s.anchorNode);}
-async function get(){
-  try{
-    const r=await fetch(A+'/status');const d=await r.json();render(d);
-    $('pulse').className='pulse pulse-on';$('conn').textContent='Connected';
-  }catch(e){$('pulse').className='pulse pulse-off';$('conn').textContent='Disconnected';}
+let _state={};
+let _ws=null;
+let _wsRetry=0;
+
+function connectWS(){
+  const proto=location.protocol==='https:'?'wss:':'ws:';
+  _ws=new WebSocket(`${proto}//${location.host}/ws`);
+  _ws.onopen=()=>{
+    _wsRetry=0;
+    $('pulse').className='pulse pulse-on';$('conn').textContent='WS Connected';
+  };
+  _ws.onmessage=(ev)=>{
+    try{
+      const d=JSON.parse(ev.data);
+      Object.assign(_state,d);
+      render(_state);
+      $('pulse').className='pulse pulse-on';$('conn').textContent='WS Connected';
+    }catch(e){}
+  };
+  _ws.onclose=()=>{
+    $('pulse').className='pulse pulse-off';$('conn').textContent='Reconnecting...';
+    _ws=null;
+    const delay=Math.min(1000*(1+_wsRetry),5000);
+    _wsRetry++;
+    setTimeout(connectWS,delay);
+  };
+  _ws.onerror=()=>{_ws.close();};
 }
-async function post(p){try{await fetch(A+p,{method:'POST'});setTimeout(get,200);}catch(e){alert('Failed');}}
+connectWS();
+
+async function fetchFull(){
+  try{
+    const r=await fetch(A+'/status');const d=await r.json();
+    Object.assign(_state,d);
+    render(_state);
+  }catch(e){}
+}
+async function post(p){try{await fetch(A+p,{method:'POST'});setTimeout(fetchFull,300);}catch(e){alert('Failed');}}
 function $(id){return document.getElementById(id)}
 function pc(v){return v>=0?'pnl-pos':'pnl-neg'}
 function ps(v){return(v>=0?'+':'')+v.toFixed(2)}
@@ -523,7 +554,7 @@ function render(d){
   else if(cg&&cg.dataset.init){Object.keys(cfgLabels).forEach(k=>{const inp=document.getElementById('cfg_'+k);if(inp&&inp!==document.activeElement)inp.value=rc[k]!=null?rc[k]:'';});}
 
   const floatPnl=fp.total||0;
-  const floatStr=floatPnl?` | Float ${ps(floatPnl)}`:'';
+  const floatStr=floatPnl?` | Float ${ps(floatPnl)}`:(price?` | ${price.toFixed(2)}`:'');
   document.title=`${ps(dp)}${floatStr} | ${currentSymbol||'XAUUSD'}`;
 }
 
@@ -536,18 +567,22 @@ async function saveConfig(){
   const inputs=document.querySelectorAll('#cfgGrid input');
   const body={};
   inputs.forEach(inp=>{const v=parseFloat(inp.value);if(!isNaN(v))body[inp.dataset.key]=v;});
-  try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();$('cfgStatus').textContent='Saved ✓';setTimeout(()=>$('cfgStatus').textContent='',2000);get();}catch(e){$('cfgStatus').textContent='Failed';$('cfgStatus').style.color='var(--red)';}
+  try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();$('cfgStatus').textContent='Saved ✓';setTimeout(()=>$('cfgStatus').textContent='',2000);fetchFull();}catch(e){$('cfgStatus').textContent='Failed';$('cfgStatus').style.color='var(--red)';}
 }
 async function toggleTier1(enabled){
-  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({TIER1_ENABLED:enabled})});setTimeout(get,200);}catch(e){alert('Failed to toggle Tier 1');}
+  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({TIER1_ENABLED:enabled})});setTimeout(fetchFull,200);}catch(e){alert('Failed to toggle Tier 1');}
 }
 async function toggleSessionOverride(enabled){
-  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({SESSION_OVERRIDE_ENABLED:enabled})});setTimeout(get,200);}catch(e){alert('Failed to toggle Session Override');}
+  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({SESSION_OVERRIDE_ENABLED:enabled})});setTimeout(fetchFull,200);}catch(e){alert('Failed to toggle Session Override');}
 }
 async function toggleDailyTarget(enabled){
-  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({DAILY_TARGET_ENABLED:enabled})});setTimeout(get,200);}catch(e){alert('Failed to toggle Daily Target');}
+  try{await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({DAILY_TARGET_ENABLED:enabled})});setTimeout(fetchFull,200);}catch(e){alert('Failed to toggle Daily Target');}
 }
-setInterval(get,500);get();
+// /status polled at 5s for heavy data (config, XGB, blockers, closed history)
+let _fullFlight=false;
+async function safeFull(){if(_fullFlight)return;_fullFlight=true;try{await fetchFull();}finally{_fullFlight=false;}}
+setInterval(safeFull,5000);
+safeFull();
 </script>
 </body>
 </html>

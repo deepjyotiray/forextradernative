@@ -21,14 +21,5 @@ timeout /t 3 /nobreak >nul
 echo.
 echo Trading System started!
 echo Dashboard: http://127.0.0.1:8000/dashboard
-echo Status API: http://127.0.0.1:8000/status
-echo Analytics: http://127.0.0.1:8000/analytics
-echo.
-
-:: Start cloudflared tunnel (update port to 8000)
-taskkill /IM cloudflared.exe /F >nul 2>&1
-echo Starting Cloudflare tunnel for port 8000...
-start "Cloudflare Tunnel" cmd /c "cloudflared tunnel --url http://localhost:8000 > cf_log.txt 2>&1"
-timeout /t 3 /nobreak >nul
-echo Cloudflare tunnel started in background.
+echo Public:    https://trader.healthymealspot.com/dashboard
 echo.

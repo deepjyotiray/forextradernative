@@ -19,7 +19,9 @@ echo ========================================
 echo.
 
 cd /d "%~dp0"
-python unified_startup.py
+
+REM Use py launcher which works reliably
+py unified_startup.py
 
 echo.
 echo Trading system stopped.
