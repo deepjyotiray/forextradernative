@@ -5,7 +5,7 @@
   },
   "profiles": {
     "backtest_relaxed": {
-      "description": "Refined backtest profile with tighter SMC quality gates",
+      "description": "Refined backtest profile with stricter SMC quality and relaxed compression gating",
       "name": "backtest_relaxed",
       "scope": "backtest",
       "values": {
@@ -22,7 +22,7 @@
         "ALL_GATES_OVERRIDE_ENABLED": false,
         "ATR_RISING_GATE_OVERRIDE_ENABLED": false,
         "COMPRESSION_ATR_MULTIPLIER": 1.6,
-        "COMPRESSION_GATE_OVERRIDE_ENABLED": false,
+        "COMPRESSION_GATE_OVERRIDE_ENABLED": true,
         "COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED": false,
         "COMPRESSION_RANGE_LOOKBACK": 10,
         "DAILY_LOSS_LIMIT_PCT": 10.0,
