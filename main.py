@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from engine.analytics_api import router as analytics_router
+from engine.backtest_api import router as backtest_router
 from engine.order_api import router as order_router
 from engine.trader_api import router as trader_router
 import config as cfg
@@ -17,6 +18,7 @@ _ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
 app.include_router(order_router)
 app.include_router(analytics_router)
 app.include_router(trader_router)
+app.include_router(backtest_router)
 app.mount("/analytics-assets", StaticFiles(directory=str(_ANALYTICS_DIR)), name="analytics-assets")
 
 
@@ -27,6 +29,7 @@ async def root():
         "version": cfg.APP_VERSION,
         "analytics_dashboard": "/analytics",
         "trading_dashboard": "/dashboard",
+        "backtest_dashboard": "/backtest",
         "status": "/status",
         "health": "/health",
     }

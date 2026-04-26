@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MT5 Backtest Runner</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:"Segoe UI",Tahoma,sans-serif;background:#0f172a;color:#e2e8f0}
+.wrap{max-width:1280px;margin:0 auto;padding:20px}
+h1{margin:0 0 10px;font-size:28px}
+p{color:#94a3b8}
+.card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:14px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+label{font-size:12px;color:#94a3b8;display:block;margin-bottom:5px}
+input,select,button{width:100%;padding:9px;border-radius:7px;border:1px solid #334155;background:#0b1220;color:#e2e8f0}
+button{cursor:pointer;font-weight:600}
+.btn-primary{background:#0ea5e9;border-color:#0284c7;color:#f8fafc}
+.btn-danger{background:#991b1b;border-color:#7f1d1d}
+.row{display:flex;gap:10px}
+.row>*{flex:1}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:6px;border-bottom:1px solid #1f2937;text-align:left}
+.muted{color:#94a3b8}
+.kpi{font-size:22px;font-weight:700}
+.small{font-size:12px}
+.hidden{display:none}
+.status-line{display:flex;align-items:center;gap:8px;font-size:12px;color:#94a3b8}
+.spinner{width:14px;height:14px;border:2px solid #334155;border-top-color:#38bdf8;border-radius:50%;animation:spin 0.9s linear infinite}
+.btn-nav-active{border-color:#38bdf8;background:#0b2235}
+@keyframes spin{to{transform:rotate(360deg)}}
+canvas{width:100%;height:220px;background:#0b1220;border:1px solid #1f2937;border-radius:7px}
+#thoughtsBox{height:220px;overflow:auto;border:1px solid #1f2937;border-radius:7px;padding:8px;background:#0b1220;font-size:12px}
+@media (max-width:900px){.grid,.grid4{grid-template-columns:1fr}.row{flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>MT5 Tick/Candle Backtest</h1>
+  <p>Run isolated historical replay jobs and inspect tick/candle replay with bot reasoning.</p>
+
+  <div class="card">
+    <h3 style="margin-top:0">Navigate</h3>
+    <div class="row">
+      <button id="btnNavJobs">Jobs</button>
+      <button id="btnNavNew">New Job</button>
+      <button id="btnNavJob">Current Job</button>
+    </div>
+    <div class="status-line" style="margin-top:10px">
+      <span id="actionSpinner" class="spinner hidden"></span>
+      <span id="actionStatus">Ready</span>
+    </div>
+  </div>
+
+  <div id="pageLanding">
+  <div class="card">
+    <h3 style="margin-top:0">Backtest Jobs</h3>
+    <div class="row">
+      <button class="btn-primary" id="btnCreateJob">Create New Job</button>
+      <button id="btnRefreshJobs">Refresh Jobs</button>
+    </div>
+    <div class="grid4" style="margin-top:10px">
+      <div><label>All</label><div id="jobsCountAll" class="kpi" style="font-size:18px">0</div></div>
+      <div><label>Running/Queued</label><div id="jobsCountRunning" class="kpi" style="font-size:18px">0</div></div>
+      <div><label>Done</label><div id="jobsCountDone" class="kpi" style="font-size:18px">0</div></div>
+      <div><label>Cancelled</label><div id="jobsCountCancelled" class="kpi" style="font-size:18px">0</div></div>
+    </div>
+    <h4 style="margin:14px 0 8px">Running / Queued</h4>
+    <div style="max-height:190px;overflow:auto">
+      <table>
+        <thead>
+          <tr><th>Job ID</th><th>Status</th><th>Progress</th><th>Sim Time</th><th>Started</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="jobsRunningBody"></tbody>
+      </table>
+    </div>
+    <h4 style="margin:14px 0 8px">Done</h4>
+    <div style="max-height:220px;overflow:auto">
+      <table>
+        <thead>
+          <tr><th>Job ID</th><th>Status</th><th>Progress</th><th>Sim Time</th><th>Started</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="jobsDoneBody"></tbody>
+      </table>
+    </div>
+    <h4 style="margin:14px 0 8px">Cancelled</h4>
+    <div style="max-height:180px;overflow:auto">
+      <table>
+        <thead>
+          <tr><th>Job ID</th><th>Status</th><th>Progress</th><th>Sim Time</th><th>Started</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="jobsCancelledBody"></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="jobPickerMeta">No jobs loaded</div>
+  </div>
+  </div>
+
+  <div id="pageNewJob" class="hidden">
+  <div id="newJobCard" class="card">
+    <h3 style="margin-top:0">Create New Job</h3>
+    <div class="grid">
+      <div><label>Symbol</label><select id="symbol"></select></div>
+      <div><label>Strategy</label><select id="strategy"></select></div>
+      <div><label>Config Profile</label><select id="configProfile"></select></div>
+      <div><label>Initial Balance</label><input id="initialBalance" type="number" step="100"></div>
+      <div><label>Start UTC</label><input id="startUtc" type="datetime-local"></div>
+      <div><label>End UTC</label><input id="endUtc" type="datetime-local"></div>
+      <div><label>Max Ticks/Batch</label><input id="batch" type="number" value="2000"></div>
+      <div><label>Replay Points</label><input id="replayPoints" type="number" value="12000"></div>
+      <div><label>Fast Mode</label><select id="fastMode"><option value="false">Off</option><option value="true">On</option></select></div>
+      <div><label>Split Timeline</label><select id="splitMode"><option value="NONE">NONE</option><option value="DAILY">DAILY</option><option value="WEEKLY">WEEKLY</option><option value="MONTHLY">MONTHLY</option><option value="QUARTERLY">QUARTERLY</option></select></div>
+      <div><label>Parallel Workers</label><input id="parallelWorkers" type="number" min="1" value="1"></div>
+      <div><label>Cache Only (No MT5 Fetch)</label><select id="cacheOnly"><option value="true">On</option><option value="false">Off</option></select></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnSaveJob">Save</button>
+      <button class="btn-primary" id="btnRun">Run Backtest</button>
+      <button id="btnBackToJobs">Back To Jobs</button>
+    </div>
+    <div class="muted small" id="saveMsg" style="margin-top:8px"></div>
+    <div style="margin-top:10px" class="muted">Current Job: <span id="jobId">-</span></div>
+    <div class="muted">Status: <span id="statusText">idle</span></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Cached Data Windows</h3>
+    <div class="grid4">
+      <div><label>Stored Windows</label><div id="cacheCount" class="kpi" style="font-size:18px">0</div></div>
+      <div><label>Earliest UTC</label><div id="cacheMin" class="kpi" style="font-size:13px">-</div></div>
+      <div><label>Latest UTC</label><div id="cacheMax" class="kpi" style="font-size:13px">-</div></div>
+      <div><label>Selected Window</label><div id="cacheSelMeta" class="kpi" style="font-size:13px">-</div></div>
+    </div>
+    <div style="margin-top:10px">
+      <label>Select Cached Window</label>
+      <select id="cacheWindowSelect"></select>
+      <div id="cacheSelRange" class="muted small" style="margin-top:6px">No cached window selected</div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnUseCacheWindow">Use Selected Window</button>
+      <button id="btnRefreshCache">Refresh Cached Windows</button>
+    </div>
+  </div>
+  </div>
+
+  <div id="pageJobDetail" class="hidden">
+  <div class="card">
+    <h3 style="margin-top:0">Selected Job</h3>
+    <div class="grid4">
+      <div style="grid-column: span 2;">
+        <label>Select Existing Job</label>
+        <select id="jobPicker"></select>
+      </div>
+      <div><label>&nbsp;</label><button id="btnBackToLanding">Back To Jobs</button></div>
+      <div><label>&nbsp;</label><button id="btnRerunFromDetail">Rerun / Edit As New</button></div>
+      <div><label>&nbsp;</label><button class="btn-primary" id="btnGoToNewFromDetail">New Job</button></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnRefresh">Refresh Current Status</button>
+      <button class="btn-danger" id="btnCancel">Cancel Job</button>
+    </div>
+    <div class="muted" style="margin-top:8px">Current Job: <span id="jobIdDetail">-</span></div>
+    <div class="muted">Status: <span id="statusTextDetail">idle</span></div>
+    <div class="muted">Allocated Cores: <span id="allocatedCores">-</span></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Progress</h3>
+    <div class="grid4">
+      <div><label>Progress</label><div id="progressPct" class="kpi">0%</div></div>
+      <div><label id="processedLabel">Processed Ticks</label><div id="processedTicks" class="kpi">0</div></div>
+      <div><label id="totalLabel">Total Ticks</label><div id="totalTicks" class="kpi">0</div></div>
+      <div><label>Sim Time</label><div id="simTime" class="kpi" style="font-size:14px">-</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Chunk Status</h3>
+    <div style="max-height:220px;overflow:auto">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Range</th><th>Status</th><th>Progress</th><th>Sim Time</th></tr>
+        </thead>
+        <tbody id="chunkStatusBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Planner</h3>
+    <div class="grid4" id="plannerGrid"></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Timeline Density</h3>
+    <canvas id="timelineDensityCanvas" width="1100" height="220"></canvas>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Chunk Load Distribution</h3>
+    <canvas id="chunkLoadCanvas" width="1100" height="220"></canvas>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Summary</h3>
+    <div class="grid4" id="summaryGrid"></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Equity Curve</h3>
+    <canvas id="equityCanvas" width="1100" height="240"></canvas>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Replay (Ticks + Candles + Bot Thinking)</h3>
+    <div class="row" style="align-items:flex-end">
+      <div>
+        <label>Replay Position</label>
+        <input id="replayIdx" type="range" min="0" max="0" value="0">
+      </div>
+      <button id="btnPlay">Play</button>
+      <button id="btnPause">Pause</button>
+    </div>
+    <div class="grid4" style="margin-top:10px">
+      <div><label>Time</label><div id="rpTime" class="kpi" style="font-size:14px">-</div></div>
+      <div><label>Bid/Ask</label><div id="rpTick" class="kpi" style="font-size:14px">-</div></div>
+      <div><label>M1 OHLC</label><div id="rpM1" class="kpi" style="font-size:13px">-</div></div>
+      <div><label>M5 OHLC</label><div id="rpM5" class="kpi" style="font-size:13px">-</div></div>
+    </div>
+    <div class="grid" style="margin-top:10px">
+      <div><label>Tick Chart (Bid/Ask)</label><canvas id="tickCanvas" width="1100" height="220"></canvas></div>
+      <div><label>M1 Close Replay</label><canvas id="candleCanvas" width="1100" height="220"></canvas></div>
+      <div><label>Bot Thoughts</label><div id="thoughtsBox"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Trades</h3>
+    <div style="max-height:320px;overflow:auto">
+      <table>
+        <thead>
+          <tr><th>Ticket</th><th>Strategy</th><th>Dir</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Reason</th><th>Open</th><th>Close</th></tr>
+        </thead>
+        <tbody id="tradesBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Skip Reasons</h3>
+    <div id="skipReasons" class="muted">No data</div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Execution Logs</h3>
+    <div id="execLogs" style="height:240px;overflow:auto;border:1px solid #1f2937;border-radius:7px;padding:8px;background:#0b1220;font-size:12px"></div>
+  </div>
+  </div>
+</div>
+<script>
+const API = location.origin + "/backtest";
+let currentJob = null;
+let replayFrames = [];
+let replayThoughts = [];
+let replayTimer = null;
+let cacheWindows = [];
+let fastModeDefaults = { max_ticks_per_batch: 20000, replay_max_points: 1500 };
+let statusPollTimer = null;
+let jobsPollTimer = null;
+let jobsCache = [];
+let resourceDefaults = { cpu_count: 1, recommended_workers: 1, max_workers: 1 };
+let configProfiles = { active_profiles: { backtest: "live", live: "live" }, profiles: {} };
+const JOB_DRAFT_KEY = "backtest_job_draft_v1";
+
+function dtLocalToIso(v){
+  if(!v) return "";
+  return new Date(v).toISOString();
+}
+
+function renderSummary(summary){
+  const entries = [
+    ["PnL", summary.pnl ?? 0],
+    ["Trades", summary.trades ?? 0],
+    ["Win Rate", ((summary.win_rate ?? 0)*100).toFixed(2)+"%"],
+    ["Expectancy", summary.expectancy ?? 0],
+    ["Max DD", summary.max_drawdown ?? 0],
+    ["Final Balance", summary.final_balance ?? 0],
+    ["Sharpe-like", summary.sharpe_like ?? 0],
+    ["Wins/Losses", `${summary.wins ?? 0}/${summary.losses ?? 0}`],
+  ];
+  document.getElementById("summaryGrid").innerHTML = entries.map(([k,v]) =>
+    `<div><label>${k}</label><div class="kpi" style="font-size:18px">${v}</div></div>`
+  ).join("");
+}
+
+function drawSimpleLine(canvasId, valuesA, valuesB=null, colorA="#22c55e", colorB="#3b82f6"){
+  const c = document.getElementById(canvasId);
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0,0,c.width,c.height);
+  if(!valuesA || !valuesA.length){ return; }
+  const all = valuesB ? valuesA.concat(valuesB) : valuesA.slice();
+  const min = Math.min(...all), max = Math.max(...all), pad = 18;
+  ctx.strokeStyle = "#334155";
+  ctx.strokeRect(0,0,c.width,c.height);
+  function draw(vals, color){
+    ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.beginPath();
+    vals.forEach((v,i)=>{
+      const x = pad + (i/((vals.length-1)||1))*(c.width-pad*2);
+      const y = c.height-pad-((v-min)/((max-min)||1))*(c.height-pad*2);
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    });
+    ctx.stroke();
+  }
+  draw(valuesA, colorA);
+  if(valuesB) draw(valuesB, colorB);
+}
+
+function drawEquity(curve){
+  drawSimpleLine("equityCanvas", (curve||[]).map(p=>Number(p.equity||0)), null, "#22c55e");
+}
+
+function renderTrades(trades){
+  const body = document.getElementById("tradesBody");
+  body.innerHTML = (trades||[]).slice(0,500).map(t => `
+    <tr>
+      <td>${t.ticket}</td><td>${t.strategy}</td><td>${t.direction}</td>
+      <td>${Number(t.entry_price).toFixed(3)}</td><td>${Number(t.exit_price).toFixed(3)}</td>
+      <td style="color:${t.pnl>=0?'#22c55e':'#ef4444'}">${t.pnl}</td><td>${t.close_reason}</td>
+      <td>${t.open_time}</td><td>${t.close_time}</td>
+    </tr>
+  `).join("");
+}
+
+function renderSkipReasons(decisionStats){
+  const items = (decisionStats?.top_skip_reasons || []).slice(0,10);
+  const html = items.length ? items.map(x=>`<div>${x.count}x - ${x.reason}</div>`).join("") : "No skip reasons";
+  document.getElementById("skipReasons").innerHTML = html;
+}
+
+function renderChunkStatus(chunks){
+  const body = document.getElementById("chunkStatusBody");
+  const rows = Array.isArray(chunks) ? chunks : [];
+  if(!rows.length){
+    body.innerHTML = `<tr><td colspan="5" class="muted">No chunk details</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(c=>`
+    <tr>
+      <td>${(Number(c.index || 0) + 1)}</td>
+      <td>${c.start_utc || "-"} -> ${c.end_utc || "-"}</td>
+      <td>${c.status || "-"}${c.estimated_ticks ? ` (${Number(c.estimated_ticks).toLocaleString()} est)` : ""}</td>
+      <td>${Number(c.progress_pct || 0).toFixed(2)}%</td>
+      <td>${c.sim_time_utc || "-"}</td>
+    </tr>
+  `).join("");
+}
+
+function drawBars(canvasId, values, color="#38bdf8"){
+  const c = document.getElementById(canvasId);
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.strokeStyle = "#334155";
+  ctx.strokeRect(0,0,c.width,c.height);
+  if(!values || !values.length){ return; }
+  const pad = 18;
+  const innerW = c.width - pad*2;
+  const innerH = c.height - pad*2;
+  const max = Math.max(...values, 1);
+  const gap = Math.max(1, Math.floor(innerW / Math.max(values.length,1) / 6));
+  const barW = Math.max(2, (innerW - gap * (values.length - 1)) / values.length);
+  values.forEach((v,i)=>{
+    const h = (Number(v || 0) / max) * innerH;
+    const x = pad + i * (barW + gap);
+    const y = c.height - pad - h;
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, barW, h);
+  });
+}
+
+function renderPlannerMeta(planningMeta, runtimeMeta, chunks){
+  const planner = planningMeta || {};
+  const runtime = runtimeMeta || {};
+  const sys = planner.system_profile || runtime.system_profile || {};
+  const entries = [
+    ["Mode", planner.planning_mode || "-"],
+    ["Density", planner.density_source || "-"],
+    ["Chunk Target", planner.chunk_target_ticks ? Number(planner.chunk_target_ticks).toLocaleString() : "-"],
+    ["Est Total Ticks", planner.estimated_total_ticks ? Number(planner.estimated_total_ticks).toLocaleString() : "-"],
+    ["Requested Workers", runtime.requested_workers ?? planner.requested_workers ?? "-"],
+    ["Allocated Workers", runtime.allocated_workers ?? planner.allocated_workers ?? "-"],
+    ["Logical Cores", sys.logical_cores ?? "-"],
+    ["Avail RAM", sys.available_ram_gb != null ? `${Number(sys.available_ram_gb).toFixed(2)} GB` : "-"],
+    ["Queue Factor", sys.chunk_queue_factor ?? "-"],
+    ["Load Balance", runtime.load_balance_ratio != null ? `${Number(runtime.load_balance_ratio).toFixed(2)}x` : "-"],
+    ["Chunks", runtime.chunk_count ?? (Array.isArray(chunks) ? chunks.length : 0)],
+    ["Status Mix", runtime.chunk_status_counts ? Object.entries(runtime.chunk_status_counts).map(([k,v])=>`${k}:${v}`).join(" | ") : "-"],
+    ["Learned TPS", planner.learned_profile?.avg_ticks_per_second != null ? Number(planner.learned_profile.avg_ticks_per_second).toFixed(2) : "-"],
+    ["Learned Chunk Sec", planner.learned_profile?.avg_chunk_seconds != null ? Number(planner.learned_profile.avg_chunk_seconds).toFixed(2) : "-"],
+    ["Learned Queue", planner.learned_profile?.preferred_queue_factor ?? "-"],
+    ["Profile Samples", planner.learned_profile?.sample_count ?? "-"],
+  ];
+  document.getElementById("plannerGrid").innerHTML = entries.map(([k,v]) =>
+    `<div><label>${k}</label><div class="kpi" style="font-size:16px">${v}</div></div>`
+  ).join("");
+}
+
+function renderTimelineDensity(planningMeta){
+  const density = Array.isArray(planningMeta?.timeline_density) ? planningMeta.timeline_density : [];
+  drawBars("timelineDensityCanvas", density.map(x=>Number(x.estimated_ticks || 0)), "#22c55e");
+}
+
+function renderChunkLoad(chunks){
+  const rows = Array.isArray(chunks) ? chunks : [];
+  drawBars("chunkLoadCanvas", rows.map(x=>Number(x.estimated_ticks || 0)), "#f59e0b");
+}
+
+function resetPlannerPanels(){
+  renderPlannerMeta({}, {}, []);
+  renderTimelineDensity({});
+  renderChunkLoad([]);
+}
+
+function renderExecLogs(lines){
+  const box = document.getElementById("execLogs");
+  const rows = (lines || []).slice(-300);
+  box.innerHTML = rows.map(x=>`<div style="padding:2px 0;border-bottom:1px solid #1f2937">${x}</div>`).join("");
+  box.scrollTop = box.scrollHeight;
+}
+
+function isoToLocalInput(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+}
+
+function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+
+function setActionFeedback(message, busy=false){
+  document.getElementById("actionStatus").textContent = message || "Ready";
+  document.getElementById("actionSpinner").classList.toggle("hidden", !busy);
+}
+
+function setActionButtonsDisabled(disabled){
+  const ids = [
+    "btnCancel","btnRefresh","btnRun","btnSaveJob","btnCreateJob","btnRefreshJobs",
+    "btnBackToJobs","btnBackToLanding","btnGoToNewFromDetail","btnRerunFromDetail","btnUseCacheWindow",
+    "btnRefreshCache","btnNavJobs","btnNavNew","btnNavJob"
+  ];
+  ids.forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.disabled = !!disabled;
+  });
+  document.querySelectorAll("button[data-open-job],button[data-rerun-job],button[data-delete-job]").forEach(el=>el.disabled = !!disabled);
+}
+
+async function runWithFeedback(label, fn){
+  try{
+    setActionButtonsDisabled(true);
+    setActionFeedback(`${label}...`, true);
+    const out = await fn();
+    setActionFeedback(`${label} done`, false);
+    return out;
+  }catch(e){
+    setActionFeedback(`${label} failed`, false);
+    throw e;
+  }finally{
+    setActionButtonsDisabled(false);
+  }
+}
+
+function refreshNavButtons(activePage){
+  const jobsBtn = document.getElementById("btnNavJobs");
+  const newBtn = document.getElementById("btnNavNew");
+  const jobBtn = document.getElementById("btnNavJob");
+  jobsBtn.classList.toggle("btn-nav-active", activePage === "jobs");
+  newBtn.classList.toggle("btn-nav-active", activePage === "new");
+  jobBtn.classList.toggle("btn-nav-active", activePage === "job");
+  jobBtn.disabled = !currentJob;
+}
+
+function setCurrentJob(jobId, pushUrl=true){
+  currentJob = jobId || null;
+  document.getElementById("jobId").textContent = currentJob || "-";
+  document.getElementById("jobIdDetail").textContent = currentJob || "-";
+  refreshNavButtons(getPageFromUrl());
+  if(pushUrl){
+    const url = new URL(window.location.href);
+    if(currentJob) url.searchParams.set("job_id", currentJob);
+    else url.searchParams.delete("job_id");
+    window.history.replaceState({}, "", url.toString());
+  }
+}
+
+function getJobIdFromUrl(){
+  const url = new URL(window.location.href);
+  return url.searchParams.get("job_id");
+}
+
+function getPageFromUrl(){
+  const url = new URL(window.location.href);
+  return url.searchParams.get("page") || "jobs";
+}
+
+function setPage(page, pushUrl=true){
+  const target = (page === "new" || page === "job") ? page : "jobs";
+  document.getElementById("pageLanding").classList.toggle("hidden", target !== "jobs");
+  document.getElementById("pageNewJob").classList.toggle("hidden", target !== "new");
+  document.getElementById("pageJobDetail").classList.toggle("hidden", target !== "job");
+  refreshNavButtons(target);
+  if(pushUrl){
+    const url = new URL(window.location.href);
+    url.searchParams.set("page", target);
+    if(target !== "job"){
+      url.searchParams.delete("job_id");
+    }else if(currentJob){
+      url.searchParams.set("job_id", currentJob);
+    }
+    window.history.replaceState({}, "", url.toString());
+  }
+}
+
+function renderJobsPicker(jobs){
+  const picker = document.getElementById("jobPicker");
+  const sorted = (jobs || []).slice().sort((a,b)=>{
+    const order = { running: 0, queued: 1, completed: 2, failed: 3, cancelled: 4 };
+    const oa = order[a.status] ?? 9;
+    const ob = order[b.status] ?? 9;
+    if(oa !== ob) return oa - ob;
+    return (b.started_at || b.created_at || "").localeCompare(a.started_at || a.created_at || "");
+  });
+  jobsCache = sorted;
+  picker.innerHTML = sorted.length
+    ? sorted.map(j => `<option value="${j.job_id}">${j.job_id} | ${j.status} | ${(j.progress_pct||0).toFixed(1)}%</option>`).join("")
+    : `<option value="">No jobs available</option>`;
+  if(currentJob && sorted.some(j => j.job_id === currentJob)){
+    picker.value = currentJob;
+  }
+  document.getElementById("jobPickerMeta").textContent = `${sorted.length} job(s) available`;
+  const running = sorted.filter(j => j.status === "running" || j.status === "queued");
+  const cancelled = sorted.filter(j => j.status === "cancelled");
+  const done = sorted.filter(j => j.status === "completed" || j.status === "failed");
+  document.getElementById("jobsCountAll").textContent = String(sorted.length);
+  document.getElementById("jobsCountRunning").textContent = String(running.length);
+  document.getElementById("jobsCountDone").textContent = String(done.length);
+  document.getElementById("jobsCountCancelled").textContent = String(cancelled.length);
+  const row = (j) => `
+    <tr>
+      <td>${j.job_id}</td>
+      <td>${j.status}</td>
+      <td>${(j.progress_pct||0).toFixed(1)}%</td>
+      <td>${j.sim_time_utc || "-"}</td>
+      <td>${j.started_at || "-"}</td>
+      <td class="row">
+        <button data-open-job="${j.job_id}">Open</button>
+        <button data-rerun-job="${j.job_id}">Rerun</button>
+        <button class="btn-danger" data-delete-job="${j.job_id}">Delete</button>
+      </td>
+    </tr>
+  `;
+  document.getElementById("jobsRunningBody").innerHTML = running.length ? running.map(row).join("") : `<tr><td colspan="6" class="muted">No running jobs</td></tr>`;
+  document.getElementById("jobsDoneBody").innerHTML = done.length ? done.map(row).join("") : `<tr><td colspan="6" class="muted">No done jobs</td></tr>`;
+  document.getElementById("jobsCancelledBody").innerHTML = cancelled.length ? cancelled.map(row).join("") : `<tr><td colspan="6" class="muted">No cancelled jobs</td></tr>`;
+}
+
+async function loadJobs(){
+  const r = await fetch(`${API}/jobs`);
+  if(!r.ok){ return; }
+  const d = await r.json();
+  const jobs = d.jobs || [];
+  renderJobsPicker(jobs);
+}
+
+function renderCacheWindow(index){
+  if(!cacheWindows.length){
+    document.getElementById("cacheSelMeta").textContent = "-";
+    document.getElementById("cacheSelRange").textContent = "No cached window selected";
+    const sel = document.getElementById("cacheWindowSelect");
+    sel.innerHTML = `<option value="">No cached windows</option>`;
+    return;
+  }
+  const idx = Math.max(0, Math.min(index, cacheWindows.length - 1));
+  const w = cacheWindows[idx];
+  const sel = document.getElementById("cacheWindowSelect");
+  sel.value = String(idx);
+  document.getElementById("cacheSelMeta").textContent = `${w.symbol} | ${w.duration_hours}h | ${w.tick_count} ticks`;
+  document.getElementById("cacheSelRange").textContent = `${w.start_utc}  ->  ${w.end_utc}`;
+}
+
+async function loadDataAvailability(){
+  const symbol = document.getElementById("symbol").value;
+  const r = await fetch(`${API}/data-availability?symbol=${encodeURIComponent(symbol)}`);
+  const d = await r.json();
+  cacheWindows = d.windows || [];
+  document.getElementById("cacheCount").textContent = String(d.window_count || 0);
+  document.getElementById("cacheMin").textContent = d.min_start_utc || "-";
+  document.getElementById("cacheMax").textContent = d.max_end_utc || "-";
+  const sel = document.getElementById("cacheWindowSelect");
+  sel.innerHTML = cacheWindows.length
+    ? cacheWindows.map((w, i)=>`<option value="${i}">${w.start_utc} -> ${w.end_utc} | ${w.tick_count} ticks</option>`).join("")
+    : `<option value="">No cached windows</option>`;
+  if(cacheWindows.length){
+    sel.value = String(cacheWindows.length - 1);
+  }
+  renderCacheWindow(cacheWindows.length ? (cacheWindows.length - 1) : 0);
+}
+
+function setFormLocked(locked){
+  const ids = [
+    "symbol","strategy","initialBalance","startUtc","endUtc","batch","replayPoints",
+    "fastMode","splitMode","parallelWorkers","cacheOnly","configProfile","cacheWindowSelect","btnUseCacheWindow",
+    "btnRefreshCache","btnRun","btnSaveJob"
+  ];
+  ids.forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.disabled = !!locked;
+  });
+}
+
+function toggleNewJobCard(show){
+  setPage(show ? "new" : "jobs");
+}
+
+function collectJobForm(){
+  return {
+    symbol: document.getElementById("symbol").value,
+    strategy: document.getElementById("strategy").value,
+    configProfile: document.getElementById("configProfile").value,
+    startUtc: document.getElementById("startUtc").value,
+    endUtc: document.getElementById("endUtc").value,
+    initialBalance: document.getElementById("initialBalance").value,
+    batch: document.getElementById("batch").value,
+    replayPoints: document.getElementById("replayPoints").value,
+    fastMode: document.getElementById("fastMode").value,
+    splitMode: document.getElementById("splitMode").value,
+    parallelWorkers: document.getElementById("parallelWorkers").value,
+    cacheOnly: document.getElementById("cacheOnly").value,
+  };
+}
+
+function applyJobForm(v){
+  if(!v) return;
+  if(v.symbol) document.getElementById("symbol").value = v.symbol;
+  if(v.strategy) document.getElementById("strategy").value = v.strategy;
+  if(v.configProfile) document.getElementById("configProfile").value = v.configProfile;
+  if(v.startUtc) document.getElementById("startUtc").value = v.startUtc;
+  if(v.endUtc) document.getElementById("endUtc").value = v.endUtc;
+  if(v.initialBalance) document.getElementById("initialBalance").value = v.initialBalance;
+  if(v.batch) document.getElementById("batch").value = v.batch;
+  if(v.replayPoints) document.getElementById("replayPoints").value = v.replayPoints;
+  if(v.fastMode) document.getElementById("fastMode").value = v.fastMode;
+  if(v.splitMode) document.getElementById("splitMode").value = v.splitMode;
+  if(v.parallelWorkers) document.getElementById("parallelWorkers").value = v.parallelWorkers;
+  if(v.cacheOnly) document.getElementById("cacheOnly").value = v.cacheOnly;
+}
+
+function requestToFormValues(req){
+  if(!req) return null;
+  return {
+    symbol: req.symbol || "",
+    strategy: req.strategy || "",
+    configProfile: req.config_profile || configProfiles.active_profiles?.backtest || "live",
+    startUtc: isoToLocalInput(req.start_utc || req.requested_start_utc || ""),
+    endUtc: isoToLocalInput(req.end_utc || req.requested_end_utc || ""),
+    initialBalance: req.initial_balance != null ? String(req.initial_balance) : "",
+    batch: req.max_ticks_per_batch != null ? String(req.max_ticks_per_batch) : "",
+    replayPoints: req.replay_max_points != null ? String(req.replay_max_points) : "",
+    fastMode: String(Boolean(req.fast_mode)),
+    splitMode: req.split_mode || "NONE",
+    parallelWorkers: req.parallel_workers != null ? String(req.parallel_workers) : "",
+    cacheOnly: String(Boolean(req.cache_only !== false)),
+  };
+}
+
+async function preloadJobForRerun(jobId){
+  const jid = jobId || currentJob;
+  if(!jid) throw new Error("No job selected");
+  const r = await fetch(`${API}/jobs/${jid}`);
+  const status = await r.json().catch(()=>({}));
+  if(!r.ok){ throw new Error(status.detail || "Failed to load job"); }
+  let req = status.request || null;
+  if(!req || !req.start_utc){
+    const rr = await fetch(`${API}/jobs/${jid}/results`);
+    const data = await rr.json().catch(()=>({}));
+    if(rr.ok){
+      req = data.request || {
+        symbol: data.meta?.symbol,
+        strategy: data.meta?.strategy,
+        start_utc: data.meta?.requested_start_utc,
+        end_utc: data.meta?.requested_end_utc,
+        initial_balance: data.meta?.initial_balance,
+        config_profile: data.meta?.config_profile,
+        use_runtime_config: data.meta?.use_runtime_config,
+        max_ticks_per_batch: data.meta?.max_ticks_per_batch,
+        replay_max_points: data.meta?.replay_max_points,
+        fast_mode: data.meta?.fast_mode,
+        split_mode: data.meta?.split_mode,
+        parallel_workers: data.meta?.parallel_workers,
+        cache_only: data.meta?.cache_only,
+      };
+    }
+  }
+  const formValues = requestToFormValues(req);
+  if(!formValues) throw new Error("Job parameters unavailable for rerun");
+  applyJobForm(formValues);
+  try{
+    localStorage.setItem(JOB_DRAFT_KEY, JSON.stringify(collectJobForm()));
+  }catch(_){}
+  document.getElementById("saveMsg").textContent = `Cloned settings from ${jid}. Edit and run to create a new job.`;
+  setFormLocked(false);
+  setPage("new", true);
+}
+
+function renderReplayAt(index){
+  if(!replayFrames.length){ return; }
+  const idx = Math.max(0, Math.min(index, replayFrames.length-1));
+  const f = replayFrames[idx];
+  document.getElementById("replayIdx").value = String(idx);
+  document.getElementById("rpTime").textContent = f.time || "-";
+  document.getElementById("rpTick").textContent = `${f.bid} / ${f.ask} (spr ${f.spread})`;
+  document.getElementById("rpM1").textContent = (f.m1 && f.m1.open!=null) ? `O:${f.m1.open} H:${f.m1.high} L:${f.m1.low} C:${f.m1.close}` : "-";
+  document.getElementById("rpM5").textContent = (f.m5 && f.m5.open!=null) ? `O:${f.m5.open} H:${f.m5.high} L:${f.m5.low} C:${f.m5.close}` : "-";
+
+  const start = Math.max(0, idx - 350);
+  const w = replayFrames.slice(start, idx+1);
+  drawSimpleLine("tickCanvas", w.map(x=>Number(x.bid||0)), w.map(x=>Number(x.ask||0)));
+  drawSimpleLine("candleCanvas", w.map(x=>Number((x.m1&&x.m1.close)||0)), null, "#f59e0b");
+
+  const thoughtItems = replayThoughts.filter(t => t.tick_index <= (f.tick_index||0)).slice(-80);
+  document.getElementById("thoughtsBox").innerHTML = thoughtItems.map(t=>
+    `<div style="padding:3px 0;border-bottom:1px solid #1f2937"><span style="color:#94a3b8">${t.time}</span> <b style="color:#67e8f9">[${t.kind}]</b> ${t.message}</div>`
+  ).join("");
+}
+
+function loadReplay(data){
+  const replay = data?.replay || {};
+  replayFrames = replay.frames || [];
+  replayThoughts = replay.thoughts || [];
+  const slider = document.getElementById("replayIdx");
+  slider.max = String(Math.max(0, replayFrames.length-1));
+  slider.value = "0";
+  renderReplayAt(replayFrames.length ? replayFrames.length-1 : 0);
+}
+
+async function loadPresets(){
+  const r = await fetch(`${API}/presets`);
+  const d = await r.json();
+  configProfiles = d.profiles || configProfiles;
+  document.getElementById("symbol").innerHTML = d.symbols.map(s=>`<option>${s}</option>`).join("");
+  document.getElementById("strategy").innerHTML = d.strategies.map(s=>`<option>${s}</option>`).join("");
+  const profileEntries = Object.values((configProfiles && configProfiles.profiles) || {});
+  const profileSelect = document.getElementById("configProfile");
+  profileSelect.innerHTML = profileEntries.length
+    ? profileEntries.map(p=>{
+        const roleTag = (configProfiles.active_profiles?.backtest === p.name) ? " (active backtest)" : "";
+        const desc = p.description ? ` - ${p.description}` : "";
+        return `<option value="${p.name}">${p.name}${roleTag}${desc}</option>`;
+      }).join("")
+    : `<option value="live">live</option>`;
+  document.getElementById("symbol").value = d.defaults.symbol;
+  document.getElementById("strategy").value = d.defaults.strategy;
+  profileSelect.value = d.defaults.config_profile || configProfiles.active_profiles?.backtest || "live";
+  document.getElementById("initialBalance").value = d.defaults.initial_balance;
+  document.getElementById("replayPoints").value = d.defaults.replay_max_points || 12000;
+  document.getElementById("batch").value = d.defaults.max_ticks_per_batch || 2000;
+  document.getElementById("fastMode").value = String(Boolean(d.defaults.fast_mode));
+  document.getElementById("cacheOnly").value = String(Boolean(d.defaults.cache_only !== false));
+  document.getElementById("parallelWorkers").value = String(d.defaults.parallel_workers || 1);
+  resourceDefaults = d.resource_defaults || resourceDefaults;
+  const splitSel = document.getElementById("splitMode");
+  if(Array.isArray(d.split_modes) && d.split_modes.length){
+    splitSel.innerHTML = d.split_modes.map(m=>`<option value="${m}">${m}</option>`).join("");
+  }
+  splitSel.value = d.defaults.split_mode || "NONE";
+  fastModeDefaults = d.fast_mode_defaults || fastModeDefaults;
+  try{
+    const draft = JSON.parse(localStorage.getItem(JOB_DRAFT_KEY) || "null");
+    if(draft){ applyJobForm(draft); }
+  }catch(_){}
+  await loadDataAvailability();
+}
+
+async function runBacktest(){
+  const isFast = document.getElementById("fastMode").value === "true";
+  let workers = Number(document.getElementById("parallelWorkers").value || 1);
+  const maxWorkers = Number(resourceDefaults.max_workers || 1);
+  workers = Math.max(1, Math.min(workers, maxWorkers));
+  document.getElementById("parallelWorkers").value = String(workers);
+  const payload = {
+    symbol: document.getElementById("symbol").value,
+    strategy: document.getElementById("strategy").value,
+    config_profile: document.getElementById("configProfile").value,
+    start_utc: dtLocalToIso(document.getElementById("startUtc").value),
+    end_utc: dtLocalToIso(document.getElementById("endUtc").value),
+    initial_balance: Number(document.getElementById("initialBalance").value || 10000),
+    use_runtime_config: true,
+    max_ticks_per_batch: Number(document.getElementById("batch").value || 2000),
+    replay_max_points: Number(document.getElementById("replayPoints").value || 12000),
+    fast_mode: isFast,
+    split_mode: String(document.getElementById("splitMode").value || "NONE"),
+    parallel_workers: workers,
+    cache_only: document.getElementById("cacheOnly").value === "true",
+  };
+  await runWithFeedback("Starting job", async ()=>{
+    const r = await fetch(`${API}/run`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+    const d = await r.json();
+    if(!r.ok){ throw new Error(d.detail || "Failed to create job"); }
+    setCurrentJob(d.job_id, true);
+    await loadJobs();
+    setPage("job", true);
+    await refreshStatus();
+  });
+}
+
+async function cancelBacktest(){
+  if(!currentJob){ return; }
+  const jid = currentJob;
+  await runWithFeedback("Cancelling job", async ()=>{
+    const r = await fetch(`${API}/jobs/${jid}/cancel`, {method:"POST"});
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok){ throw new Error(d.detail || "Failed to cancel job"); }
+    const started = Date.now();
+    while(Date.now() - started < 30000){
+      if(currentJob !== jid){ break; }
+      await refreshStatus();
+      const txt = document.getElementById("statusTextDetail").textContent || "";
+      if(!txt.includes("running") && !txt.includes("queued")) break;
+      setActionFeedback("Cancelling job... waiting for workers to stop", true);
+      await sleep(800);
+    }
+  });
+}
+
+async function deleteBacktest(jobId){
+  const jid = jobId || currentJob;
+  if(!jid){ return; }
+  const ok = window.confirm(`Delete backtest job ${jid}? This also removes saved artifacts.`);
+  if(!ok){ return; }
+  await runWithFeedback("Deleting job", async ()=>{
+    let r = await fetch(`${API}/jobs/${jid}?force=true`, {method:"DELETE"});
+    let d = await r.json().catch(()=>({}));
+    if(!r.ok && (r.status === 404 || r.status === 405 || r.status === 501)){
+      r = await fetch(`${API}/jobs/${jid}/delete?force=true`, {method:"POST"});
+      d = await r.json().catch(()=>({}));
+    }
+    if(!r.ok){ throw new Error(d.detail || "Failed to delete job"); }
+    if(currentJob === jid){
+      setCurrentJob(null, true);
+      document.getElementById("statusText").textContent = "idle";
+      document.getElementById("statusTextDetail").textContent = "idle";
+      document.getElementById("allocatedCores").textContent = "-";
+      renderChunkStatus([]);
+      resetPlannerPanels();
+      document.getElementById("btnCancel").disabled = true;
+      setPage("jobs", true);
+    }
+    await loadJobs();
+  });
+}
+
+async function refreshStatus(){
+  if(!currentJob){ return; }
+  const r = await fetch(`${API}/jobs/${currentJob}`);
+  if(!r.ok){
+    if(r.status === 404){
+      document.getElementById("statusText").textContent = "job not found (possibly after restart)";
+      document.getElementById("statusTextDetail").textContent = "job not found (possibly after restart)";
+      setCurrentJob(null, true);
+      await loadJobs();
+      setPage("jobs", true);
+    }
+    return;
+  }
+  const s = await r.json();
+  document.getElementById("statusText").textContent = s.status + (s.error ? ` (${s.error})` : "");
+  document.getElementById("statusTextDetail").textContent = s.status + (s.error ? ` (${s.error})` : "");
+    if(s.status === "deleted"){
+      setCurrentJob(null, true);
+      document.getElementById("allocatedCores").textContent = "-";
+      renderChunkStatus([]);
+      resetPlannerPanels();
+      document.getElementById("statusText").textContent = "idle";
+      document.getElementById("statusTextDetail").textContent = "idle";
+    await loadJobs();
+    setPage("jobs", true);
+    return;
+  }
+  document.getElementById("allocatedCores").textContent = String(s.allocated_workers ?? "-");
+  const unit = String(s.progress_unit || "ticks").toLowerCase();
+  document.getElementById("processedLabel").textContent = unit === "chunks" ? "Processed Chunks" : "Processed Ticks";
+  document.getElementById("totalLabel").textContent = unit === "chunks" ? "Total Chunks" : "Total Ticks";
+  document.getElementById("progressPct").textContent = `${(s.progress_pct||0).toFixed(2)}%`;
+  document.getElementById("processedTicks").textContent = s.processed_units ?? s.processed_ticks ?? 0;
+  document.getElementById("totalTicks").textContent = s.total_units ?? s.total_ticks ?? 0;
+  document.getElementById("simTime").textContent = s.sim_time_utc || "-";
+  renderChunkStatus(s.chunks || []);
+  renderPlannerMeta(s.planning_meta || {}, s.runtime_meta || {}, s.chunks || []);
+  renderTimelineDensity(s.planning_meta || {});
+  renderChunkLoad(s.chunks || []);
+  renderExecLogs(s.logs_tail || []);
+  setFormLocked(s.status === "running" || s.status === "queued");
+  document.getElementById("btnCancel").disabled = !(s.status === "running" || s.status === "queued");
+  if(s.status === "completed"){
+    const rr = await fetch(`${API}/jobs/${currentJob}/results`);
+    const data = await rr.json();
+    renderSummary(data.summary || {});
+    drawEquity(data.equity_curve || []);
+    renderTrades(data.trades || []);
+    renderSkipReasons(data.decision_stats || {});
+    loadReplay(data);
+  }
+}
+
+document.getElementById("btnRun").addEventListener("click", async ()=>{ try{ await runBacktest(); }catch(e){ alert(e.message || String(e)); }});
+document.getElementById("btnCancel").addEventListener("click", async ()=>{ try{ await cancelBacktest(); }catch(e){ alert(e.message || String(e)); }});
+document.getElementById("btnRefresh").addEventListener("click", refreshStatus);
+document.getElementById("btnRefreshJobs").addEventListener("click", loadJobs);
+document.getElementById("btnCreateJob").addEventListener("click", ()=>{
+  setCurrentJob(null, true);
+  document.getElementById("statusText").textContent = "idle";
+  document.getElementById("statusTextDetail").textContent = "idle";
+  document.getElementById("allocatedCores").textContent = "-";
+  renderChunkStatus([]);
+  resetPlannerPanels();
+  document.getElementById("saveMsg").textContent = "";
+  setFormLocked(false);
+  setPage("new", true);
+});
+document.getElementById("btnBackToJobs").addEventListener("click", ()=>{
+  setPage("jobs", true);
+});
+document.getElementById("btnBackToLanding").addEventListener("click", ()=>{
+  setPage("jobs", true);
+});
+document.getElementById("btnGoToNewFromDetail").addEventListener("click", ()=>{
+  setCurrentJob(null, true);
+  setFormLocked(false);
+  setPage("new", true);
+});
+document.getElementById("btnRerunFromDetail").addEventListener("click", async ()=>{
+  try{ await preloadJobForRerun(currentJob); }catch(e){ alert(e.message || String(e)); }
+});
+document.getElementById("btnSaveJob").addEventListener("click", ()=>{
+  try{
+    localStorage.setItem(JOB_DRAFT_KEY, JSON.stringify(collectJobForm()));
+    document.getElementById("saveMsg").textContent = "Saved.";
+  }catch(_){
+    document.getElementById("saveMsg").textContent = "Save failed.";
+  }
+});
+document.getElementById("jobPicker").addEventListener("change", async (e)=>{
+  const picked = e.target.value;
+  if(!picked){ return; }
+  setCurrentJob(picked, true);
+  setPage("job", true);
+  await refreshStatus();
+});
+document.getElementById("pageLanding").addEventListener("click", async (e)=>{
+  const del = e.target.closest("button[data-delete-job]");
+  if(del){
+    const toDelete = del.getAttribute("data-delete-job");
+    if(toDelete){
+      try{ await deleteBacktest(toDelete); }catch(err){ alert(err.message || String(err)); }
+    }
+    return;
+  }
+  const rerun = e.target.closest("button[data-rerun-job]");
+  if(rerun){
+    const toRerun = rerun.getAttribute("data-rerun-job");
+    if(toRerun){
+      try{ await preloadJobForRerun(toRerun); }catch(err){ alert(err.message || String(err)); }
+    }
+    return;
+  }
+  const btn = e.target.closest("button[data-open-job]");
+  if(!btn){ return; }
+  const picked = btn.getAttribute("data-open-job");
+  if(!picked){ return; }
+  setCurrentJob(picked, true);
+  const picker = document.getElementById("jobPicker");
+  if([...picker.options].some(o=>o.value === picked)){ picker.value = picked; }
+  setPage("job", true);
+  await refreshStatus();
+});
+document.getElementById("btnNavJobs").addEventListener("click", ()=>setPage("jobs", true));
+document.getElementById("btnNavNew").addEventListener("click", ()=>setPage("new", true));
+document.getElementById("btnNavJob").addEventListener("click", async ()=>{
+  if(!currentJob){ return; }
+  setPage("job", true);
+  await refreshStatus();
+});
+document.getElementById("btnRefreshCache").addEventListener("click", loadDataAvailability);
+document.getElementById("replayIdx").addEventListener("input", (e)=>renderReplayAt(Number(e.target.value||0)));
+document.getElementById("symbol").addEventListener("change", loadDataAvailability);
+document.getElementById("fastMode").addEventListener("change", (e)=>{
+  const isFast = e.target.value === "true";
+  if(isFast){
+    document.getElementById("batch").value = String(fastModeDefaults.max_ticks_per_batch || 20000);
+    document.getElementById("replayPoints").value = String(fastModeDefaults.replay_max_points || 1500);
+  }
+});
+document.getElementById("splitMode").addEventListener("change", (e)=>{
+  const mode = String(e.target.value || "NONE");
+  if(mode !== "NONE"){
+    document.getElementById("parallelWorkers").value = String(resourceDefaults.max_workers || 1);
+  }
+});
+document.getElementById("cacheWindowSelect").addEventListener("change", (e)=>renderCacheWindow(Number(e.target.value||0)));
+document.getElementById("btnUseCacheWindow").addEventListener("click", ()=>{
+  if(!cacheWindows.length){ return; }
+  const idx = Number(document.getElementById("cacheWindowSelect").value || 0);
+  const w = cacheWindows[Math.max(0, Math.min(idx, cacheWindows.length - 1))];
+  document.getElementById("startUtc").value = isoToLocalInput(w.start_utc);
+  document.getElementById("endUtc").value = isoToLocalInput(w.end_utc);
+  document.getElementById("statusText").textContent = `window selected: ${w.start_utc} -> ${w.end_utc}`;
+});
+document.getElementById("btnPlay").addEventListener("click", ()=>{
+  if(replayTimer || !replayFrames.length){ return; }
+  replayTimer = setInterval(()=>{
+    const s = document.getElementById("replayIdx");
+    const v = Number(s.value||0);
+    const n = Math.min(v+1, replayFrames.length-1);
+    s.value = String(n);
+    renderReplayAt(n);
+    if(n >= replayFrames.length-1){ clearInterval(replayTimer); replayTimer = null; }
+  }, 120);
+});
+document.getElementById("btnPause").addEventListener("click", ()=>{
+  if(replayTimer){ clearInterval(replayTimer); replayTimer = null; }
+});
+statusPollTimer = setInterval(refreshStatus, 2000);
+jobsPollTimer = setInterval(loadJobs, 5000);
+
+const now = new Date();
+const end = new Date(now.getTime() - 60*60*1000);
+const start = new Date(end.getTime() - 24*60*60*1000);
+document.getElementById("startUtc").value = new Date(start.getTime() - start.getTimezoneOffset()*60000).toISOString().slice(0,16);
+document.getElementById("endUtc").value = new Date(end.getTime() - end.getTimezoneOffset()*60000).toISOString().slice(0,16);
+loadPresets().then(async ()=>{
+  await loadJobs();
+  document.getElementById("btnCancel").disabled = true;
+  setFormLocked(false);
+  const jid = getJobIdFromUrl();
+  const page = getPageFromUrl();
+  if(jid){
+    setCurrentJob(jid, false);
+    const picker = document.getElementById("jobPicker");
+    if([...picker.options].some(o=>o.value === jid)){
+      picker.value = jid;
+    }
+    setPage("job", false);
+    await refreshStatus();
+    return;
+  }
+  if(page === "new"){
+    setPage("new", false);
+  } else {
+    setPage("jobs", false);
+  }
+});
+</script>
+</body>
+</html>

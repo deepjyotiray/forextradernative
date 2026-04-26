@@ -47,7 +47,10 @@ from engine.order_database import OrderDatabase
 from engine.visual_analytics import generate_visual_suite
 from engine.xgb_model import xgb_model
 from engine.anti_starvation import record_trade_taken
+from engine.trade_pacing import record_trade_taken as record_pacing_trade
+from engine.session_risk_control import record_trade_taken as record_session_trade
 from engine.decision_logger import get_live_blockers
+from engine import adaptive_params
 
 _TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "H1": 60, "H4": 120}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -102,6 +105,11 @@ class AutoTrader:
         self._mt5_today_pnl: Dict = {}
         self._last_history_poll = 0.0
 
+        # Cached positions for API/WS layer (updated after manage_all so closed trades vanish immediately)
+        self._cached_positions: list = []
+        self._cached_floating_pnl: Dict = {"total": 0, "count": 0}
+        self._positions_version: int = 0
+
     def log(self, tag: str, msg: str):
         now = datetime.now(timezone.utc)
         utc_str = now.strftime("%H:%M:%S.%f")[:-3]
@@ -132,18 +140,20 @@ class AutoTrader:
             corr_engine.init_symbols()
             # XGBoost: train from performance tracker (has features), not CSV
             perf_trades = self.perf.trades
-            if perf_trades and xgb_model.should_retrain(len(perf_trades)):
-                # Filter to trades that have real features
-                featured = [t for t in perf_trades if t.get("features") and
-                            any(isinstance(v, (int, float)) and v != 0
-                                for v in t["features"].values())]
-                if len(featured) >= 15:
-                    threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
-                    self.log("INIT", f"XGBoost training on {len(featured)} trades (with features)")
-                else:
-                    self.log("INIT", f"XGBoost: {len(featured)} featured trades < 15 min, skipping")
+            featured = [t for t in perf_trades if t.get("features") and
+                        any(isinstance(v, (int, float)) and v != 0
+                            for v in t["features"].values())]
+            if not xgb_model.is_trained and len(featured) >= 15:
+                # Block briefly on first train so dashboard shows trained state immediately
+                xgb_model.train(featured)
+                self.log("INIT", f"XGBoost trained on {len(featured)} trades (with features)")
+            elif xgb_model.is_trained and xgb_model.should_retrain(len(featured)):
+                threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
+                self.log("INIT", f"XGBoost retraining on {len(featured)} trades")
             elif xgb_model.is_trained:
                 self.log("INIT", f"XGBoost loaded ({xgb_model._trades_at_last_train} trades)")
+            else:
+                self.log("INIT", f"XGBoost: {len(featured)} featured trades < 15 min, skipping")
             self.log("INIT", "Loading candle data...")
             for tf in _TF_REFRESH:
                 df = self.bridge.fetch_candles(tf)
@@ -203,6 +213,9 @@ class AutoTrader:
         threading.Thread(target=self._tick_pump_loop, daemon=True, name="MarketTickPump").start()
 
     def _tick_pump_loop(self):
+        _pos_refresh_interval = 0.1  # refresh positions every 100ms independently of engine cycle
+        _last_pos_refresh = 0.0
+        _last_pos_count = -1
         while self._running:
             try:
                 if self._mt5_connected:
@@ -214,6 +227,22 @@ class AutoTrader:
                             self._last_tick_signature = signature
                             self._tick_seq += 1
                             self.tick_proc.feed(tick)
+                    # Refresh positions at 100ms cadence so live P&L stays smooth
+                    # regardless of how long the engine cycle takes
+                    now = time.monotonic()
+                    if now - _last_pos_refresh >= _pos_refresh_interval:
+                        _last_pos_refresh = now
+                        all_pos = self.bridge.get_positions()
+                        magic_pos = [p for p in (all_pos or []) if p.get("magic") == cfg.MAGIC_NUMBER]
+                        self._cached_positions = magic_pos
+                        self._cached_floating_pnl = {
+                            "total": round(sum(p.get("net_profit", 0) for p in magic_pos), 2),
+                            "count": len(magic_pos),
+                        }
+                        # Bump version if a position disappeared (trade closed)
+                        if _last_pos_count != -1 and len(magic_pos) < _last_pos_count:
+                            self._positions_version += 1
+                        _last_pos_count = len(magic_pos)
             except Exception:
                 pass
             time.sleep(max(0.005, float(getattr(cfg, "MARKET_TICK_POLL_INTERVAL", 0.02))))
@@ -278,6 +307,21 @@ class AutoTrader:
                 self._regime = {}
                 self._bias = {}
                 self._liquidity = {}
+            # Adaptive parameter adjustment — runs every ~30 cycles
+            try:
+                changes = adaptive_params.apply(self._regime, self.risk, self.perf)
+                if changes and changes.get("regime"):
+                    self.log("ADAPT", f"[{changes['regime']}] "
+                             f"WTR:{changes['SMC_THRESHOLD_WITH_TREND']:.0%} "
+                             f"CTR:{changes['SMC_THRESHOLD_COUNTER']:.0%} "
+                             f"RR:{changes['SMC_MIN_RR']:.1f} "
+                             f"Trades:{changes['SESSION_MAX_TRADES']} "
+                             f"Cool:{changes['MIN_TRADE_COOLDOWN']:.0f}s "
+                             f"Spread:{changes['SMC_SPREAD_MEAN_MAX']:.2f} "
+                             f"streak:{changes.get('streak',0)} "
+                             f"dd:{changes.get('daily_dd_pct',0):.2f}%")
+            except Exception as e:
+                self.log("ERR", f"Adaptive params failed: {e}")
         if self._cycle % 60 == 0:
             eco_calendar.poll()
             self._calendar = eco_calendar.check()
@@ -304,6 +348,11 @@ class AutoTrader:
 
         # Manage open trades (ALWAYS) — pass ALL positions for P&L matching
         closed = self.trades.manage_all(all_positions or [], tick_metrics=self.tick_proc.snapshot())
+
+        # Bump version on close so WS pushes immediately (tick pump handles live P&L refresh)
+        if closed:
+            self._positions_version += 1
+
         for ticket, pnl, won in closed:
             # Record to performance tracker with MT5-sourced P&L + features from DB
             record = {"ticket": ticket, "pnl": pnl, "won": won,
@@ -418,7 +467,8 @@ class AutoTrader:
 
         # Lot sizing — scalper caps at 0.05, SMC uses full risk calc
         is_scalp = sig.get("_scalp", False)
-        lot = self.risk.calculate_lot(account or {}, sl_distance)
+        high_conf = sig.get("_high_conf", False)
+        lot = self.risk.calculate_lot(account or {}, sl_distance, high_conf=high_conf)
         if is_scalp:
             lot = min(0.05, lot)
         elif get_session() == "ASIAN":
@@ -427,7 +477,7 @@ class AutoTrader:
 
         # Execute with retry + spread re-check
         signal_spread = sig.get("_entry_spread", (tick or {}).get("spread", 0))
-        if cfg.TIER1_ENABLED and self.tick_proc.spread_changed(signal_spread, max_delta=0.03):
+        if cfg.TIER1_ENABLED and self.tick_proc.spread_changed(signal_spread, max_delta=cfg.SMC_TIER1_SPREAD_DELTA_MAX):
             self.log("BLOCKED", f"[{strat_name}] Spread widened since signal")
             return
         comment = f"FT_{strat_name[:8]}"
@@ -450,6 +500,8 @@ class AutoTrader:
                 be_trigger=sig.get("_be_trigger", 0),
                 timeout=sig.get("_timeout", 0),
                 early_fail=sig.get("_early_fail", 0),
+                tier1_min_ticks=sig.get("_tier1_min_ticks", cfg.SMC_TIER1_MIN_TICKS),
+                tier1_max_ticks=sig.get("_tier1_max_ticks", cfg.SMC_TIER1_MAX_TICKS),
                 features={
                     "atr": self._indicators.get("atr", 0),
                     "atr_ratio": self._indicators.get("atr_ratio", 1),
@@ -465,7 +517,18 @@ class AutoTrader:
                 },
             )
             record_trade_taken()
+            record_pacing_trade()
+            record_session_trade()
             self.risk.record_trade_opened()
+            # Confirm sweep scalper level lock after successful execution
+            if is_scalp and hasattr(sig.get('_original_signal', sig), 'get'):
+                sweep_lvl = sig.get('sweep_level') or sig.get('_original_signal', {}).get('sweep_level')
+            else:
+                sweep_lvl = sig.get('sweep_level')
+            if is_scalp and sweep_lvl:
+                scalper = self.strat_mgr.get('SWEEP_SCALPER')
+                if scalper:
+                    scalper.confirm_trade_executed(sweep_lvl)
             self._stats["trades"] += 1
             self.log("TRADE", f"[{strat_name}] {action} {lot} lot @ {fp} | "
                      f"SL:{sl} TP:{tp} RR:{sig.get('rr',0):.1f} | {sig.get('reason','')[:80]}")
@@ -670,6 +733,7 @@ class AutoTrader:
         db_closed = self.trades.order_db.get_closed_orders(30) if self.trades and self.trades.order_db else []
         mt5_map = {t['ticket']: t for t in (self._mt5_closed_history or [])}
         closed_for_dash = []
+        db_tickets = set()
         for o in db_closed:
             mt5_t = mt5_map.get(o['ticket'], {})
             exit_price = o.get('exit_price') or mt5_t.get('exit_price') or 0
@@ -687,6 +751,23 @@ class AutoTrader:
                 'close_time': close_time,
                 'comment': o.get('close_reason') or o.get('strategy', ''),
             })
+            db_tickets.add(o['ticket'])
+        for t in (self._mt5_closed_history or []):
+            if t['ticket'] not in db_tickets:
+                closed_for_dash.append({
+                    'ticket': t['ticket'],
+                    'symbol': t.get('symbol', self.bridge.current_symbol),
+                    'direction': t.get('direction', ''),
+                    'volume': t.get('volume', 0),
+                    'entry_price': t.get('entry_price', 0),
+                    'exit_price': t.get('exit_price', 0),
+                    'pnl': t.get('pnl', 0),
+                    'won': t.get('pnl', 0) > 0,
+                    'open_time': t.get('open_time', ''),
+                    'close_time': t.get('close_time', ''),
+                    'comment': t.get('comment', 'MT5'),
+                })
+        closed_for_dash.sort(key=lambda x: x.get('close_time') or '', reverse=True)
 
         # Performance stats from DB closed history
         pnls = [t['pnl'] for t in closed_for_dash]
@@ -752,6 +833,7 @@ class AutoTrader:
                 "MAX_CONSECUTIVE_LOSSES": cfg.MAX_CONSECUTIVE_LOSSES,
                 "MIN_TRADE_COOLDOWN": cfg.MIN_TRADE_COOLDOWN,
                 "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE,
+                "SESSION_MAX_TRADES": cfg.SESSION_MAX_TRADES,
             },
             "gate_config": {
                 "ALL_GATES_OVERRIDE_ENABLED": cfg.ALL_GATES_OVERRIDE_ENABLED,
@@ -807,11 +889,11 @@ class AutoTrader:
                 'losses': db_losses,
                 'source': 'orders_db',
             },
-            "mt5_positions": self.bridge.get_positions() if self._mt5_connected else [],
-            "mt5_floating_pnl": self.bridge.get_floating_pnl() if self._mt5_connected else {"total": 0, "count": 0, "positions": []},
+            "mt5_positions": self._cached_positions,
+            "mt5_floating_pnl": self._cached_floating_pnl,
             "closed_history": closed_for_dash,
             "xgb": xgb_model.get_feature_importance(),
-            "xgb_live_prediction": self._get_xgb_live_prediction(),
+            "xgb_live_prediction": {},  # overwritten by trader_api with cached version
             "performance": {
                 "total": len(pnls),
                 "wins": len(wins),
@@ -826,7 +908,7 @@ class AutoTrader:
             },
             "trades": self.trades.status if self.trades else {"open_trades": [], "open_count": 0, "today_stats": {"trades": 0, "wins": 0, "losses": 0, "total_pnl": 0, "avg_pnl": 0, "best_trade": 0, "worst_trade": 0, "open_count": 0, "open_pnl": 0}},
             "stats": self._stats,
-            "live_blockers": get_live_blockers(30),
+            "live_blockers": {},  # overwritten by trader_api with cached version
             "log": list(self._log)[-50:],
         }
 
@@ -1027,7 +1109,8 @@ class AutoTrader:
                     _RISK_KEYS = {'MAX_POSITIONS':int,'MAX_RISK_PCT':float,'MAX_DRAWDOWN_PCT':float,
                         'MAX_LOT':float,'MIN_LOT':float,'DAILY_TARGET_DOLLARS':float,
                         'DAILY_LOSS_LIMIT_PCT':float,'MAX_CONSECUTIVE_LOSSES':int,
-                        'MIN_TRADE_COOLDOWN':float,'LOSS_STREAK_PAUSE':int}
+                        'MIN_TRADE_COOLDOWN':float,'LOSS_STREAK_PAUSE':int,
+                        'SESSION_MAX_TRADES':int}
                     _GATE_FLOAT_KEYS = {'SMC_SPREAD_MEAN_MAX','SMC_SPREAD_STD_MAX','SMC_SPREAD_PERCENTILE_MAX',
                         'SMC_CURRENT_SPREAD_DELTA_MAX','SCALPER_SPREAD_MEAN_MAX','SCALPER_SPREAD_STD_MAX',
                         'SCALPER_SPREAD_PERCENTILE_MAX','SCALPER_CURRENT_SPREAD_DELTA_MAX',
@@ -1037,9 +1120,20 @@ class AutoTrader:
                         'SCALPER_QUALITY_THRESHOLD','SCALPER_ATR_MIN','SCALPER_ATR_MAX',
                         'SCALPER_EMA20_SLOPE_MIN','SCALPER_BODY_RATIO_MIN',
                         'SCALPER_TICK_DIR_THRESHOLD','SCALPER_SWEEP_TOLERANCE',
-                        'MARKET_TICK_POLL_INTERVAL','DASHBOARD_WS_PUSH_INTERVAL'}
+                        'MARKET_TICK_POLL_INTERVAL','DASHBOARD_WS_PUSH_INTERVAL',
+                        'SMC_RANGING_THRESHOLD_OFFSET','SMC_TRENDING_THRESHOLD_OFFSET',
+                        'SMC_EARLY_FAIL_POINTS','SMC_EARLY_FAIL_RANGING','SMC_EARLY_FAIL_TRENDING',
+                        'SMC_HIGH_CONF_THRESHOLD','SMC_HIGH_CONF_RR_MULTIPLIER','SMC_HIGH_CONF_RISK_MULTIPLIER',
+                        'ADAPT_THRESHOLD_WTR_MIN','ADAPT_THRESHOLD_WTR_MAX',
+                        'ADAPT_THRESHOLD_CTR_MIN','ADAPT_THRESHOLD_CTR_MAX',
+                        'ADAPT_MIN_RR_MIN','ADAPT_MIN_RR_MAX',
+                        'SMC_EARLY_FAIL_CONF_HIGH_MULT','SMC_EARLY_FAIL_CONF_LOW_MULT',
+                        'SMC_TIER1_SPREAD_DELTA_MAX'}
                     _GATE_INT_KEYS = {'COMPRESSION_RANGE_LOOKBACK','SCALPER_SWEEP_LOOKBACK',
-                        'SCALPER_MAX_TRADES_SESSION','SCALPER_LEVEL_COOLDOWN'}
+                        'SCALPER_MAX_TRADES_SESSION','SCALPER_LEVEL_COOLDOWN',
+                        'ADAPT_SESSION_TRADES_MIN','ADAPT_SESSION_TRADES_MAX',
+                        'ADAPT_COOLDOWN_MIN','ADAPT_COOLDOWN_MAX',
+                        'SMC_TIER1_MIN_TICKS','SMC_TIER1_MAX_TICKS'}
                     _GATE_BOOL_KEYS = {'ALL_GATES_OVERRIDE_ENABLED','SPREAD_GATE_OVERRIDE_ENABLED',
                         'COMPRESSION_GATE_OVERRIDE_ENABLED','EXECUTION_GATE_OVERRIDE_ENABLED',
                         'TIME_GATE_OVERRIDE_ENABLED','SPREAD_MEAN_GATE_OVERRIDE_ENABLED',
@@ -1081,6 +1175,11 @@ class AutoTrader:
                             cfg.save_runtime_config()
                         except Exception as e:
                             trader.log("API", f"Config persistence failed: {e}")
+                        # Refresh adaptive engine baseline so new saved values become the base
+                        try:
+                            adaptive_params._capture_base()
+                        except Exception:
+                            pass
                         if any(k in updated for k in ('LOSS_STREAK_PAUSE', 'MAX_CONSECUTIVE_LOSSES')):
                             trader.risk._loss_streak_pause_until = 0.0
                             trader.risk._consecutive_losses = 0

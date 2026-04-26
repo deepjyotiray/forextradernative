@@ -68,9 +68,18 @@ class SweepScalper(BaseStrategy):
         if m1 is None or len(m1) < 30:
             return skip("Insufficient M1 data")
 
-        now = datetime.now(timezone.utc)
+        now = data.get("now_utc")
+        if not isinstance(now, datetime):
+            now = datetime.now(timezone.utc)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        else:
+            now = now.astimezone(timezone.utc)
         hour = now.hour
-        in_window = (7 <= hour < 9) or (12 <= hour < 13) or (13 <= hour < 15)
+        in_window = (
+            cfg.TRADE_WINDOW_LONDON_START <= hour < cfg.TRADE_WINDOW_LONDON_END
+            or cfg.TRADE_WINDOW_OVERLAP_START <= hour < cfg.TRADE_WINDOW_OVERLAP_END
+        )
         if not in_window and not (cfg.SESSION_OVERRIDE_ENABLED or cfg.TIME_GATE_OVERRIDE_ENABLED or cfg.ALL_GATES_OVERRIDE_ENABLED):
             return skip(f"Outside trade window (UTC {hour}:xx)")
 
@@ -115,7 +124,7 @@ class SweepScalper(BaseStrategy):
         direction = sweep["direction"]
         sweep_level = sweep["level"]
         self._cleanup_levels()
-        level_key = round(sweep_level * 2) / 2
+        level_key = round(sweep_level, 1)
         if level_key in self._traded_levels:
             return skip(f"Level {sweep_level:.2f} already traded", setup_direction=direction,
                         compression_ok=True, sweep_level=sweep_level)
@@ -216,9 +225,6 @@ class SweepScalper(BaseStrategy):
                         quality_score_value=q_score, compression_ok=compression_ok,
                         sweep_level=sweep_level)
 
-        self._traded_levels[level_key] = time.time()
-        self._session_trades += 1
-
         reasons = [
             f"Sweep {direction} @ {sweep_level:.2f}",
             f"Body {body_ratio:.0%}",
@@ -272,6 +278,12 @@ class SweepScalper(BaseStrategy):
             signal_data=signal_result,
         )
         return signal_result
+
+    def confirm_trade_executed(self, sweep_level: float):
+        """Call this only after MT5 confirms the order. Locks the level and increments session count."""
+        level_key = round(sweep_level, 1)
+        self._traded_levels[level_key] = time.time()
+        self._session_trades += 1
 
     def _quality_score(
         self,
@@ -437,7 +449,8 @@ class SweepScalper(BaseStrategy):
 
     def _cleanup_levels(self):
         now = time.time()
-        expired = [level for level, ts in self._traded_levels.items() if now - ts > cfg.SCALPER_LEVEL_COOLDOWN]
+        # Short cooldown (60s) just to avoid same-candle re-entry, not the full LEVEL_COOLDOWN
+        expired = [level for level, ts in self._traded_levels.items() if now - ts > 60]
         for level in expired:
             del self._traded_levels[level]
 

@@ -83,9 +83,18 @@ class SMCStrategy(BaseStrategy):
 
         # === 1. Session filter (tightened windows) ===
         from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
+        now = data.get("now_utc")
+        if not isinstance(now, datetime):
+            now = datetime.now(timezone.utc)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        else:
+            now = now.astimezone(timezone.utc)
         h = now.hour
-        in_window = (7 <= h < 9) or (12 <= h < 13) or (13 <= h < 15)
+        in_window = (
+            cfg.TRADE_WINDOW_LONDON_START <= h < cfg.TRADE_WINDOW_LONDON_END
+            or cfg.TRADE_WINDOW_OVERLAP_START <= h < cfg.TRADE_WINDOW_OVERLAP_END
+        )
         if not in_window and not (cfg.SESSION_OVERRIDE_ENABLED or cfg.TIME_GATE_OVERRIDE_ENABLED or cfg.ALL_GATES_OVERRIDE_ENABLED):
             return skip(f"Outside trade window (UTC {h}:xx)")
 
@@ -109,10 +118,11 @@ class SMCStrategy(BaseStrategy):
 
         direction = setup["direction"]
 
-        # === 6. Compute bias separately ===
+        # === 6. Compute bias + regime separately ===
         bias = compute_bias(h4, h1, m15)
+        regime = classify_regime(h4, h1, m15, tick_snap)
         counter_trend = bias["direction"] != "NEUTRAL" and bias["direction"] != direction
-        threshold = self._resolve_threshold(bias, counter_trend)
+        threshold = self._resolve_threshold(bias, counter_trend, regime)
 
         # === 7. Counter-trend guard: require sweep OR rejection ===
         if counter_trend:
@@ -180,6 +190,16 @@ class SMCStrategy(BaseStrategy):
                         bias_direction=bias["direction"], quality_score_value=score,
                         threshold=threshold, compression_ok=True, setup_features=setup)
 
+        # High-confidence TP extension
+        if score >= cfg.SMC_HIGH_CONF_THRESHOLD:
+            extended_tp_dist = tp_dist * cfg.SMC_HIGH_CONF_RR_MULTIPLIER
+            if signal == "BUY":
+                tp = round(price + extended_tp_dist, 2)
+            else:
+                tp = round(price - extended_tp_dist, 2)
+            tp_dist = extended_tp_dist
+            rr = round(tp_dist / sl_dist, 2)
+
         # === 12. Log decision context ===
         reasons.append(f"[Q:{score:.0%} T:{threshold:.0%} {'CTR' if counter_trend else 'WTR'}]")
 
@@ -203,7 +223,10 @@ class SMCStrategy(BaseStrategy):
             "_ltf_conflict": False,
             "_be_trigger": 0.30,
             "_timeout": 60,
-            "_early_fail": 0.20,
+            "_early_fail": self._resolve_early_fail(regime, score),
+            "_high_conf": score >= cfg.SMC_HIGH_CONF_THRESHOLD,
+            "_tier1_min_ticks": cfg.SMC_TIER1_MIN_TICKS,
+            "_tier1_max_ticks": cfg.SMC_TIER1_MAX_TICKS,
             "_entry_spread": spread,
             "_entry_tick_velocity": tick_snap.get("velocity", 0),
         }
@@ -474,11 +497,34 @@ class SMCStrategy(BaseStrategy):
         else:  # SHORT
             return price <= ema_val and slope < -cfg.SMC_TIMEFRAME_EMA_SLOPE_MIN
 
-    def _resolve_threshold(self, bias: Dict, counter_trend: bool) -> float:
+    def _resolve_threshold(self, bias: Dict, counter_trend: bool, regime: Dict) -> float:
+        regime_state = regime.get("state", "TRENDING")
+        if regime_state == "RANGING":
+            offset = cfg.SMC_RANGING_THRESHOLD_OFFSET
+        elif regime_state == "TRENDING":
+            offset = cfg.SMC_TRENDING_THRESHOLD_OFFSET
+        else:
+            offset = 0.0
         if not counter_trend:
-            return cfg.SMC_THRESHOLD_WITH_TREND
+            return round(min(1.0, cfg.SMC_THRESHOLD_WITH_TREND + offset), 2)
         bias_conf = max(0.0, min(1.0, float(bias.get("confidence", 0) or 0)))
-        return round(min(cfg.SMC_THRESHOLD_COUNTER_MAX, cfg.SMC_THRESHOLD_COUNTER + max(0.0, bias_conf - 0.5) * 0.1), 2)
+        base = round(min(cfg.SMC_THRESHOLD_COUNTER_MAX, cfg.SMC_THRESHOLD_COUNTER + max(0.0, bias_conf - 0.5) * 0.1), 2)
+        return round(min(1.0, base + offset), 2)
+
+    def _resolve_early_fail(self, regime: Dict, score: float = 0.0) -> float:
+        regime_state = regime.get("state", "TRENDING")
+        if regime_state == "RANGING":
+            base = cfg.SMC_EARLY_FAIL_RANGING
+        elif regime_state == "TRENDING":
+            base = cfg.SMC_EARLY_FAIL_TRENDING
+        else:
+            base = cfg.SMC_EARLY_FAIL_POINTS
+        # Confidence adjustment: high-conf gets more room, low-conf gets cut faster
+        if score >= cfg.SMC_HIGH_CONF_THRESHOLD:
+            base = base * cfg.SMC_EARLY_FAIL_CONF_HIGH_MULT
+        elif score < 0.65:
+            base = base * cfg.SMC_EARLY_FAIL_CONF_LOW_MULT
+        return round(base, 3)
 
     # ------------------------------------------------------------------
     # Spread engine (execution quality)

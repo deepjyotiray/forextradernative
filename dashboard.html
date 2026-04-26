@@ -157,6 +157,11 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 </div>
 
 <div class="card" style="margin-bottom:8px">
+  <h3>Global Profile Apply <span id="profileApplyStatus" style="font-size:10px;color:var(--green);margin-left:8px"></span></h3>
+  <div id="profileApplyCard" style="font-size:11px;color:var(--dim)">Initializing profile controls...</div>
+</div>
+
+<div class="card" style="margin-bottom:8px">
   <h3>Risk Config <span id="cfgStatus" style="font-size:10px;color:var(--green);margin-left:8px"></span></h3>
   <div class="cfg-grid" id="cfgGrid"><span style="font-size:11px;color:var(--dim)">Initializing risk config...</span></div>
   <div style="margin-top:8px;text-align:right"><button class="btn-save" onclick="saveConfig()">Save</button></div>
@@ -304,14 +309,16 @@ function initAnalyticsLinks(){
     `<a class="btn btn-link" href="${link.href}" target="_blank" rel="noopener" title="${esc(link.title)}">${esc(link.label)}</a>`
   ).join(''));
 }
-function toIST(utcStr){
-  if(!utcStr)return'-';
+function toIST(mt5Str){
+  if(!mt5Str)return'-';
   try{
-    let d;
-    if(utcStr.includes('T')){d=new Date(utcStr);}// ISO format
-    else{const p=utcStr.replace(/\./g,'-').replace(' ','T')+'Z';d=new Date(p);}
-    if(isNaN(d))return'-';
-    return d.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});
+    const t=mt5Str.includes('T')?mt5Str.split('T')[1].substring(0,8):mt5Str.substring(11,19);
+    const [h,m,s]=(t||'').split(':').map(Number);
+    if(isNaN(h)||isNaN(m))return'-';
+    const total=h*60+m+150;// +2h30m in minutes
+    const ih=Math.floor(total/60)%24;
+    const im=total%60;
+    return String(ih).padStart(2,'0')+':'+String(im).padStart(2,'0')+':'+(s!=null?String(s).padStart(2,'0'):'00');
   }catch(e){return'-';}
 }
 
@@ -349,7 +356,38 @@ function render(d,opts={}){
   const sob=$('sessionOverrideBadge');if(sob){sob.className='badge '+(sessionOverride?'b-warn':'b-off');sob.textContent=sessionOverride?'ON':'OFF';}
   const gc=d.gate_config||{};
   const gd=d.gate_defaults||{};
+  const profiles=d.profiles||{};
   $('btnStart').disabled=en;$('btnStop').disabled=!en;
+
+  if(full){
+    const activeLive=profiles.active_profiles?.live||'live';
+    const backtestProfiles=Object.values((profiles.profiles_by_role||{}).backtest||{});
+    const sharedProfiles=Object.values(profiles.profiles||{}).filter(p=>p.scope==='shared');
+    const sourceProfiles=[...backtestProfiles,...sharedProfiles.filter(p=>!backtestProfiles.some(bp=>bp.name===p.name))];
+    const sourceOptions=sourceProfiles.length
+      ? sourceProfiles.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}${p.scope==='shared'?' (shared)':' (backtest)'}</option>`).join('')
+      : '<option value="">No backtest/shared profiles</option>';
+    setHTML($('profileApplyCard'),`
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:end">
+        <div class="cfg-item" style="min-width:220px;flex:1">
+          <label>Source Profile</label>
+          <select id="applyProfileSource" style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px;width:100%">
+            ${sourceOptions}
+          </select>
+        </div>
+        <div class="cfg-item" style="min-width:220px;flex:1">
+          <label>Target Live Profile</label>
+          <input value="${esc(activeLive)}" disabled>
+        </div>
+        <div>
+          <button class="btn-save" onclick="applySelectedProfileToLive()">Apply All Knobs To Live</button>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--dim);margin-top:8px">
+        Copies every saved setting from the selected backtest/shared profile into the active live profile in one action.
+      </div>
+    `);
+  }
 
   // Price card
   const regState=rg.state||'?';
@@ -542,7 +580,8 @@ function render(d,opts={}){
   const tp=t.tp||0;
   const otime=t.open_time||'';
   const age=tm.fill_ts?Math.round(Date.now()/1000-tm.fill_ts)+'s':'-';
-  h+=`<tr><td>${t.ticket}</td><td class="${dir==='BUY'?'green':'red'}" style="font-weight:600">${dir}</td><td>${t.volume}</td><td>${Number(entry).toFixed(2)}</td><td>${sl?Number(sl).toFixed(2):'-'}</td><td>${tp?Number(tp).toFixed(2):'-'}</td><td class="${pc(pnl)}">${ps(pnl)}</td><td class="${pc(peak)}">${ps(peak)}</td><td>${age}</td><td style="font-size:9px"><span class="cyan">U:</span>${otime.includes('T')?otime.split('T')[1]?.substring(0,8):'-'}<br><span class="orange">I:</span>${toIST(otime)}</td></tr>`;});
+  const mt5Raw=otime.includes('T')?otime.split('T')[1]?.substring(0,8):'-';
+  h+=`<tr><td>${t.ticket}</td><td class="${dir==='BUY'?'green':'red'}" style="font-weight:600">${dir}</td><td>${t.volume}</td><td>${Number(entry).toFixed(2)}</td><td>${sl?Number(sl).toFixed(2):'-'}</td><td>${tp?Number(tp).toFixed(2):'-'}</td><td class="${pc(pnl)}">${ps(pnl)}</td><td class="${pc(peak)}">${ps(peak)}</td><td>${age}</td><td style="font-size:9px"><span class="cyan">M:</span>${mt5Raw}<br><span class="orange">I:</span>${toIST(otime)}</td></tr>`;});
   h+='</table>';setHTML($('openT'),h);}
 
   // Performance summary from MT5 data
@@ -569,8 +608,18 @@ function render(d,opts={}){
         return new Date(raw.replace(/\./g,'-').replace(' ','T')+'Z');
       }catch(e){return null;}
     }
-    function fmtUTC(dt){return dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'UTC'});}
-    function fmtIST(dt){return dt.toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});}
+    function fmtIST(mt5Str){
+      if(!mt5Str)return'-';
+      try{
+        const t=mt5Str.includes('T')?mt5Str.split('T')[1].substring(0,8):mt5Str.substring(11,19);
+        const [h,m,s]=(t||'').split(':').map(Number);
+        if(isNaN(h)||isNaN(m))return'-';
+        const total=h*60+m+150;
+        const ih=Math.floor(total/60)%24;
+        const im=total%60;
+        return String(ih).padStart(2,'0')+':'+String(im).padStart(2,'0')+':'+(s!=null?String(s).padStart(2,'0'):'00');
+      }catch(e){return'-';}
+    }
     function istDateKey(dt){return dt.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});}
     function istDateLabel(dt){return dt.toLocaleDateString('en',{timeZone:'Asia/Kolkata',year:'numeric',month:'short',day:'numeric',weekday:'short'});}
     const grouped={};
@@ -583,17 +632,20 @@ function render(d,opts={}){
       if(t.won)grouped[key].wins++;else grouped[key].losses++;
     });
     const days=Object.values(grouped).sort((a,b)=>b.date.localeCompare(a.date));
-    let h=perfHtml+'<table><th>#</th><th>Dir</th><th>Vol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Date (IST)</th><th>UTC</th><th>IST</th>';
+    if(!window._cc)window._cc={};
+    let h=perfHtml+'<table><th>#</th><th>Dir</th><th>Vol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>MT5</th><th>IST</th>';
     days.forEach(day=>{
+      day.trades.sort((a,b)=>(b._dt||0)-(a._dt||0));
       const dp=day.pnl;
-      h+=`<tr style="background:rgba(255,255,255,.04)"><td colspan="6" style="font-weight:700;font-size:11px;padding:5px">${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="2" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td></tr>`;
-      day.trades.forEach(t=>{
+      const open=window._cc[day.date]===true;
+      const arrow=open?'&#9660;':'&#9654;';
+      h+=`<tr style="background:rgba(255,255,255,.04);cursor:pointer;user-select:none" onclick="toggleDay('${day.date}')"><td colspan="6" style="font-weight:700;font-size:11px;padding:5px">${arrow} ${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="2" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td></tr>`;
+      if(open)day.trades.forEach(t=>{
         const p=t.pnl||0;
         const dt=t._dt;
-        const utcTime=dt?fmtUTC(dt):'-';
-        const istTime=dt?fmtIST(dt):'-';
-        const istDate=dt?istDateKey(dt):'-';
-        h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.volume||'-'}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):'-'}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px;color:var(--dim)">${istDate}</td><td style="font-size:10px" class="cyan">${utcTime}</td><td style="font-size:10px" class="orange">${istTime}</td></tr>`;
+        const mt5Time=t.close_time?(t.close_time.includes('T')?t.close_time.split('T')[1].substring(0,8):t.close_time.substring(11,19)):'-';
+        const istTime=fmtIST(t.close_time);
+        h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.volume||'-'}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):'-'}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px" class="cyan">${mt5Time}</td><td style="font-size:10px" class="orange">${istTime}</td></tr>`;
       });
     });
     h+='</table>';setHTML($('closedT'),h);}
@@ -823,9 +875,34 @@ async function toggleSessionOverride(enabled){
 async function toggleDailyTarget(enabled){
   try{const r=await fetch(A+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({DAILY_TARGET_ENABLED:enabled})});const d=await r.json();if(d.config_version)_configVersion=d.config_version;setTimeout(refreshAfterControlChange,200);}catch(e){alert('Failed to toggle Daily Target');}
 }
+async function applySelectedProfileToLive(){
+  const sel=$('applyProfileSource');
+  if(!sel||!sel.value){alert('No source profile selected');return;}
+  if(!confirm(`Apply all settings from profile "${sel.value}" to the active live profile?`))return;
+  try{
+    const r=await fetch(A+`/config/profiles/${encodeURIComponent(sel.value)}/apply-to-live`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({})
+    });
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Failed to apply profile');
+    if(d.config_version)_configVersion=d.config_version;
+    $('profileApplyStatus').textContent='Applied ✓';
+    $('profileApplyStatus').style.color='var(--green)';
+    setTimeout(()=>{$('profileApplyStatus').textContent='';},2000);
+    refreshAfterControlChange();
+  }catch(e){
+    $('profileApplyStatus').textContent='Failed';
+    $('profileApplyStatus').style.color='var(--red)';
+    setTimeout(()=>{$('profileApplyStatus').textContent='';$('profileApplyStatus').style.color='var(--green)';},2500);
+    alert(e.message||'Failed to apply profile');
+  }
+}
 // /config is persistent/control data and is fetched on load or when config_version changes.
 // /status is live/heavy data and stays on a slow poll.
 let _fullFlight=false;
+function toggleDay(d){if(!window._cc)window._cc={};window._cc[d]=!window._cc[d];scheduleRender({},{full:true});}
 async function safeFull(){if(_fullFlight)return;_fullFlight=true;try{await fetchFull();}finally{_fullFlight=false;}}
 setInterval(safeFull,5000);
 fetchConfig();

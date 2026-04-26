@@ -1,103 +1,166 @@
 """
-Deploy Watcher — polls git remote for changes, pulls, and restarts auto_trader.
-Run this on the Windows trading machine. It checks every 30s for new commits.
-"""
-import subprocess
-import time
-import os
-import sys
-import logging
+Deploy Watcher — polls git remote for changes, fast-forwards the repo,
+and restarts the unified trader on the Windows trading machine.
 
-POLL_INTERVAL = 30  # seconds
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TRADER_URL = "http://127.0.0.1:8899"
-LOG_FILE = os.path.join(BASE_DIR, "deploy_watcher.log")
+Recommended workflow:
+1. Make changes on another machine
+2. Push to the tracked branch on origin
+3. This watcher notices the new commit, pulls, refreshes deps, and restarts
+
+Run this on the Windows trading machine, ideally as a Scheduled Task at logon.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+POLL_INTERVAL = int(os.getenv("DEPLOY_WATCHER_POLL_INTERVAL", "30") or "30")
+BASE_DIR = Path(__file__).resolve().parent
+TRADER_URLS = [
+    "http://127.0.0.1:8000",  # current unified stack
+    "http://127.0.0.1:8899",  # legacy single-service fallback
+]
+LOG_FILE = BASE_DIR / "deploy_watcher.log"
 
 try:
     logging.basicConfig(
-        filename=LOG_FILE, level=logging.INFO,
-        format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+        filename=str(LOG_FILE),
+        level=logging.INFO,
+        format="[%(asctime)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 except PermissionError:
     logging.basicConfig(
         level=logging.INFO,
-        format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+        format="[%(asctime)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
-    logging.warning(f"Could not open {LOG_FILE}, logging to console only")
+    logging.warning("Could not open deploy_watcher.log, logging to console only")
 log = logging.getLogger(__name__)
 
 
-def run(cmd, cwd=BASE_DIR):
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, shell=True)
-    return r.stdout.strip(), r.stderr.strip(), r.returncode
+def run(cmd: str, cwd: Path = BASE_DIR) -> tuple[str, str, int]:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        shell=True,
+    )
+    return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
 
 
-def has_new_commits():
-    run("git fetch origin")
-    local, _, _ = run("git rev-parse HEAD")
-    branch, _, _ = run("git rev-parse --abbrev-ref HEAD")
-    remote, _, rc = run(f"git rev-parse origin/{branch}")
-    if rc != 0:
+def git_branch() -> str:
+    branch, _, rc = run("git rev-parse --abbrev-ref HEAD")
+    if rc != 0 or not branch:
+        raise RuntimeError("Unable to determine current git branch")
+    return branch
+
+
+def has_new_commits() -> bool:
+    fetch_out, fetch_err, fetch_rc = run("git fetch origin")
+    if fetch_rc != 0:
+        log.warning(f"git fetch failed: {fetch_err or fetch_out}")
         return False
-    return local != remote and bool(remote)
+    branch = git_branch()
+    local, _, local_rc = run("git rev-parse HEAD")
+    remote, _, remote_rc = run(f"git rev-parse origin/{branch}")
+    if local_rc != 0 or remote_rc != 0:
+        return False
+    return bool(local and remote and local != remote)
 
 
-def pull():
+def pull() -> bool:
     out, err, code = run("git pull --ff-only")
-    log.info(f"git pull: {out or err}")
+    log.info(f"git pull: {out or err or 'ok'}")
     return code == 0
 
 
-def stop_trader():
-    try:
-        import urllib.request
-        req = urllib.request.Request(f"{TRADER_URL}/shutdown", method="POST")
-        urllib.request.urlopen(req, timeout=5)
-        log.info("Sent /shutdown to trader")
-        time.sleep(3)
-    except Exception:
-        log.info("Trader not running or already stopped")
-
-
-def start_trader():
-    vbs = os.path.join(BASE_DIR, "start_trader.vbs")
-    if os.path.exists(vbs):
-        subprocess.Popen(["wscript", vbs], cwd=BASE_DIR)
-        log.info("Started trader via start_trader.vbs")
-    else:
-        # fallback: run directly
-        python = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
-        if not os.path.exists(python):
-            python = sys.executable
-        subprocess.Popen(
-            [python, "auto_trader.py"],
-            cwd=BASE_DIR, creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        log.info(f"Started trader via {python}")
-
-
-def install_deps():
-    """pip install if requirements.txt changed in the pull."""
-    python = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
-    if not os.path.exists(python):
-        python = sys.executable
+def install_deps() -> None:
+    python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+    if not python.exists():
+        python = Path(sys.executable)
     out, err, code = run(f'"{python}" -m pip install -r requirements.txt -q')
     if code == 0:
         log.info("Dependencies up to date")
     else:
-        log.info(f"pip install issue: {err}")
+        log.warning(f"pip install issue: {err or out}")
 
 
-def deploy():
+def stop_trader() -> None:
+    stopped = False
+    for base_url in TRADER_URLS:
+        try:
+            req = urllib.request.Request(f"{base_url}/shutdown", method="POST")
+            urllib.request.urlopen(req, timeout=5)
+            log.info(f"Sent /shutdown to trader at {base_url}")
+            stopped = True
+            time.sleep(3)
+        except urllib.error.URLError:
+            continue
+        except Exception as exc:
+            log.info(f"Shutdown request to {base_url} failed: {exc}")
+    if not stopped:
+        log.info("Trader API not running; falling back to process cleanup")
+
+    # Clean up any unified startup processes that outlived the API shutdown.
+    ps_script = (
+        "Get-CimInstance Win32_Process "
+        "| Where-Object { $_.CommandLine -like '*unified_startup.py*' -or $_.Name -eq 'AutoTrader.exe' } "
+        "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+        cwd=str(BASE_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def start_trader() -> None:
+    launcher_exe = BASE_DIR / "UnifiedTraderRestart.exe"
+    startup_script = BASE_DIR / "unified_startup.py"
+    if launcher_exe.exists():
+        subprocess.Popen(
+            [str(launcher_exe)],
+            cwd=str(BASE_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        log.info("Started trader via UnifiedTraderRestart.exe")
+        return
+
+    python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+    if not python.exists():
+        python = Path(sys.executable)
+    subprocess.Popen(
+        [str(python), "-u", str(startup_script)],
+        cwd=str(BASE_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    log.info(f"Started trader via {python.name} unified_startup.py")
+
+
+def deploy() -> None:
     log.info("New commits detected — deploying...")
     stop_trader()
     if not pull():
-        log.info("Pull failed, skipping deploy")
+        log.warning("Pull failed, attempting to restart current code")
         start_trader()
         return
     install_deps()
     start_trader()
-    log.info("Deploy complete ✓")
+    log.info("Deploy complete")
 
 
 if __name__ == "__main__":
@@ -107,8 +170,6 @@ if __name__ == "__main__":
         try:
             if has_new_commits():
                 deploy()
-            else:
-                log.debug("No changes")
-        except Exception as e:
-            log.error(f"Error: {e}")
+        except Exception as exc:
+            log.error(f"Error: {exc}")
         time.sleep(POLL_INTERVAL)

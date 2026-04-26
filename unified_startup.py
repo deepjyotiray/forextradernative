@@ -39,8 +39,28 @@ def start_auto_trader():
             trader.log("INIT", f"Today MT5 P&L: ${today_pnl['pnl']:+.2f} ({today_pnl['trades']} trades, {today_pnl['wins']}W/{today_pnl['losses']}L) [{today_pnl.get('source','')}]")
         
         from engine.trade_manager import TradeManager
+        from engine.correlation import correlation as corr_engine
         trader.trades = TradeManager(trader.bridge)
-        
+        corr_engine.init_symbols()
+
+        # XGBoost: train synchronously so dashboard shows trained state immediately
+        from engine.xgb_model import xgb_model
+        perf_trades = trader.perf.trades
+        featured = [t for t in perf_trades if t.get("features") and
+                    any(isinstance(v, (int, float)) and v != 0
+                        for v in t["features"].values())]
+        if not xgb_model.is_trained and len(featured) >= 15:
+            xgb_model.train(featured)
+            trader.log("INIT", f"XGBoost trained on {len(featured)} trades")
+        elif xgb_model.is_trained and xgb_model.should_retrain(len(featured)):
+            import threading
+            threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
+            trader.log("INIT", f"XGBoost retraining on {len(featured)} trades")
+        elif xgb_model.is_trained:
+            trader.log("INIT", f"XGBoost loaded ({xgb_model._trades_at_last_train} trades)")
+        else:
+            trader.log("INIT", f"XGBoost: {len(featured)} featured trades < 15, skipping")
+
         # Load candle data
         trader.log("INIT", "Loading candle data...")
         for tf in ["M1", "M5", "M15", "H1", "H4"]:
@@ -48,7 +68,7 @@ def start_auto_trader():
             if not df.empty:
                 trader._candles[tf] = df
                 trader._candle_counts[tf] = len(df)
-        
+
         trader._recompute_all()
         loaded = ", ".join(f"{tf}:{len(df)}" for tf, df in trader._candles.items())
         trader.log("INIT", f"MT5 connected. Data: {loaded}")

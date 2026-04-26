@@ -38,7 +38,7 @@ _ws_latest_cycle: int = -1
 _auto_trader_instance = None
 _status_cache = None
 _status_cache_time = 0.0
-_STATUS_CACHE_TTL = 4.0  # seconds — full status is heavy, cache aggressively
+_STATUS_CACHE_TTL = 1.0  # seconds — keep open trades panel fresh
 
 # Separate caches for slow-changing data
 _blockers_cache = None
@@ -189,6 +189,7 @@ def _build_config_dict() -> dict:
         "MAX_CONSECUTIVE_LOSSES": cfg.MAX_CONSECUTIVE_LOSSES,
         "MIN_TRADE_COOLDOWN": cfg.MIN_TRADE_COOLDOWN,
         "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE,
+        "SESSION_MAX_TRADES": cfg.SESSION_MAX_TRADES,
     }
 
 
@@ -236,6 +237,10 @@ def _build_gate_config_dict() -> dict:
         "SCALPER_SWEEP_TOLERANCE": cfg.SCALPER_SWEEP_TOLERANCE,
         "SCALPER_MAX_TRADES_SESSION": cfg.SCALPER_MAX_TRADES_SESSION,
         "SCALPER_LEVEL_COOLDOWN": cfg.SCALPER_LEVEL_COOLDOWN,
+        "TRADE_WINDOW_LONDON_START": cfg.TRADE_WINDOW_LONDON_START,
+        "TRADE_WINDOW_LONDON_END": cfg.TRADE_WINDOW_LONDON_END,
+        "TRADE_WINDOW_OVERLAP_START": cfg.TRADE_WINDOW_OVERLAP_START,
+        "TRADE_WINDOW_OVERLAP_END": cfg.TRADE_WINDOW_OVERLAP_END,
         "MARKET_TICK_POLL_INTERVAL": cfg.MARKET_TICK_POLL_INTERVAL,
         "DASHBOARD_WS_PUSH_INTERVAL": cfg.DASHBOARD_WS_PUSH_INTERVAL,
     }
@@ -245,6 +250,11 @@ def _build_gate_defaults_dict() -> dict:
     import config as cfg
     defaults = cfg.get_runtime_defaults()
     return {key: defaults[key] for key in _build_gate_config_dict() if key in defaults}
+
+
+def _build_profile_dict() -> dict:
+    import config as cfg
+    return cfg.list_runtime_profiles()
 
 
 def _build_tick_data(trader) -> dict:
@@ -275,7 +285,11 @@ def _build_tick_data(trader) -> dict:
 def _refresh_tick_cache(trader) -> str:
     """Serialize tick data once per market tick or engine cycle. Returns cached JSON string."""
     global _ws_latest_tick, _ws_latest_cycle
-    marker = (trader._stats.get("cycles", 0), getattr(trader, "_tick_seq", 0))
+    marker = (
+        trader._stats.get("cycles", 0),
+        getattr(trader, "_tick_seq", 0),
+        getattr(trader, "_positions_version", 0),
+    )
     if marker == _ws_latest_cycle:
         return _ws_latest_tick
     _ws_latest_tick = _fast_json(_build_tick_data(trader))
@@ -304,7 +318,11 @@ async def ws_tick(ws: WebSocket):
         while not reader_task.done():
             trader = _auto_trader_instance
             if trader is not None:
-                marker = (trader._stats.get("cycles", 0), getattr(trader, "_tick_seq", 0))
+                marker = (
+                    trader._stats.get("cycles", 0),
+                    getattr(trader, "_tick_seq", 0),
+                    getattr(trader, "_positions_version", 0),
+                )
                 if marker != last_pushed_marker:
                     msg = _refresh_tick_cache(trader)
                     await ws.send_text(msg)
@@ -402,6 +420,7 @@ async def get_config():
         "strategy": trader.strat_mgr.active_name,
         "strategies": trader.strat_mgr.status(),
         "config_version": _config_version,
+        "profiles": _build_profile_dict(),
         "risk_pct": cfg.MAX_RISK_PCT,
         "daily_target": cfg.DAILY_TARGET_DOLLARS,
         "tier1_enabled": cfg.TIER1_ENABLED,
@@ -420,7 +439,8 @@ async def get_config():
             "DAILY_LOSS_LIMIT_PCT": cfg.DAILY_LOSS_LIMIT_PCT,
             "MAX_CONSECUTIVE_LOSSES": cfg.MAX_CONSECUTIVE_LOSSES,
             "MIN_TRADE_COOLDOWN": cfg.MIN_TRADE_COOLDOWN,
-            "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE
+            "LOSS_STREAK_PAUSE": cfg.LOSS_STREAK_PAUSE,
+            "SESSION_MAX_TRADES": cfg.SESSION_MAX_TRADES
         }
     }
 
@@ -533,7 +553,8 @@ async def update_config(request: Request):
         'MAX_POSITIONS': int, 'MAX_RISK_PCT': float, 'MAX_DRAWDOWN_PCT': float,
         'MAX_LOT': float, 'MIN_LOT': float, 'DAILY_TARGET_DOLLARS': float,
         'DAILY_LOSS_LIMIT_PCT': float, 'MAX_CONSECUTIVE_LOSSES': int,
-        'MIN_TRADE_COOLDOWN': float, 'LOSS_STREAK_PAUSE': int
+        'MIN_TRADE_COOLDOWN': float, 'LOSS_STREAK_PAUSE': int,
+        'SESSION_MAX_TRADES': int
     }
     _GATE_FLOAT_KEYS = {
         'SMC_SPREAD_MEAN_MAX', 'SMC_SPREAD_STD_MAX', 'SMC_SPREAD_PERCENTILE_MAX',
@@ -550,7 +571,9 @@ async def update_config(request: Request):
     }
     _GATE_INT_KEYS = {
         'COMPRESSION_RANGE_LOOKBACK', 'SCALPER_SWEEP_LOOKBACK',
-        'SCALPER_MAX_TRADES_SESSION', 'SCALPER_LEVEL_COOLDOWN'
+        'SCALPER_MAX_TRADES_SESSION', 'SCALPER_LEVEL_COOLDOWN',
+        'TRADE_WINDOW_LONDON_START', 'TRADE_WINDOW_LONDON_END',
+        'TRADE_WINDOW_OVERLAP_START', 'TRADE_WINDOW_OVERLAP_END'
     }
     _GATE_BOOL_KEYS = {
         'ALL_GATES_OVERRIDE_ENABLED', 'SPREAD_GATE_OVERRIDE_ENABLED',
@@ -608,6 +631,111 @@ async def update_config(request: Request):
         _invalidate_status_cache(include_slow=True)
     
     return {"updated": updated, "config_version": _config_version}
+
+
+@router.get("/config/profiles")
+async def get_config_profiles():
+    """Get saved config profiles and active assignments."""
+    return _build_profile_dict()
+
+
+@router.post("/config/profiles/{profile_name}")
+async def save_config_profile(profile_name: str, request: Request):
+    """Save current in-memory config into a named profile."""
+    trader = get_auto_trader()
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    import config as cfg
+    try:
+        profile = cfg.save_runtime_profile(
+            profile_name,
+            description=body.get("description"),
+            role_scope=body.get("role_scope"),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    trader.log("API", f"Saved config profile: {profile_name}")
+    _bump_config_version()
+    _invalidate_status_cache(include_slow=True)
+    return {"saved": profile_name, "profile": profile, "profiles": _build_profile_dict(), "config_version": _config_version}
+
+
+@router.post("/config/profiles/{profile_name}/activate/{role}")
+async def activate_config_profile(profile_name: str, role: str, request: Request):
+    """Assign a profile to live or backtest; applying immediately for live."""
+    trader = get_auto_trader()
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    apply_now = bool(body.get("apply_now", role.strip().lower() == "live"))
+    import config as cfg
+    try:
+        cfg.set_active_profile(role, profile_name, apply_now=apply_now)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if role.strip().lower() == "live" and apply_now:
+        trader.log("API", f"Applied live config profile: {profile_name}")
+    else:
+        trader.log("API", f"Set {role} config profile: {profile_name}")
+    _bump_config_version()
+    _invalidate_status_cache(include_slow=True)
+    return {"active_profiles": _build_profile_dict()["active_profiles"], "config_version": _config_version}
+
+
+@router.post("/config/profiles/{profile_name}/update")
+async def update_config_profile(profile_name: str, request: Request):
+    """Update a saved profile with explicit values."""
+    trader = get_auto_trader()
+    body = await request.json()
+    import config as cfg
+    try:
+        profile = cfg.update_runtime_profile(
+            profile_name,
+            values=body.get("values", {}),
+            description=body.get("description"),
+            role_scope=body.get("role_scope"),
+        )
+        if cfg.get_active_profile("live") == profile["name"]:
+            cfg.apply_runtime_profile(profile["name"])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if cfg.get_active_profile("live") == profile["name"]:
+        trader.log("API", f"Updated config profile and applied live changes: {profile_name}")
+    else:
+        trader.log("API", f"Updated config profile: {profile_name}")
+    _bump_config_version()
+    _invalidate_status_cache(include_slow=True)
+    return {"profile": profile, "profiles": _build_profile_dict(), "config_version": _config_version}
+
+
+@router.post("/config/profiles/{profile_name}/apply-to-live")
+async def apply_profile_to_live(profile_name: str, request: Request):
+    """Copy all knobs from a source profile into a live-scoped target profile and apply immediately."""
+    trader = get_auto_trader()
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    import config as cfg
+    target_profile = str(body.get("target_profile") or cfg.get_active_profile("live")).strip()
+    try:
+        source_values = cfg.get_profile_values(profile_name)
+        if not source_values:
+            raise ValueError(f"Source profile has no values: {profile_name}")
+        profile = cfg.copy_profile_to_profile(
+            source_name=profile_name,
+            target_name=target_profile,
+            target_scope="live",
+            apply_if_active_live=True,
+        )
+        if cfg.get_active_profile("live") != profile["name"]:
+            cfg.set_active_profile("live", profile["name"], apply_now=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    trader.log("API", f"Applied profile {profile_name} to live profile {target_profile}")
+    _bump_config_version()
+    _invalidate_status_cache(include_slow=True)
+    return {
+        "source_profile": profile_name,
+        "target_profile": target_profile,
+        "profile": profile,
+        "profiles": _build_profile_dict(),
+        "config_version": _config_version,
+    }
 
 @router.post("/shutdown")
 async def shutdown():
