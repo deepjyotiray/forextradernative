@@ -157,6 +157,25 @@ class SMCStrategy(BaseStrategy):
                            "ltf_conflict": True}
             )
 
+        directional_guard_reason = self._check_directional_entry_guard(
+            direction=direction,
+            setup=setup,
+            m5=m5,
+            bias=bias,
+        )
+        if directional_guard_reason:
+            return skip(
+                directional_guard_reason,
+                setup_direction=direction,
+                bias_direction=bias["direction"],
+                threshold=threshold,
+                compression_ok=True,
+                setup_features=setup,
+                log_extra={"setup_dir": direction, "bias_dir": bias["direction"],
+                           "quality": 0, "threshold": threshold, "counter": counter_trend,
+                           "directional_guard": True}
+            )
+
         # === 9. Quality score (single function) ===
         score, reasons = self._quality_score(setup, direction, m1, m5, ind, tick_snap, counter_trend, threshold)
 
@@ -496,6 +515,28 @@ class SMCStrategy(BaseStrategy):
             return price >= ema_val and slope > cfg.SMC_TIMEFRAME_EMA_SLOPE_MIN
         else:  # SHORT
             return price <= ema_val and slope < -cfg.SMC_TIMEFRAME_EMA_SLOPE_MIN
+
+    def _check_directional_entry_guard(
+        self,
+        direction: str,
+        setup: Dict,
+        m5: pd.DataFrame,
+        bias: Dict,
+    ) -> Optional[str]:
+        """Apply asymmetric guards for weaker directional setups before scoring."""
+        if direction != "SHORT":
+            return None
+
+        if not (setup.get("has_sweep") or setup.get("has_rejection")):
+            return "SHORT setup needs sweep or rejection"
+
+        if not self._check_timeframe_alignment(m5, direction, "M5"):
+            return "SHORT setup requires M5 alignment"
+
+        if bias.get("direction") == "LONG" and not setup.get("has_sweep"):
+            return "Counter-bias SHORT needs sweep confirmation"
+
+        return None
 
     def _resolve_threshold(self, bias: Dict, counter_trend: bool, regime: Dict) -> float:
         regime_state = regime.get("state", "TRENDING")
