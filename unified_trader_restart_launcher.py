@@ -153,11 +153,11 @@ class UnifiedTraderWindow:
         status_label = tk.Label(top_bar, textvariable=self.status_var, anchor="w")
         status_label.pack(side="left", fill="x", expand=True)
 
-        self.watcher_var = tk.StringVar(value=f"Auto Deploy: On ({POLL_INTERVAL}s)")
+        self.watcher_var = tk.StringVar(value="Auto Deploy: Off")
         watcher_label = tk.Label(top_bar, textvariable=self.watcher_var, anchor="e")
         watcher_label.pack(side="right", padx=(10, 0))
 
-        watcher_btn = tk.Button(top_bar, text="Pause Auto Deploy", command=self.toggle_watcher)
+        watcher_btn = tk.Button(top_bar, text="Enable Auto Deploy", command=self.toggle_watcher)
         watcher_btn.pack(side="right", padx=(6, 0))
         self.watcher_btn = watcher_btn
 
@@ -180,9 +180,7 @@ class UnifiedTraderWindow:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self._drain_queue)
-        self.watcher_enabled.set()
         self.restart_app()
-        self._start_watcher()
 
     def _append(self, line: str) -> None:
         self.log_view.configure(state="normal")
@@ -242,7 +240,9 @@ class UnifiedTraderWindow:
                     pass
             time.sleep(0.4)
 
-    def restart_app(self) -> None:
+    def restart_app(self, disable_watcher: bool = True) -> None:
+        if disable_watcher:
+            self._disable_watcher(announce=True, reason="manual restart")
         self._enqueue("[launcher] restarting unified trader...")
         self._set_status("Restarting...")
         self.stop_app(silent=True)
@@ -300,20 +300,25 @@ class UnifiedTraderWindow:
             name="DeployWatcher",
         )
         self.watcher_thread.start()
-        self._enqueue(f"[watcher] auto deploy enabled; polling every {POLL_INTERVAL}s")
+
+    def _disable_watcher(self, announce: bool, reason: str = "") -> None:
+        was_enabled = self.watcher_enabled.is_set()
+        self.watcher_enabled.clear()
+        self.watcher_btn.configure(text="Enable Auto Deploy")
+        self._set_watcher_status("Auto Deploy: Off")
+        if announce and was_enabled:
+            suffix = f" on {reason}" if reason else ""
+            self._enqueue(f"[watcher] auto deploy disabled{suffix}")
 
     def toggle_watcher(self) -> None:
         if self.watcher_enabled.is_set():
-            self.watcher_enabled.clear()
-            self.watcher_btn.configure(text="Resume Auto Deploy")
-            self._set_watcher_status("Auto Deploy: Paused")
-            self._enqueue("[watcher] auto deploy paused")
+            self._disable_watcher(announce=True, reason="manual toggle")
             return
 
         self.watcher_enabled.set()
-        self.watcher_btn.configure(text="Pause Auto Deploy")
+        self.watcher_btn.configure(text="Disable Auto Deploy")
         self._set_watcher_status(f"Auto Deploy: On ({POLL_INTERVAL}s)")
-        self._enqueue("[watcher] auto deploy resumed")
+        self._enqueue(f"[watcher] auto deploy enabled; polling every {POLL_INTERVAL}s")
         self._start_watcher()
 
     def _deploy_latest(self) -> None:
@@ -346,7 +351,7 @@ class UnifiedTraderWindow:
             if not deps_ok:
                 self._enqueue("[watcher] dependency refresh reported an issue; continuing restart")
 
-            self.restart_app()
+            self.restart_app(disable_watcher=False)
             self._enqueue("[watcher] deploy complete")
         finally:
             self.deploy_lock.release()
@@ -380,7 +385,7 @@ class UnifiedTraderWindow:
 
     def on_close(self) -> None:
         self.shutdown_event.set()
-        self.watcher_enabled.clear()
+        self._disable_watcher(announce=True, reason="close")
         self.log_tail_stop.set()
         self.root.destroy()
 
