@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
 import os
+from .backtest_context import emit_backtest_decision, is_backtest_mode
 
 _LOG_FILE = "decision_log.jsonl"
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,10 +39,16 @@ def log_decision(
     additional_data: Optional[Dict] = None
 ):
     """Log a trading decision with all required context."""
-    
+    sim_now = None
+    if additional_data:
+        sim_now = additional_data.get("_sim_now")
+    now_dt = datetime.now(timezone.utc)
+    if isinstance(sim_now, datetime):
+        now_dt = sim_now.astimezone(timezone.utc)
+
     log_entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "unix_time": time.time(),
+        "timestamp": now_dt.isoformat(),
+        "unix_time": now_dt.timestamp(),
         "strategy": strategy,
         "setup_direction": setup_direction,
         "bias_direction": bias_direction,
@@ -55,12 +62,16 @@ def log_decision(
         "reason": reason,
         "price": round(price, 2),
         "counter_trend": setup_direction != bias_direction if setup_direction and bias_direction else False,
-        "session": _get_session(),
+        "session": _get_session(now_dt),
     }
     
     if additional_data:
         log_entry.update(additional_data)
-    
+
+    if is_backtest_mode():
+        emit_backtest_decision(log_entry)
+        return
+
     try:
         with open(_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry) + "\n")
@@ -153,9 +164,10 @@ def log_scalper_decision(
     )
 
 
-def _get_session() -> str:
+def _get_session(now_dt: Optional[datetime] = None) -> str:
     """Get current trading session."""
-    h = datetime.now(timezone.utc).hour
+    dt = now_dt or datetime.now(timezone.utc)
+    h = dt.hour
     if 7 <= h < 9:
         return "LONDON"
     elif 12 <= h < 13:

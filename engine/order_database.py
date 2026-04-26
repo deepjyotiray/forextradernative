@@ -298,7 +298,7 @@ class OrderDatabase:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
                 SELECT * FROM orders 
-                WHERE status = 'CLOSED' AND open_time >= ?
+                WHERE status = 'CLOSED' AND close_time >= ?
                 ORDER BY close_time DESC
             """, (cutoff.isoformat(),))
             

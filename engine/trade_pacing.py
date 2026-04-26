@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 import json
 import os
+from .backtest_context import get_backtest_now, is_backtest_mode
 
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,7 +37,7 @@ class TradePacingController:
     
     def check_pacing_allowed(self) -> Dict:
         """Check if a new trade is allowed based on pacing rules."""
-        current_time = time.time()
+        current_time = _now_ts()
         
         if self._last_trade_time == 0:
             return {
@@ -75,7 +76,7 @@ class TradePacingController:
         # Keep trade history for adaptive pacing
         trade_record = {
             "timestamp": current_time,
-            "datetime": datetime.now(timezone.utc).isoformat(),
+            "datetime": _now_utc().isoformat(),
             "outcome": outcome
         }
         
@@ -114,7 +115,7 @@ class TradePacingController:
     
     def get_pacing_status(self) -> Dict:
         """Get current pacing status."""
-        current_time = time.time()
+        current_time = _now_ts()
         time_since_last = current_time - self._last_trade_time if self._last_trade_time > 0 else 0
         required_interval = self._get_required_interval()
         
@@ -193,7 +194,7 @@ class TradePacingController:
     
     def get_trade_frequency_analysis(self, hours: int = 24) -> Dict:
         """Analyze trade frequency over specified period."""
-        current_time = time.time()
+        current_time = _now_ts()
         cutoff_time = current_time - (hours * 3600)
         
         # Filter trades within time period
@@ -231,6 +232,8 @@ class TradePacingController:
     
     def _save_state(self):
         """Save pacing state."""
+        if is_backtest_mode():
+            return
         try:
             state = {
                 "min_time_between_trades": self._min_time_between_trades,
@@ -248,6 +251,8 @@ class TradePacingController:
     
     def _load_state(self):
         """Load pacing state."""
+        if is_backtest_mode():
+            return
         try:
             if os.path.exists(_PACING_STATE_FILE):
                 with open(_PACING_STATE_FILE, "r") as f:
@@ -307,3 +312,14 @@ def update_pacing_settings(**kwargs) -> Dict:
 def get_trade_frequency_analysis(hours: int = 24) -> Dict:
     """Get trade frequency analysis."""
     return pacing_controller.get_trade_frequency_analysis(hours)
+
+
+def _now_utc() -> datetime:
+    override = get_backtest_now()
+    if isinstance(override, datetime):
+        return override.astimezone(timezone.utc)
+    return datetime.now(timezone.utc)
+
+
+def _now_ts() -> float:
+    return _now_utc().timestamp()

@@ -121,19 +121,21 @@ class AutoTrader:
             self.trades = TradeManager(self.bridge)
             corr_engine.init_symbols()
             
-            # XGBoost training
+            # XGBoost training — synchronous on first train, background on retrain
             perf_trades = self.perf.trades
-            if perf_trades and xgb_model.should_retrain(len(perf_trades)):
-                featured = [t for t in perf_trades if t.get("features") and
-                            any(isinstance(v, (int, float)) and v != 0
-                                for v in t["features"].values())]
-                if len(featured) >= 15:
-                    threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
-                    self.log("INIT", f"XGBoost training on {len(featured)} trades (with features)")
-                else:
-                    self.log("INIT", f"XGBoost: {len(featured)} featured trades < 15 min, skipping")
+            featured = [t for t in perf_trades if t.get("features") and
+                        any(isinstance(v, (int, float)) and v != 0
+                            for v in t["features"].values())]
+            if not xgb_model.is_trained and len(featured) >= 15:
+                xgb_model.train(featured)
+                self.log("INIT", f"XGBoost trained on {len(featured)} trades")
+            elif xgb_model.is_trained and xgb_model.should_retrain(len(featured)):
+                threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
+                self.log("INIT", f"XGBoost retraining on {len(featured)} trades")
             elif xgb_model.is_trained:
                 self.log("INIT", f"XGBoost loaded ({xgb_model._trades_at_last_train} trades)")
+            else:
+                self.log("INIT", f"XGBoost: {len(featured)} featured trades < 15, skipping")
             
             self.log("INIT", "Loading candle data...")
             for tf in _TF_REFRESH:

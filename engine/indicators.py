@@ -31,7 +31,8 @@ def rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
     losses = np.where(deltas < 0, -deltas, 0.0)
     avg_gain = ema(gains, period)
     avg_loss = ema(losses, period)
-    rs = np.where(avg_loss > 0, avg_gain / avg_loss, 100.0)
+    rs = np.full_like(avg_gain, 100.0, dtype=float)
+    np.divide(avg_gain, avg_loss, out=rs, where=avg_loss > 0)
     rsi_vals = 100.0 - (100.0 / (1.0 + rs))
     return np.concatenate([[50.0], rsi_vals])
 

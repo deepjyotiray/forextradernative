@@ -136,12 +136,19 @@ class PerformanceTracker:
         return 1.0
 
     def _current_streak(self) -> int:
-        """Positive = win streak, negative = loss streak."""
+        """Positive = win streak, negative = loss streak.
+        Breakeven trades (pnl == 0.0) are ignored — they don't reset or extend
+        either streak direction.
+        """
         if not self._recent:
             return 0
+        # Filter out exact breakeven (pnl == 0.0)
+        meaningful = [t for t in self._recent if t.get("pnl", 0) != 0.0]
+        if not meaningful:
+            return 0
         streak = 0
-        last_won = self._recent[-1].get("pnl", 0) > 0
-        for t in reversed(self._recent):
+        last_won = meaningful[-1].get("pnl", 0) > 0
+        for t in reversed(meaningful):
             if (t.get("pnl", 0) > 0) == last_won:
                 streak += 1
             else:

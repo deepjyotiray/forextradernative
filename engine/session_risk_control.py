@@ -17,7 +17,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 import os
 import config as cfg
+from .session_filter import get_session, is_market_open
 from .trade_attribution import get_recent_attributions
+from .backtest_context import get_backtest_now, is_backtest_mode
 
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +48,13 @@ class SessionRiskController:
         
         self._risk_history = []
         self._load_state()
+        self._sync_configured_limits()
+
+    def _sync_configured_limits(self):
+        """Keep risk limits aligned with runtime dashboard config."""
+        self._max_consecutive_losses = int(getattr(cfg, "MAX_CONSECUTIVE_LOSSES", self._max_consecutive_losses))
+        self._max_daily_loss_pct = float(getattr(cfg, "DAILY_LOSS_LIMIT_PCT", self._max_daily_loss_pct * 100)) / 100.0
+        self._max_trades_per_session = int(getattr(cfg, "SESSION_MAX_TRADES", self._max_trades_per_session))
     
     def update_account_balance(self, balance: float):
         """Update account balance for risk calculations."""
@@ -54,18 +63,10 @@ class SessionRiskController:
     
     def update_session(self):
         """Update current session and reset counters if needed."""
-        now = datetime.now(timezone.utc)
-        h = now.hour
+        self._sync_configured_limits()
+        now = _now_utc()
         date = now.strftime("%Y-%m-%d")
-        
-        if 7 <= h < 9:
-            session = "LONDON"
-        elif 12 <= h < 13:
-            session = "OVERLAP"
-        elif 13 <= h < 15:
-            session = "NY"
-        else:
-            session = "CLOSED"
+        session = get_session() if is_market_open() else "CLOSED"
         
         # Reset session trades if new session
         if session != self._current_session and session != "CLOSED":
@@ -76,8 +77,10 @@ class SessionRiskController:
         if date != self._current_date:
             self._daily_pnl = 0.0
             self._consecutive_losses = 0
+            self._session_trades = 0
             self._risk_blocks["daily_loss"] = False
             self._risk_blocks["consecutive_losses"] = False
+            self._risk_blocks["session_trades"] = False
             
             # Recalculate daily PnL from attribution data
             self._recalculate_daily_metrics(date)
@@ -239,7 +242,7 @@ class SessionRiskController:
     
     def get_risk_history(self, days: int = 7) -> List[Dict]:
         """Get risk event history."""
-        cutoff = time.time() - (days * 24 * 3600)
+        cutoff = _now_ts() - (days * 24 * 3600)
         return [event for event in self._risk_history if event.get("timestamp", 0) >= cutoff]
     
     def _recalculate_daily_metrics(self, date: str):
@@ -292,8 +295,8 @@ class SessionRiskController:
     def _log_risk_event(self, event_type: str, description: str):
         """Log a risk management event."""
         event = {
-            "timestamp": time.time(),
-            "datetime": datetime.now(timezone.utc).isoformat(),
+            "timestamp": _now_ts(),
+            "datetime": _now_utc().isoformat(),
             "type": event_type,
             "description": description,
             "session": self._current_session,
@@ -308,6 +311,8 @@ class SessionRiskController:
     
     def _save_state(self):
         """Save risk control state."""
+        if is_backtest_mode():
+            return
         try:
             state = {
                 "account_balance": self._account_balance,
@@ -324,7 +329,7 @@ class SessionRiskController:
                     "max_trades_per_session": self._max_trades_per_session,
                 },
                 "risk_history": self._risk_history,
-                "last_update": time.time()
+                "last_update": _now_ts()
             }
             
             with open(_RISK_STATE_FILE, "w") as f:
@@ -334,6 +339,8 @@ class SessionRiskController:
     
     def _load_state(self):
         """Load risk control state."""
+        if is_backtest_mode():
+            return
         try:
             if os.path.exists(_RISK_STATE_FILE):
                 with open(_RISK_STATE_FILE, "r") as f:
@@ -342,7 +349,6 @@ class SessionRiskController:
                 self._account_balance = state.get("account_balance", 10000.0)
                 self._current_session = state.get("current_session", "")
                 self._current_date = state.get("current_date", "")
-                self._session_trades = state.get("session_trades", 0)
                 self._consecutive_losses = state.get("consecutive_losses", 0)
                 self._daily_pnl = state.get("daily_pnl", 0.0)
                 self._last_trade_outcome = state.get("last_trade_outcome")
@@ -359,6 +365,12 @@ class SessionRiskController:
                 self._max_trades_per_session = limits.get("max_trades_per_session", 5)
                 
                 self._risk_history = state.get("risk_history", [])
+
+                # Never restore session_trades from disk — it can contain phantom counts
+                # from signals that passed validation but never executed on MT5.
+                # Always start at 0; the counter is incremented only on confirmed MT5 execution.
+                self._session_trades = 0
+                self._risk_blocks["session_trades"] = False
                 
         except Exception as e:
             print(f"[RISK CONTROL ERROR] Failed to load state: {e}")
@@ -411,3 +423,14 @@ def reset_session_blocks() -> Dict:
 def get_risk_history(days: int = 7) -> List[Dict]:
     """Get risk event history."""
     return risk_controller.get_risk_history(days)
+
+
+def _now_utc() -> datetime:
+    override = get_backtest_now()
+    if isinstance(override, datetime):
+        return override.astimezone(timezone.utc)
+    return datetime.now(timezone.utc)
+
+
+def _now_ts() -> float:
+    return _now_utc().timestamp()

@@ -13,10 +13,13 @@ class TickProcessor:
         self._ticks: deque = deque(maxlen=buffer_size)
 
     def feed(self, tick: Dict):
+        ts = tick.get("ts")
+        if ts is None:
+            ts = time.time()
         self._ticks.append({
             "bid": tick["bid"], "ask": tick["ask"],
             "spread": tick.get("spread", tick["ask"] - tick["bid"]),
-            "ts": time.time(),
+            "ts": float(ts),
         })
 
     def snapshot(self) -> Dict:

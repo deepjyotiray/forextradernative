@@ -3,12 +3,17 @@ Session filter — session-aware trading control.
 """
 from datetime import datetime, timezone
 import config as cfg
+from .backtest_context import get_backtest_now
 
 _SESSION_STARTS = (cfg.ASIAN_START, cfg.LONDON_START, cfg.NY_START)
 
 
 def get_session() -> str:
-    h = datetime.now(timezone.utc).hour
+    return get_session_at(_now_utc())
+
+
+def get_session_at(now: datetime) -> str:
+    h = now.hour
     if h < cfg.LONDON_START:
         return "ASIAN"
     if h < cfg.NY_START:
@@ -19,7 +24,10 @@ def get_session() -> str:
 
 
 def is_session_open_blocked() -> tuple:
-    now = datetime.now(timezone.utc)
+    return is_session_open_blocked_at(_now_utc())
+
+
+def is_session_open_blocked_at(now: datetime) -> tuple:
     h, m = now.hour, now.minute
     if h in _SESSION_STARTS and m < cfg.SESSION_BLOCK_MINUTES:
         names = {cfg.ASIAN_START: "ASIAN", cfg.LONDON_START: "LONDON", cfg.NY_START: "NEW_YORK"}
@@ -28,7 +36,10 @@ def is_session_open_blocked() -> tuple:
 
 
 def is_market_open() -> bool:
-    now = datetime.now(timezone.utc)
+    return is_market_open_at(_now_utc())
+
+
+def is_market_open_at(now: datetime) -> bool:
     wd, h = now.weekday(), now.hour
     if wd == 5:
         return False
@@ -39,3 +50,10 @@ def is_market_open() -> bool:
     if h == 21:
         return False
     return True
+
+
+def _now_utc() -> datetime:
+    override = get_backtest_now()
+    if isinstance(override, datetime):
+        return override.astimezone(timezone.utc)
+    return datetime.now(timezone.utc)

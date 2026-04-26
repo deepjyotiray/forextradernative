@@ -11,6 +11,17 @@ from datetime import datetime, timezone, timedelta
 import config as cfg
 
 _IST = timezone(timedelta(hours=5, minutes=30))
+_MT5_TZ = timezone(timedelta(hours=3))  # MT5 broker server time (UTC+3)
+
+
+def _mt5_ts_to_utc(ts: int) -> datetime:
+    """MT5 timestamps are broker local time (UTC+3). Convert to true UTC."""
+    return datetime.fromtimestamp(ts, tz=_MT5_TZ).astimezone(timezone.utc)
+
+
+def _mt5_ts_to_ist(ts: int) -> datetime:
+    """MT5 timestamp → IST (UTC+3 + 2h30m = UTC+5:30)."""
+    return datetime.fromtimestamp(ts, tz=_MT5_TZ).astimezone(_IST)
 
 
 class MT5Bridge:
@@ -22,6 +33,7 @@ class MT5Bridge:
         self._candle_cache: Dict[str, pd.DataFrame] = {}
         self._candle_mtimes: Dict[str, float] = {}
         self._current_symbol = symbol or cfg.SYMBOL
+
 
     # --- Connection ---
 
@@ -184,7 +196,7 @@ class MT5Bridge:
                 "swap": swap,
                 "commission": comm,
                 "net_profit": round(profit + swap + comm, 2),
-                "open_time": datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
+                "open_time": _mt5_ts_to_utc(p.time).isoformat(),
                 "magic": p.magic,
             })
         return result
@@ -315,7 +327,7 @@ class MT5Bridge:
 
     def get_history(self, days: int = 30) -> List[Dict]:
         from_date = datetime.now(timezone.utc) - timedelta(days=days)
-        to_date = datetime.now(timezone.utc) + timedelta(hours=1)
+        to_date = datetime.now(timezone.utc) + timedelta(hours=4)
         # Fetch ALL deals first, then filter — group pattern can miss suffixed symbols
         deals = mt5.history_deals_get(from_date, to_date)
         if not deals:
@@ -336,7 +348,7 @@ class MT5Bridge:
             "swap": d.swap,
             "commission": d.commission,
             "net_profit": round(d.profit + d.swap + d.commission, 2),
-            "time": datetime.fromtimestamp(d.time, tz=timezone.utc).isoformat(),
+            "time": _mt5_ts_to_utc(d.time).isoformat(),
             "magic": d.magic,
             "comment": d.comment,
             "entry": d.entry,  # 0=in, 1=out, 2=inout, 3=out_by
@@ -404,7 +416,7 @@ class MT5Bridge:
         # (MetaQuotes-Demo sometimes doesn't persist deal records)
         try:
             from_date = datetime.now(timezone.utc) - timedelta(days=days)
-            to_date = datetime.now(timezone.utc) + timedelta(hours=1)
+            to_date = datetime.now(timezone.utc) + timedelta(hours=4)
             orders = mt5.history_orders_get(from_date, to_date)
             if orders:
                 # Group orders by position_id
@@ -453,8 +465,8 @@ class MT5Bridge:
                         "swap": 0.0,
                         "commission": 0.0,
                         "won": pnl > 0,
-                        "open_time": datetime.fromtimestamp(open_ord.time_setup, tz=timezone.utc).isoformat(),
-                        "close_time": datetime.fromtimestamp(close_ord.time_setup, tz=timezone.utc).isoformat(),
+                        "open_time": _mt5_ts_to_utc(open_ord.time_setup).isoformat(),
+                        "close_time": _mt5_ts_to_utc(close_ord.time_setup).isoformat(),
                         "reason": close_ord.comment,
                         "magic": open_ord.magic,
                         "comment": close_ord.comment,
@@ -478,12 +490,12 @@ class MT5Bridge:
         ist_now = now.astimezone(_IST)
         ist_midnight = ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
         today_start = ist_midnight.astimezone(timezone.utc)
-        today_start_ts = int(today_start.timestamp())
+        today_start_ts = int(today_start.timestamp()) + 3 * 3600  # d.time is UTC+3 broker time
 
         # Fetch deals from a wider window to capture full position P&L,
         # but only count positions closed after IST midnight
         fetch_start = today_start - timedelta(days=1)
-        deals = mt5.history_deals_get(fetch_start, now + timedelta(hours=1))
+        deals = mt5.history_deals_get(fetch_start, now + timedelta(hours=4))
 
         # First pass: find positions with a closing deal AFTER IST midnight
         closed_pids = set()
@@ -507,7 +519,7 @@ class MT5Bridge:
 
         # Fallback: check orders for positions missing from deals
         try:
-            orders = mt5.history_orders_get(fetch_start, now + timedelta(hours=1))
+            orders = mt5.history_orders_get(fetch_start, now + timedelta(hours=4))
             if orders:
                 ord_by_pos = {}
                 for o in orders:

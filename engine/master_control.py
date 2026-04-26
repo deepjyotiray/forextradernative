@@ -14,9 +14,10 @@ Integrates:
 import time
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
+from .session_filter import get_session, is_market_open
 from .trade_attribution import log_trade_decision, log_trade_outcome
-from .session_risk_control import check_trade_allowed, record_trade_taken, record_trade_outcome
-from .trade_pacing import check_pacing_allowed, record_trade_taken as record_pacing_trade
+from .session_risk_control import check_trade_allowed, record_trade_outcome
+from .trade_pacing import check_pacing_allowed
 from .over_filtering_detection import get_active_relaxations
 from .parameter_calibration import get_current_parameters
 from .trade_quality_feedback import check_analysis_needed, perform_quality_analysis
@@ -169,18 +170,14 @@ class MasterControlSystem:
             additional_data=additional_data
         )
         
-        # Record trade taken for risk and pacing systems
+        # Store trade info for outcome logging (counters are updated in auto_trader.py after MT5 execution)
         if decision == "TRADE_TAKEN" and trade_id:
-            record_trade_taken()
-            record_pacing_trade()
-            
-            # Store trade info for outcome logging
             self._active_trades[trade_id] = {
                 "signal": signal.copy(),
                 "start_time": time.time(),
                 "strategy": strategy
             }
-        
+
         return trade_id
     
     def log_trade_outcome_comprehensive(
@@ -218,9 +215,6 @@ class MasterControlSystem:
         
         # Update risk control
         record_trade_outcome(pnl, outcome)
-        
-        # Update pacing with outcome
-        record_pacing_trade(outcome)
         
         # Clean up
         del self._active_trades[trade_id]
@@ -273,15 +267,7 @@ class MasterControlSystem:
     
     def _get_current_session(self) -> str:
         """Get current trading session."""
-        h = datetime.now(timezone.utc).hour
-        if 7 <= h < 9:
-            return "LONDON"
-        elif 12 <= h < 13:
-            return "OVERLAP"
-        elif 13 <= h < 15:
-            return "NY"
-        else:
-            return "CLOSED"
+        return get_session() if is_market_open() else "CLOSED"
 
 
 # Singleton instance

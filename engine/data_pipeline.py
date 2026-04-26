@@ -11,6 +11,7 @@ import json
 import sqlite3
 import pandas as pd
 import os
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from .trade_attribution import get_recent_attributions
@@ -18,12 +19,183 @@ from .trade_attribution import get_recent_attributions
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DB_PATH = os.path.join(_BASE_DIR, "analytics.db")
+_ORDERS_DB_PATH = os.path.join(_BASE_DIR, "orders.db")
 _CSV_PATH = os.path.join(_BASE_DIR, "trade_data.csv")
 
 
 class DataPipeline:
     def __init__(self):
         self._init_database()
+
+    @staticmethod
+    def _parse_iso_to_datetime(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            normalized = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_percent(reason: Optional[str], label: str) -> Optional[float]:
+        if not reason:
+            return None
+        match = re.search(rf"{label}\s*([0-9]+(?:\.[0-9]+)?)%", reason, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return float(match.group(1)) / 100.0
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_quality_score(reason: Optional[str]) -> Optional[float]:
+        if not reason:
+            return None
+        match = re.search(r"\[Q:([0-9]+(?:\.[0-9]+)?)%", reason, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return float(match.group(1)) / 100.0
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_session(session_value: Optional[str]) -> str:
+        session = (session_value or "UNKNOWN").upper().strip()
+        if session in ("NEW_YORK", "NY"):
+            return "NY"
+        return session if session else "UNKNOWN"
+
+    @staticmethod
+    def _safe_float(value) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def _load_orders_fallback_dataframe(self, days: int = 30) -> pd.DataFrame:
+        """Build analytics-compatible dataframe directly from orders.db closed orders."""
+        if not os.path.exists(_ORDERS_DB_PATH):
+            return pd.DataFrame()
+
+        cutoff_time = datetime.now(timezone.utc).timestamp() - (days * 24 * 3600)
+        rows: List[Dict] = []
+
+        conn = sqlite3.connect(_ORDERS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            """
+            SELECT
+                ticket, strategy, direction, reason, features,
+                open_time, close_time, entry_price, exit_price, sl, tp, final_pnl
+            FROM orders
+            WHERE status = 'CLOSED' AND close_time IS NOT NULL
+            ORDER BY close_time DESC
+            """
+        )
+        for row in cursor.fetchall():
+            features = {}
+            try:
+                features = json.loads(row["features"] or "{}")
+            except Exception:
+                features = {}
+
+            close_dt = self._parse_iso_to_datetime(row["close_time"])
+            if not close_dt:
+                continue
+            close_unix = close_dt.timestamp()
+            if close_unix < cutoff_time:
+                continue
+
+            open_dt = self._parse_iso_to_datetime(row["open_time"])
+            duration = None
+            if open_dt:
+                duration = max(int((close_dt - open_dt).total_seconds()), 0)
+
+            pnl = self._safe_float(row["final_pnl"]) or 0.0
+            if pnl > 0:
+                outcome = "WIN"
+            elif pnl < 0:
+                outcome = "LOSS"
+            else:
+                outcome = "BE"
+
+            direction_raw = (row["direction"] or "").upper()
+            setup_direction = "LONG" if direction_raw in ("BUY", "LONG") else "SHORT"
+
+            session_raw = features.get("session")
+            session = self._normalize_session(session_raw)
+
+            quality_score = self._safe_float(features.get("quality_score"))
+            if quality_score is None:
+                quality_score = self._extract_quality_score(row["reason"])
+
+            tick_ratio = self._safe_float(features.get("tick_ratio"))
+            if tick_ratio is None:
+                tick_ratio = self._extract_percent(row["reason"], "Tick\\s*ratio")
+
+            entry_tick_velocity = self._safe_float(features.get("entry_tick_velocity"))
+            spread_mean = self._safe_float(features.get("spread"))
+            atr_value = self._safe_float(features.get("atr"))
+
+            reason_text = row["reason"] or ""
+            trade_type = "WITH_TREND"
+            if "counter-trend" in reason_text.lower() or "ctr" in reason_text.lower():
+                trade_type = "COUNTER_TREND"
+
+            rows.append(
+                {
+                    "timestamp": close_dt,
+                    "unix_time": close_unix,
+                    "strategy": row["strategy"] or "UNKNOWN",
+                    "setup_direction": setup_direction,
+                    "bias_direction": None,
+                    "trade_type": trade_type,
+                    "quality_score": quality_score,
+                    "threshold_used": None,
+                    "spread_mean": spread_mean,
+                    "spread_std": None,
+                    "spread_percentile": None,
+                    "atr_value": atr_value,
+                    "compression_flag": False,
+                    "ltf_conflict_flag": False,
+                    "tick_ratio": tick_ratio,
+                    "tick_velocity": entry_tick_velocity,
+                    "session": session,
+                    "decision": "TRADE_TAKEN",
+                    "reason": reason_text,
+                    "price": self._safe_float(row["entry_price"]),
+                    "trade_id": f"order_{row['ticket']}",
+                    "entry_price": self._safe_float(row["entry_price"]),
+                    "exit_price": self._safe_float(row["exit_price"]),
+                    "sl": self._safe_float(row["sl"]),
+                    "tp": self._safe_float(row["tp"]),
+                    "outcome": outcome,
+                    "pnl": pnl,
+                    "trade_duration": duration,
+                    "exit_reason": "ORDER_DB",
+                    "completion_time": close_dt,
+                }
+            )
+        conn.close()
+
+        if not rows:
+            return pd.DataFrame()
+
+        fallback_df = pd.DataFrame(rows)
+        fallback_df["timestamp"] = pd.to_datetime(fallback_df["timestamp"], errors="coerce", utc=True, format="ISO8601")
+        fallback_df["completion_time"] = pd.to_datetime(fallback_df["completion_time"], errors="coerce", utc=True, format="ISO8601")
+        fallback_df["compression_flag"] = fallback_df["compression_flag"].astype(bool)
+        fallback_df["ltf_conflict_flag"] = fallback_df["ltf_conflict_flag"].astype(bool)
+        fallback_df = fallback_df.sort_values("unix_time", ascending=False).reset_index(drop=True)
+        return fallback_df
     
     def _init_database(self):
         """Initialize SQLite database with required tables."""
@@ -219,9 +391,12 @@ class DataPipeline:
         df = pd.read_sql_query(query, conn, params=[cutoff_time])
         conn.close()
         
+        if df.empty:
+            return self._load_orders_fallback_dataframe(days)
+
         # Convert timestamps
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df['completion_time'] = pd.to_datetime(df['completion_time'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True, format='ISO8601')
+        df['completion_time'] = pd.to_datetime(df['completion_time'], errors='coerce', utc=True, format='ISO8601')
         
         # Convert boolean flags
         df['compression_flag'] = df['compression_flag'].astype(bool)
@@ -232,7 +407,10 @@ class DataPipeline:
     def get_completed_trades_only(self, days: int = 30) -> pd.DataFrame:
         """Get only completed trades with outcomes."""
         df = self.get_trade_data(days)
-        return df[df['decision'] == 'TRADE_TAKEN'].dropna(subset=['outcome'])
+        completed = df[df['decision'] == 'TRADE_TAKEN'].dropna(subset=['outcome'])
+        if completed.empty:
+            return self._load_orders_fallback_dataframe(days)
+        return completed
     
     def get_decision_summary(self, days: int = 7) -> Dict:
         """Get summary of all decisions (taken/skipped)."""

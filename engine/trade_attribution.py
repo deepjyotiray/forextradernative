@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Optional, List
 import os
+from .backtest_context import get_backtest_now, is_backtest_mode
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ATTRIBUTION_FILE = os.path.join(_BASE_DIR, "trade_attribution.jsonl")
@@ -58,8 +59,8 @@ class TradeAttributionEngine:
                 trade_type = "COUNTER_TREND"
         
         attribution = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "unix_time": time.time(),
+            "timestamp": _now_utc().isoformat(),
+            "unix_time": _now_utc().timestamp(),
             "strategy": strategy,
             "setup_direction": setup_direction,
             "bias_direction": bias_direction,
@@ -86,7 +87,7 @@ class TradeAttributionEngine:
         trade_id = None
         if decision == "TRADE_TAKEN":
             self._trade_counter += 1
-            trade_id = f"{strategy}_{int(time.time())}_{self._trade_counter}"
+            trade_id = f"{strategy}_{int(_now_utc().timestamp())}_{self._trade_counter}"
             attribution["trade_id"] = trade_id
             self._active_trades[trade_id] = attribution
         
@@ -121,7 +122,7 @@ class TradeAttributionEngine:
             "pnl": round(pnl, 2),
             "trade_duration": trade_duration,
             "exit_reason": exit_reason,
-            "completion_time": datetime.now(timezone.utc).isoformat(),
+            "completion_time": _now_utc().isoformat(),
         })
         
         self._write_attribution(attribution)
@@ -129,6 +130,8 @@ class TradeAttributionEngine:
     
     def _write_attribution(self, attribution: Dict):
         """Write attribution data to file."""
+        if is_backtest_mode():
+            return
         try:
             with open(_ATTRIBUTION_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(attribution) + "\n")
@@ -137,6 +140,8 @@ class TradeAttributionEngine:
     
     def get_recent_attributions(self, hours: int = 24) -> List[Dict]:
         """Get recent attribution data."""
+        if is_backtest_mode():
+            return []
         if not os.path.exists(_ATTRIBUTION_FILE):
             return []
         
@@ -241,3 +246,10 @@ def get_recent_attributions(hours: int = 24) -> List[Dict]:
 def get_active_trades() -> Dict:
     """Get currently active trades."""
     return attribution_engine.get_active_trades()
+
+
+def _now_utc() -> datetime:
+    override = get_backtest_now()
+    if isinstance(override, datetime):
+        return override.astimezone(timezone.utc)
+    return datetime.now(timezone.utc)

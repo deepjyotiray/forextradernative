@@ -28,12 +28,13 @@ class TradeRecord:
         "sl_breakeven", "partial_closed", "trail_active",
         "initial_volume", "scalp", "be_trigger_price", "timeout_seconds",
         "features", "manage_updates", "entry_tick_velocity", "current_price",
-        "early_fail_points",
+        "early_fail_points", "tier1_min_ticks", "tier1_max_ticks",
     )
 
     def __init__(self, ticket, direction, volume, entry, sl, tp, sl_distance,
                  strategy="", confidence=0, reason="",
-                 scalp=False, be_trigger=0, timeout=0, early_fail=0, features=None):
+                 scalp=False, be_trigger=0, timeout=0, early_fail=0, features=None,
+                 tier1_min_ticks=None, tier1_max_ticks=None):
         self.ticket = ticket
         self.direction = direction
         self.volume = volume
@@ -62,6 +63,8 @@ class TradeRecord:
         self.entry_tick_velocity = float(self.features.get("entry_tick_velocity", 0) or 0)
         self.current_price = entry
         self.early_fail_points = float(early_fail or self.features.get("early_fail_points", 0) or 0)
+        self.tier1_min_ticks = int(tier1_min_ticks if tier1_min_ticks is not None else cfg.SMC_TIER1_MIN_TICKS)
+        self.tier1_max_ticks = int(tier1_max_ticks if tier1_max_ticks is not None else cfg.SMC_TIER1_MAX_TICKS)
 
     def to_dict(self) -> Dict:
         return {s: getattr(self, s) for s in self.__slots__}
@@ -86,6 +89,8 @@ class TradeRecord:
         t.manage_updates = d.get("manage_updates", 0)
         t.entry_tick_velocity = float(d.get("entry_tick_velocity", t.features.get("entry_tick_velocity", 0)) or 0)
         t.current_price = d.get("current_price", t.entry)
+        t.tier1_min_ticks = int(d.get("tier1_min_ticks", cfg.SMC_TIER1_MIN_TICKS))
+        t.tier1_max_ticks = int(d.get("tier1_max_ticks", cfg.SMC_TIER1_MAX_TICKS))
         return t
 
 
@@ -249,9 +254,9 @@ class TradeManager:
         entry_tick_count = int(t.features.get("entry_tick_count", 0) or 0)
         ticks_since_entry = (current_tick_count - entry_tick_count) if entry_tick_count and current_tick_count else t.manage_updates
 
-        early_fail = t.early_fail_points or 0.20
-        if cfg.TIER1_ENABLED and ticks_since_entry <= 15 and points_move <= -early_fail:
-            self._close_early(t, f"Early fail: {points_move:.2f} points in first {ticks_since_entry} ticks")
+        early_fail = t.early_fail_points or cfg.SMC_EARLY_FAIL_POINTS
+        if cfg.TIER1_ENABLED and t.tier1_min_ticks <= ticks_since_entry <= t.tier1_max_ticks and points_move <= -early_fail:
+            self._close_early(t, f"Early fail: {points_move:.2f} pts at tick {ticks_since_entry} (window {t.tier1_min_ticks}-{t.tier1_max_ticks})")
             return True
 
         if t.be_trigger_price > 0 and not t.sl_breakeven and t.live_pnl >= t.be_trigger_price:

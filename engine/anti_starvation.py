@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 import json
 import os
+from .session_filter import get_session, is_market_open
+from .backtest_context import get_backtest_now, is_backtest_mode
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STATE_FILE = os.path.join(_BASE_DIR, "anti_starvation_state.json")
@@ -28,18 +30,9 @@ class AntiStarvationManager:
     
     def update_session(self):
         """Update current session and date."""
-        now = datetime.now(timezone.utc)
-        h = now.hour
+        now = _now_utc()
         date = now.strftime("%Y-%m-%d")
-        
-        if 7 <= h < 9:
-            session = "LONDON"
-        elif 12 <= h < 13:
-            session = "OVERLAP"
-        elif 13 <= h < 15:
-            session = "NY"
-        else:
-            session = "CLOSED"
+        session = get_session() if is_market_open() else "CLOSED"
         
         session_key = f"{date}_{session}"
         
@@ -50,7 +43,8 @@ class AntiStarvationManager:
             if session_key not in self._session_trades:
                 self._session_trades[session_key] = 0
             self._check_starvation()
-            self._save_state()
+            if not is_backtest_mode():
+                self._save_state()
     
     def record_trade(self):
         """Record a trade taken in current session."""
@@ -64,7 +58,8 @@ class AntiStarvationManager:
                 self._relaxation_active = False
                 self._relaxation_type = None
             
-            self._save_state()
+            if not is_backtest_mode():
+                self._save_state()
     
     def _check_starvation(self):
         """Check if we should activate anti-starvation for current session."""
@@ -91,8 +86,8 @@ class AntiStarvationManager:
 
     def _minutes_since_session_start(self) -> int:
         """Measure how long the current configured session has been open."""
-        now = datetime.now(timezone.utc)
-        start_hour = {"LONDON": 7, "OVERLAP": 12, "NY": 13}.get(self._current_session)
+        now = _now_utc()
+        start_hour = {"ASIAN": 0, "LONDON": 7, "NEW_YORK": 13}.get(self._current_session)
         if start_hour is None:
             return 0
         session_start = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
@@ -142,6 +137,8 @@ class AntiStarvationManager:
     
     def _save_state(self):
         """Save state to file."""
+        if is_backtest_mode():
+            return
         try:
             state = {
                 "session_trades": self._session_trades,
@@ -158,6 +155,8 @@ class AntiStarvationManager:
     
     def _load_state(self):
         """Load state from file."""
+        if is_backtest_mode():
+            return
         try:
             if os.path.exists(_STATE_FILE):
                 with open(_STATE_FILE, "r") as f:
@@ -215,3 +214,10 @@ def record_trade_taken():
 def get_anti_starvation_status() -> Dict:
     """Get current anti-starvation status."""
     return anti_starvation.get_status()
+
+
+def _now_utc() -> datetime:
+    override = get_backtest_now()
+    if isinstance(override, datetime):
+        return override.astimezone(timezone.utc)
+    return datetime.now(timezone.utc)

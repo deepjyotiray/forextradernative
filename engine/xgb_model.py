@@ -49,11 +49,15 @@ def _extract_features(trade: Dict) -> Optional[List[float]]:
         # Read from stored features snapshot (set at trade open time)
         feat = trade.get("features", {})
         hour = 12
-        ct = trade.get("open_time", "")
+        # trades store close time as 'time'; open time may be 'open_time'
+        ct = trade.get("open_time") or trade.get("time", "")
         if ct:
-            parts = ct.replace("T", " ").split(" ")
-            if len(parts) >= 2:
-                hour = int(parts[1].split(":")[0])
+            try:
+                parts = str(ct).replace("T", " ").split(" ")
+                if len(parts) >= 2:
+                    hour = int(parts[1].split(":")[0])
+            except Exception:
+                pass
 
         return [
             _encode_session(feat.get("session", trade.get("session", ""))),
@@ -119,18 +123,35 @@ class XGBModel:
     def train(self, closed_trades: List[Dict]):
         """Train on closed trade history."""
         X, y = [], []
+        seen_keys: set = set()
         for t in closed_trades:
+            # Skip trades with zero PnL (SL at entry — no information)
+            if t.get("pnl", 0) == 0.0:
+                continue
             feat = _extract_features(t)
             if feat is None:
                 continue
+            # Deduplicate on market-condition features only (indices 0-10).
+            # Exclude sl_distance[11] and volume[12] — they vary per trade
+            # but don't represent different market conditions.
+            dedup_key = (tuple(round(v, 4) if isinstance(v, float) else v for v in feat[:11]),
+                         t.get("direction", ""))
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
             X.append(feat)
-            y.append(1 if t.get("won", False) else 0)
+            # Use pnl > 0 as ground truth — won field can be corrupted by SL-positive closes
+            y.append(1 if t.get("pnl", 0) > 0 else 0)
 
         if len(X) < _MIN_TRADES:
             return
 
         X = np.array(X, dtype=float)
         y = np.array(y, dtype=int)
+
+        n_pos = int(y.sum())
+        n_neg = len(y) - n_pos
+        scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1.0
 
         self.model = xgb.XGBClassifier(
             n_estimators=50,
@@ -139,6 +160,7 @@ class XGBModel:
             min_child_weight=3,
             subsample=0.8,
             colsample_bytree=0.8,
+            scale_pos_weight=scale_pos_weight,
             eval_metric="logloss",
             verbosity=0,
         )
@@ -148,7 +170,7 @@ class XGBModel:
         self._save()
 
         win_rate = sum(y) / len(y)
-        print(f"[XGB] Trained on {len(X)} trades (WR: {win_rate:.0%})")
+        print(f"[XGB] Trained on {len(X)} trades (WR: {win_rate:.0%}, scale_pos_weight: {scale_pos_weight:.2f})")
 
     def predict_win_prob(self, signal: Dict, indicators: Dict,
                          regime: Dict, bias: Dict, tick: Dict) -> float:
