@@ -16,11 +16,28 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
 import os
+try:
+    import numpy as np
+except Exception:  # pragma: no cover
+    np = None
 from .backtest_context import emit_backtest_decision, is_backtest_mode
 
 _LOG_FILE = "decision_log.jsonl"
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOG_PATH = os.path.join(_BASE_DIR, _LOG_FILE)
+
+
+def _json_safe(value):
+    if np is not None:
+        if isinstance(value, (np.bool_, np.integer, np.floating)):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return [_json_safe(v) for v in value.tolist()]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def log_decision(
@@ -74,7 +91,7 @@ def log_decision(
 
     try:
         with open(_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(log_entry) + "\n")
+            f.write(json.dumps(_json_safe(log_entry), default=str) + "\n")
     except Exception as e:
         print(f"[LOG ERROR] Failed to write decision log: {e}")
 

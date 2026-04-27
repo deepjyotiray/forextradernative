@@ -16,10 +16,28 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Optional, List
 import os
+try:
+    import numpy as np
+except Exception:  # pragma: no cover - numpy should exist, but keep logger resilient
+    np = None
 from .backtest_context import get_backtest_now, is_backtest_mode
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ATTRIBUTION_FILE = os.path.join(_BASE_DIR, "trade_attribution.jsonl")
+
+
+def _json_safe(value):
+    """Recursively normalize NumPy/scalar values into JSON-serializable types."""
+    if np is not None:
+        if isinstance(value, (np.bool_, np.integer, np.floating)):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return [_json_safe(v) for v in value.tolist()]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 class TradeAttributionEngine:
@@ -134,7 +152,7 @@ class TradeAttributionEngine:
             return
         try:
             with open(_ATTRIBUTION_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(attribution) + "\n")
+                f.write(json.dumps(_json_safe(attribution), default=str) + "\n")
         except Exception as e:
             print(f"[ATTRIBUTION ERROR] Failed to write: {e}")
     

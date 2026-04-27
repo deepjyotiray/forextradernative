@@ -9,11 +9,28 @@ import os
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
+try:
+    import numpy as np
+except Exception:  # pragma: no cover
+    np = None
 import config as cfg
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DB_PATH = os.path.join(_BASE_DIR, "orders.db")
+
+
+def _json_safe(value):
+    if np is not None:
+        if isinstance(value, (np.bool_, np.integer, np.floating)):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return [_json_safe(v) for v in value.tolist()]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 class OrderDatabase:
@@ -115,7 +132,7 @@ class OrderDatabase:
                     ticket, cfg.SYMBOL, direction, volume, entry_price, sl, tp, sl_distance,
                     strategy, confidence, reason, int(scalp), be_trigger, timeout,
                     now.isoformat(), ist_now.isoformat(), time.time(), session_type, market_phase,
-                    volume, json.dumps(features or {}), cfg.MAGIC_NUMBER
+                    volume, json.dumps(_json_safe(features or {}), default=str), cfg.MAGIC_NUMBER
                 ))
                 return True
             except sqlite3.IntegrityError:

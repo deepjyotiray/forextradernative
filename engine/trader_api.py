@@ -12,6 +12,7 @@ import time
 import asyncio
 import numpy as np
 from pathlib import Path
+import config as cfg
 
 try:
     import orjson
