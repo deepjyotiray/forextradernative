@@ -42,11 +42,10 @@ analytics.db
 build/
 dist/
 *.spec
-*.ico
+
 
 # Tunnel / deploy binaries
-cloudflared.exe
-cloudflared-config.yml
+
 
 # Misc generated/temp files
 '2026-04-24'
