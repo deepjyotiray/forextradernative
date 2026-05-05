@@ -205,6 +205,10 @@ canvas{width:100%;height:220px;background:#0b1220;border:1px solid #1f2937;borde
   <div class="card">
     <h3 style="margin-top:0">Summary</h3>
     <div class="grid4" id="summaryGrid"></div>
+    <div style="margin-top:10px">
+      <button id="btnCopyMarketData" class="btn-primary">Copy Market Data (for ChatGPT)</button>
+      <span id="copyMarketDataMsg" class="muted small" style="margin-left:10px"></span>
+    </div>
   </div>
 
   <div class="card">
@@ -270,6 +274,7 @@ let statusPollTimer = null;
 let jobsPollTimer = null;
 let jobsCache = [];
 let resourceDefaults = { cpu_count: 1, recommended_workers: 1, max_workers: 1 };
+let lastJobResults = null;
 let configProfiles = { active_profiles: { backtest: "live", live: "live" }, profiles: {} };
 const JOB_DRAFT_KEY = "backtest_job_draft_v1";
 
@@ -903,6 +908,7 @@ async function refreshStatus(){
   if(s.status === "completed"){
     const rr = await fetch(`${API}/jobs/${currentJob}/results`);
     const data = await rr.json();
+    lastJobResults = data;
     renderSummary(data.summary || {});
     drawEquity(data.equity_curve || []);
     renderTrades(data.trades || []);
@@ -911,6 +917,151 @@ async function refreshStatus(){
   }
 }
 
+document.getElementById("btnCopyMarketData").addEventListener("click", async ()=>{
+  const msg = document.getElementById("copyMarketDataMsg");
+  if(!lastJobResults){ msg.textContent = "No results loaded yet."; return; }
+  msg.textContent = "Gathering data...";
+
+  const d = lastJobResults;
+  const meta = d.meta || {};
+  const jobId = currentJob;
+
+  // 1. Paginate /replay to get ALL thoughts (MTF bias reasoning at every decision)
+  let allThoughts = [], allFrames = [];
+  if(jobId){
+    try{
+      const r0 = await fetch(`${API}/jobs/${jobId}/replay?start=0&limit=5000`);
+      if(r0.ok){
+        const p0 = await r0.json();
+        allThoughts = allThoughts.concat(p0.thoughts || []);
+        allFrames   = allFrames.concat(p0.frames   || []);
+        const totalT = p0.total_thoughts || 0;
+        const totalF = p0.total_frames   || 0;
+        const pages = [];
+        for(let s=5000; s<Math.max(totalT,totalF); s+=5000) pages.push(s);
+        const extras = await Promise.all(
+          pages.map(s => fetch(`${API}/jobs/${jobId}/replay?start=${s}&limit=5000`).then(r=>r.ok?r.json():{}))
+        );
+        for(const p of extras){
+          if(p.thoughts && allThoughts.length < totalT) allThoughts = allThoughts.concat(p.thoughts);
+          if(p.frames   && allFrames.length   < totalF) allFrames   = allFrames.concat(p.frames);
+        }
+      }
+    }catch(_){}
+  }
+  if(!allThoughts.length) allThoughts = (d.replay||{}).thoughts || [];
+  if(!allFrames.length)   allFrames   = (d.replay||{}).frames   || [];
+
+  const tradeOpenThoughts = allThoughts.filter(t=>t.kind==="TRADE_OPEN");
+  const noTradeThoughts   = allThoughts.filter(t=>t.kind==="NO_TRADE").slice(-200);
+  const xgbThoughts       = allThoughts.filter(t=>t.kind==="XGB_BLOCK");
+  const lastFrames = allFrames.slice(-20).map(f=>({
+    time:f.time, bid:f.bid, ask:f.ask, spread:f.spread,
+    equity:f.equity, balance:f.balance, open_positions:f.open_positions,
+    event:f.event, m1:f.m1, m5:f.m5,
+  }));
+
+  // 2. Fetch live context in parallel
+  let liveBlockers=null, liveStatus=null, liveGuidance=null, liveChart=null;
+  const LIVE = location.origin;
+  const sym = meta.symbol || "";
+  try{
+    const [bR,sR,gR,cR] = await Promise.allSettled([
+      fetch(`${LIVE}/status/blockers`).then(r=>r.ok?r.json():null),
+      fetch(`${LIVE}/status`).then(r=>r.ok?r.json():null),
+      fetch(`${LIVE}/strategy-guidance`).then(r=>r.ok?r.json():null),
+      fetch(`${LIVE}/chart-data?symbol=${encodeURIComponent(sym)}&timeframe=M15&limit=50`).then(r=>r.ok?r.json():null),
+    ]);
+    liveBlockers = bR.status==="fulfilled" ? bR.value : null;
+    liveStatus   = sR.status==="fulfilled" ? sR.value : null;
+    liveGuidance = gR.status==="fulfilled" ? gR.value : null;
+    liveChart    = cR.status==="fulfilled" ? cR.value : null;
+  }catch(_){}
+
+  // 3. Setup intelligence (why no trade)
+  const bd = (liveBlockers||{}).live_blockers || {};
+  const setupIntelligence = {
+    why_no_trade: {
+      latest_by_strategy: bd.latest_by_strategy || {},
+      most_frequent_recent_blockers: bd.top_reasons || [],
+      recent_skipped_count: bd.recent_skipped_count || 0,
+    },
+    strategy_guidance: liveGuidance ? {
+      market_summary: liveGuidance.market_summary,
+      action_now:     liveGuidance.action_now,
+      wait_advice:    liveGuidance.wait_advice,
+      lead_strategy:  liveGuidance.lead_strategy,
+      strategies:     liveGuidance.strategies,
+    } : null,
+  };
+
+  // 4. Correlation — chart-data carries live trader._correlation
+  const corr = (liveChart||{}).correlation || (liveStatus||{}).correlation || {};
+  const correlationData = Object.keys(corr).length ? corr : null;
+
+  // 5. Live market snapshot
+  const src = liveChart || liveStatus || {};
+  const liveMarket = (liveChart||liveStatus) ? {
+    bias:          src.bias,
+    regime:        src.regime,
+    indicators:    (liveChart||{}).indicators || null,
+    zones:         (liveChart||{}).zones      || null,
+    liquidity:     (liveChart||{}).liquidity  || null,
+    tick:          (liveStatus||{}).tick          || null,
+    tick_pressure: (liveStatus||{}).tick_pressure || null,
+    session:       (liveStatus||{}).session       || null,
+    engine_enabled:(liveStatus||{}).enabled       || null,
+  } : null;
+
+  const payload = {
+    exported_at: new Date().toISOString(),
+    meta: {
+      symbol:               meta.symbol,
+      strategy:             meta.strategy,
+      requested_start_utc:  meta.requested_start_utc,
+      requested_end_utc:    meta.requested_end_utc,
+      effective_start_utc:  meta.effective_start_utc,
+      effective_end_utc:    meta.effective_end_utc,
+      initial_balance:      meta.initial_balance,
+      config_profile:       meta.config_profile,
+      ticks_replayed:       meta.ticks_replayed,
+      fast_mode:            meta.fast_mode,
+      split_mode:           meta.split_mode,
+      parallel_workers:     meta.parallel_workers,
+      coverage_warnings:    meta.coverage_warnings,
+      config_snapshot:      meta.config_snapshot,
+      config_snapshot_hash: meta.config_snapshot_hash,
+    },
+    summary:            d.summary,
+    decision_stats:     d.decision_stats,
+    strategy_breakdown: d.strategy_breakdown,
+    trades:             d.trades,
+    local_engine_analysis: {
+      total_replay_frames: allFrames.length,
+      total_thoughts:      allThoughts.length,
+      trade_open_thoughts: tradeOpenThoughts,
+      no_trade_thoughts:   noTradeThoughts,
+      xgb_block_thoughts:  xgbThoughts,
+      recent_market_frames: lastFrames,
+    },
+    setup_intelligence:    setupIntelligence,
+    correlation_6_markets: correlationData,
+    live_market_snapshot:  liveMarket,
+  };
+
+  const text = JSON.stringify(payload, null, 2);
+  const kb = (text.length/1024).toFixed(1);
+  try{
+    await navigator.clipboard.writeText(text);
+  }catch(_){
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand("copy"); document.body.removeChild(ta);
+  }
+  msg.textContent = `Copied! (${kb} KB)`;
+  setTimeout(()=>{ msg.textContent = ""; }, 5000);
+});
 document.getElementById("btnRun").addEventListener("click", async ()=>{ try{ await runBacktest(); }catch(e){ alert(e.message || String(e)); }});
 document.getElementById("btnCancel").addEventListener("click", async ()=>{ try{ await cancelBacktest(); }catch(e){ alert(e.message || String(e)); }});
 document.getElementById("btnRefresh").addEventListener("click", refreshStatus);

@@ -12,7 +12,8 @@ import config as cfg
 from .decision_logger import log_decision
 from .indicators import atr
 from .strategies.base_strategy import BaseStrategy
-from .tick_processor import TickProcessor
+from .tick_processor import TickProcessor, entry_pressure_block_reason
+from .time_utils import date_str_ist
 
 
 class M15SupportResistanceStrategy(BaseStrategy):
@@ -41,6 +42,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
             return self._no("No tick")
         self.tick_proc.feed(tick)
         tick_snap = self.tick_proc.snapshot()
+        tick_pressure = data.get("tick_pressure") or {}
 
         m15 = data.get("m15_df")
         if m15 is None or len(m15) < 10:
@@ -70,6 +72,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
         filter_results = {
             "spread": {"passed": True, "reason": "OK", "current": round(float(tick.get("spread", 0.0) or 0.0), 4)},
             "manipulation": {"passed": True, "reason": "OK"},
+            "tick_pressure": {"passed": True, "reason": "OK"},
             "zone_quality": {"passed": True, "reason": "OK"},
         }
 
@@ -136,6 +139,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 filter_results=filter_results,
                 nearest_support=nearest_support,
                 nearest_resistance=nearest_resistance,
+                tick_pressure=tick_pressure,
             )
             if outcome.get("signal") == "BUY":
                 candidate_signals.append(outcome)
@@ -156,6 +160,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 filter_results=filter_results,
                 nearest_support=nearest_support,
                 nearest_resistance=nearest_resistance,
+                tick_pressure=tick_pressure,
             )
             if outcome.get("signal") == "SELL":
                 candidate_signals.append(outcome)
@@ -306,7 +311,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
         candle_time = self._coerce_dt(signal.get("_signal_candle_time"))
         if direction in ("BUY", "SELL") and candle_time is not None:
             self._last_trade_candle_by_direction[direction] = candle_time
-            day_key = candle_time.astimezone(timezone.utc).strftime("%Y-%m-%d")
+            day_key = date_str_ist(candle_time)
             self._daily_trade_counts[day_key] = self._daily_trade_counts.get(day_key, 0) + 1
 
     def _evaluate_directional_setup(
@@ -323,6 +328,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
         filter_results: Dict,
         nearest_support: Optional[Dict],
         nearest_resistance: Optional[Dict],
+        tick_pressure: Optional[Dict] = None,
     ) -> Dict:
         confirmation_candle = closed.iloc[-1]
         confirmation = self._candle_snapshot(confirmation_candle)
@@ -587,6 +593,31 @@ class M15SupportResistanceStrategy(BaseStrategy):
             )
 
         confidence = self._confidence_score(active_zone, confirmation_candle, plan)
+        tick_pressure = tick_pressure or {}
+        pressure_reason = entry_pressure_block_reason(
+            direction,
+            tick_pressure,
+            strong_threshold=float(getattr(cfg, "TICK_PRESSURE_ENTRY_BLOCK_THRESHOLD", 0.35) or 0.35),
+            short_positive_veto_threshold=float(getattr(cfg, "TICK_PRESSURE_SHORT_ENTRY_VETO_THRESHOLD", 0.05) or 0.05),
+        )
+        if pressure_reason:
+            filter_results["tick_pressure"] = {"passed": False, "reason": pressure_reason}
+            return self._skip(
+                reason=pressure_reason,
+                price=current_price,
+                atr_m15=atr_m15,
+                support_zones=[nearest_support] if nearest_support else [],
+                resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                active_zone=self._zone_payload(active_zone),
+                zone_touch_count=active_zone.get("touches"),
+                entry_direction=direction,
+                confirmation=confirmation,
+                filter_results=filter_results,
+                now_utc=now_utc,
+                block_category="tick_pressure",
+                lookback_used=active_zone.get("lookback_hours"),
+                terminal=True,
+            )
         signal = {
             "signal": direction,
             "entry": plan["entry"],
@@ -606,12 +637,27 @@ class M15SupportResistanceStrategy(BaseStrategy):
             "_setup_direction": "LONG" if direction == "BUY" else "SHORT",
             "_quality_score": confidence,
             "_threshold": 0.55,
+            "_signal_family": "M15",
+            "_sweep_confirmed": bool(plan.get("_sweep_reclaim")),
+            "_candle_confirmation": True,
+            "_exit_profile": "swing_structured",
             "_entry_spread": float(tick.get("spread", 0.0) or 0.0),
+            "_entry_tick_pressure_score": float(tick_pressure.get("pressure_score", 0.0) or 0.0),
+            "_entry_tick_pressure_bias": str(tick_pressure.get("directional_bias", "NEUTRAL") or "NEUTRAL"),
             "_be_trigger": 0.30,
+            "_be_trigger_r": cfg.EXIT_PROFILE_M15_BE_TRIGGER_R,
             "_timeout": 300,
+            "_timeout_min_progress_r": cfg.EXIT_PROFILE_M15_TIMEOUT_MIN_PROGRESS_R,
+            "_min_hold_seconds": cfg.EXIT_PROFILE_M15_MIN_HOLD_SECONDS,
             "_early_fail": max(0.15, round(atr_m15 * 0.20, 3)),
             "_tier1_min_ticks": cfg.SMC_TIER1_MIN_TICKS,
             "_tier1_max_ticks": cfg.SMC_TIER1_MAX_TICKS,
+            "_reversal_arm_r": cfg.EXIT_PROFILE_M15_REVERSAL_ARM_R,
+            "_reversal_drawdown_pct": cfg.EXIT_PROFILE_M15_REVERSAL_DRAWDOWN_PCT,
+            "_reversal_floor_r": cfg.EXIT_PROFILE_M15_REVERSAL_FLOOR_R,
+            "_trail_activate_r": cfg.EXIT_PROFILE_M15_TRAIL_ACTIVATE_R,
+            "_trail_lock_r": cfg.EXIT_PROFILE_M15_TRAIL_LOCK_R,
+            "_velocity_drop_enabled": cfg.EXIT_PROFILE_M15_VELOCITY_DROP_ENABLED,
         }
         signal.update(plan)
         return signal
@@ -680,7 +726,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
             source_ranges = [float(window.iloc[idx]["high"] - window.iloc[idx]["low"]) for idx in unique_indices]
             single_extreme = len(unique_indices) <= 1
             spike_based = max(source_ranges or [0.0]) > atr_m15 * float(cfg.M15_SR_SPIKE_RANGE_ATR_MULT)
-            random_cross = self._has_random_closes(recent_closes, zone_low, zone_high)
+            random_cross = self._has_random_closes(recent_closes, zone_low, zone_high, zone_type)
             invalidated = (
                 any(float(c) < (zone_low - clear_break) for c in recent_closes[-3:])
                 if zone_type == "support"
@@ -824,7 +870,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
             return "Zone quality failed: fewer than minimum touches"
         if zone.get("single_extreme"):
             return "Zone quality failed: formed by a single extreme wick"
-        if zone.get("spike_based"):
+        if zone.get("spike_based") and not bool(getattr(cfg, "M15_SR_SPIKE_ZONE_BYPASS", False)):
             return "Zone quality failed: spike-dominated zone"
         if zone.get("random_cross"):
             return "Zone quality failed: recent closes are crossing both sides of the zone"
@@ -921,10 +967,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
     def _is_choppy_market(self, closed: pd.DataFrame, support_zone: Optional[Dict], resistance_zone: Optional[Dict]) -> bool:
         if not support_zone or not resistance_zone:
             return False
-        recent = closed.tail(3)
-        touched_support = any(self._candle_touches_zone(row, support_zone) for _, row in recent.iterrows())
-        touched_resistance = any(self._candle_touches_zone(row, resistance_zone) for _, row in recent.iterrows())
-        return touched_support and touched_resistance
+        recent = closed.tail(3).reset_index(drop=True)
+        support_touch_indices = {idx for idx, row in recent.iterrows() if self._candle_touches_zone(row, support_zone)}
+        resistance_touch_indices = {idx for idx, row in recent.iterrows() if self._candle_touches_zone(row, resistance_zone)}
+        # Only choppy if touches occur on different candles (not a single wide-range candle spanning both zones)
+        return bool(support_touch_indices and resistance_touch_indices and support_touch_indices != resistance_touch_indices)
 
     def _strong_momentum_against_trade(self, closed: pd.DataFrame, direction: str) -> bool:
         if len(closed) < 2:
@@ -944,7 +991,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
         return None
 
     def _daily_trade_count(self, now_utc: datetime) -> int:
-        day_key = now_utc.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        day_key = date_str_ist(now_utc)
         return int(self._daily_trade_counts.get(day_key, 0))
 
     def _has_open_direction_position(self, positions: List[Dict], direction: str) -> bool:
@@ -1087,10 +1134,20 @@ class M15SupportResistanceStrategy(BaseStrategy):
         return self._zone_distance(price, float(zone["zone_low"]), float(zone["zone_high"])) <= float(zone.get("max_distance_abs", 0.0) or 0.0)
 
     @staticmethod
-    def _has_random_closes(closes: List[float], zone_low: float, zone_high: float) -> bool:
-        above = any(float(close) > zone_high for close in closes)
-        below = any(float(close) < zone_low for close in closes)
-        return above and below
+    def _has_random_closes(closes: List[float], zone_low: float, zone_high: float, zone_type: str = "") -> bool:
+        # Only inspect the 3 most recent closes to avoid flagging historically-straddled zones
+        recent = closes[-3:]
+        above = any(float(c) > zone_high for c in recent)
+        below = any(float(c) < zone_low for c in recent)
+        if not (above and below):
+            return False
+        # If the last close is cleanly on the expected side, the zone still has directional bias
+        last = float(recent[-1])
+        if zone_type == "support" and last > zone_high:
+            return False
+        if zone_type == "resistance" and last < zone_low:
+            return False
+        return True
 
     @staticmethod
     def _nearest_zone(zones: List[Dict], current_price: float) -> Optional[Dict]:

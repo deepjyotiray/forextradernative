@@ -1,4 +1,4 @@
-"""
+﻿"""
 Master Control System - Coordinates all measurement, validation, and risk protection.
 
 Integrates:
@@ -14,14 +14,15 @@ Integrates:
 import time
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
-from .session_filter import get_session, is_market_open
+import config as cfg
+from .session_filter import get_session_state, get_session_state_at
 from .trade_attribution import log_trade_decision, log_trade_outcome
 from .session_risk_control import check_trade_allowed, record_trade_outcome
 from .trade_pacing import check_pacing_allowed
 from .over_filtering_detection import get_active_relaxations
 from .parameter_calibration import get_current_parameters
 from .trade_quality_feedback import check_analysis_needed, perform_quality_analysis
-from .xgb_model import apply_xgb_filter
+from .xgb_model import apply_xgb_filter, xgb_bypass_enabled
 
 
 class MasterControlSystem:
@@ -39,9 +40,11 @@ class MasterControlSystem:
             "system_status": {}
         }
         
-        # 1. Session Risk Control Check
+        # 1. Legacy session/pacing checks.
+        # When centralized gating is enabled, these surfaces remain visible for
+        # analytics/debugging but they no longer hard-block the execution path.
         risk_check = check_trade_allowed()
-        if not risk_check["allowed"]:
+        if not risk_check["allowed"] and not cfg.SESSION_CENTRALIZED:
             validation_result["allowed"] = False
             validation_result["blocks"].append({
                 "type": "risk_control",
@@ -52,7 +55,7 @@ class MasterControlSystem:
         
         # 2. Trade Pacing Check
         pacing_check = check_pacing_allowed()
-        if not pacing_check["allowed"]:
+        if not pacing_check["allowed"] and not cfg.SESSION_CENTRALIZED:
             validation_result["allowed"] = False
             validation_result["blocks"].append({
                 "type": "trade_pacing",
@@ -70,7 +73,7 @@ class MasterControlSystem:
         validation_result["system_status"]["filter_relaxations"] = active_relaxations
         
         # 5. XGBoost Filter (if signal is still allowed)
-        if validation_result["allowed"] and signal.get("signal") in ("BUY", "SELL"):
+        if validation_result["allowed"] and signal.get("signal") in ("BUY", "SELL") and not xgb_bypass_enabled():
             indicators = market_data.get("indicators") or {}
             regime = market_data.get("regime") or {}
             bias = market_data.get("bias") or {}
@@ -102,11 +105,14 @@ class MasterControlSystem:
         """Log comprehensive trade decision with all context."""
         validation_result = validation_result or {}
         
+        master_gate = (validation_result or {}).get("master_gate") or {}
+        ai_review = (validation_result or {}).get("ai_trade_review") or {}
+
         # Extract data for attribution
         setup_direction = signal.get("_setup_direction")
         bias_direction = signal.get("_bias_direction")
-        quality_score = signal.get("_quality_score", signal.get("confidence", 0))
-        threshold_used = signal.get("_threshold", 0.65)
+        quality_score = signal.get("_quality_score", master_gate.get("score", signal.get("confidence", 0)))
+        threshold_used = master_gate.get("required_score", signal.get("_threshold", 0.65))
         
         # Market data
         tick_data = market_data.get("tick") or {}
@@ -130,13 +136,52 @@ class MasterControlSystem:
         ltf_conflict_flag = signal.get("_ltf_conflict", False)
         
         # Session
-        session = self._get_current_session()
+        session = self._resolve_session_label(market_data, master_gate)
         
         # Price
         price = signal.get("entry", (market_data.get("tick") or {}).get("bid", 0))
         
         # Additional data
         additional_data = {
+            "symbol": cfg.SYMBOL,
+            "direction": signal.get("signal"),
+            "spread_at_signal": signal.get("_entry_spread"),
+            "spread_before_order_send": tick_data.get("spread", tick_data.get("spread_mean", 0)),
+            "ema_direction": (market_data.get("bias") or {}).get("direction"),
+            "ema_aligned": signal.get("_ema_aligned"),
+            "session_state": master_gate.get("session_state", {}),
+            "m15_zone_status": (master_gate.get("m15_context") or {}).get("reason"),
+            "distance_from_zone_atr": (master_gate.get("m15_context") or {}).get("distance_atr"),
+            "sweep_status": bool(signal.get("_sweep_confirmed")),
+            "candle_confirmation": bool(signal.get("_candle_confirmation")) or bool((master_gate.get("m15_context") or {}).get("candle_confirmation")),
+            "trade_score": master_gate.get("score", quality_score),
+            "required_trade_score": master_gate.get("required_score"),
+            "premium_setup": (master_gate.get("score", 0) or 0) >= getattr(cfg, "TRADE_SCORE_PREMIUM", 85),
+            "rr": signal.get("rr"),
+            "xgb_probability": signal.get("xgb_prob", signal.get("_xgb_prob")),
+            "xgb_trained": signal.get("_xgb_trained", False),
+            "xgb_blocking_enabled": bool(getattr(cfg, "XGB_BLOCKING_ENABLED", False)) and not bool(getattr(cfg, "XGB_BYPASS_ENABLED", False)),
+            "xgb_blending_enabled": bool(getattr(cfg, "XGB_BLEND_CONFIDENCE_ENABLED", False)) and not bool(getattr(cfg, "XGB_BYPASS_ENABLED", False)),
+            "ai_review_status": ai_review.get("status"),
+            "ai_review_used": bool(ai_review.get("used", False)),
+            "ai_review_decision": ai_review.get("decision"),
+            "ai_review_confidence": ai_review.get("confidence"),
+            "ai_review_reason": ai_review.get("reason"),
+            "ai_review_trigger": ai_review.get("review_trigger"),
+            "ai_review_model": ai_review.get("model"),
+            "signal_confidence": signal.get("confidence"),
+            "final_decision": decision,
+            "block_reason": reason if decision != "TRADE_TAKEN" else "",
+            "gate_context": {
+                "passed_gates": list(master_gate.get("passed_gates", [])),
+                "failed_gates": list(master_gate.get("failed_gates", [])),
+                "confirmations": dict(master_gate.get("confirmations", {})),
+                "confirmation_count": master_gate.get("confirmation_count"),
+                "auto_relax": master_gate.get("auto_relax"),
+                "counter_trend": master_gate.get("counter_trend"),
+                "required_rr": master_gate.get("required_rr"),
+                "entry_delay_ms": master_gate.get("entry_delay_ms"),
+            },
             "strategy_specific": {
                 "sl": signal.get("sl"),
                 "tp": signal.get("tp"),
@@ -267,7 +312,19 @@ class MasterControlSystem:
     
     def _get_current_session(self) -> str:
         """Get current trading session."""
-        return get_session() if is_market_open() else "CLOSED"
+        state = get_session_state()
+        return str(state.get("label") or state.get("session") or "CLOSED")
+
+    def _resolve_session_label(self, market_data: Dict, master_gate: Dict) -> str:
+        session_state = master_gate.get("session_state") or {}
+        label = session_state.get("label") or session_state.get("session")
+        if label:
+            return str(label)
+        now_utc = market_data.get("now_utc")
+        if isinstance(now_utc, datetime):
+            state = get_session_state_at(now_utc)
+            return str(state.get("label") or state.get("session") or "CLOSED")
+        return self._get_current_session()
 
 
 # Singleton instance

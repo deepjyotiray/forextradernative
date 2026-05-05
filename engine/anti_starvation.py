@@ -14,6 +14,7 @@ import json
 import os
 from .session_filter import get_session, is_market_open
 from .backtest_context import get_backtest_now, is_backtest_mode
+from .time_utils import date_str_ist, now_ts
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STATE_FILE = os.path.join(_BASE_DIR, "anti_starvation_state.json")
@@ -31,7 +32,7 @@ class AntiStarvationManager:
     def update_session(self):
         """Update current session and date."""
         now = _now_utc()
-        date = now.strftime("%Y-%m-%d")
+        date = date_str_ist(now)
         session = get_session() if is_market_open() else "CLOSED"
         
         session_key = f"{date}_{session}"
@@ -146,7 +147,7 @@ class AntiStarvationManager:
                 "current_date": self._current_date,
                 "relaxation_active": self._relaxation_active,
                 "relaxation_type": self._relaxation_type,
-                "last_update": time.time()
+                "last_update": now_ts()
             }
             with open(_STATE_FILE, "w") as f:
                 json.dump(state, f, indent=2)
@@ -169,8 +170,8 @@ class AntiStarvationManager:
                 self._relaxation_type = state.get("relaxation_type", None)
                 
                 # Clean old sessions (keep last 30 days)
-                cutoff_time = time.time() - (30 * 24 * 3600)
-                cutoff_date = datetime.fromtimestamp(cutoff_time, timezone.utc).strftime("%Y-%m-%d")
+                cutoff_time = now_ts() - (30 * 24 * 3600)
+                cutoff_date = date_str_ist(datetime.fromtimestamp(cutoff_time, timezone.utc))
                 
                 self._session_trades = {
                     k: v for k, v in self._session_trades.items() 

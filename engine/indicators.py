@@ -16,6 +16,64 @@ def ema(series: np.ndarray, period: int) -> np.ndarray:
     return out
 
 
+def wilder_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
+    """ATR using Wilder's RMA smoothing (alpha=1/period) — matches TradingView/MT5 display."""
+    n = len(highs)
+    tr = np.empty(n)
+    tr[0] = highs[0] - lows[0]
+    for i in range(1, n):
+        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+    # Wilder's smoothing: seed with simple average of first `period` TRs
+    out = np.empty(n)
+    out[0] = tr[0]
+    if n >= period:
+        out[period - 1] = float(np.mean(tr[:period]))
+        alpha = 1.0 / period
+        for i in range(period, n):
+            out[i] = tr[i] * alpha + out[i - 1] * (1 - alpha)
+        # fill warm-up slots with simple expanding mean so array length matches
+        for i in range(1, period - 1):
+            out[i] = float(np.mean(tr[:i + 1]))
+    else:
+        for i in range(1, n):
+            out[i] = float(np.mean(tr[:i + 1]))
+    return out
+
+
+def supertrend(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+               period: int = 10, multiplier: float = 3.0):
+    """
+    Supertrend indicator — matches TradingView implementation.
+    Uses Wilder ATR. Returns (direction, line) arrays.
+    direction: +1 = uptrend, -1 = downtrend.
+    line: the actual supertrend value to use as trailing SL.
+    """
+    n = len(closes)
+    atr_vals = wilder_atr(highs, lows, closes, period)
+    hl2 = (highs + lows) / 2.0
+
+    basic_upper = hl2 + multiplier * atr_vals
+    basic_lower = hl2 - multiplier * atr_vals
+
+    upper = np.copy(basic_upper)
+    lower = np.copy(basic_lower)
+    direction = np.ones(n, dtype=int)
+    line = np.copy(basic_lower)
+
+    for i in range(1, n):
+        upper[i] = basic_upper[i] if basic_upper[i] < upper[i-1] or closes[i-1] > upper[i-1] else upper[i-1]
+        lower[i] = basic_lower[i] if basic_lower[i] > lower[i-1] or closes[i-1] < lower[i-1] else lower[i-1]
+        if direction[i-1] == -1 and closes[i] > upper[i-1]:
+            direction[i] = 1
+        elif direction[i-1] == 1 and closes[i] < lower[i-1]:
+            direction[i] = -1
+        else:
+            direction[i] = direction[i-1]
+        line[i] = lower[i] if direction[i] == 1 else upper[i]
+
+    return direction, line
+
+
 def atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
     n = len(highs)
     tr = np.empty(n)

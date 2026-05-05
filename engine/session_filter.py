@@ -1,4 +1,4 @@
-"""
+﻿"""
 Session filter — session-aware trading control.
 """
 from datetime import datetime, timezone
@@ -21,6 +21,77 @@ def get_session_at(now: datetime) -> str:
     if h < 22:
         return "NEW_YORK"
     return "ASIAN"
+
+
+def get_session_state(now: datetime | None = None) -> dict:
+    return get_session_state_at(now or _now_utc())
+
+
+def get_session_state_at(now: datetime) -> dict:
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
+    rollover = _is_rollover_hour(now)
+    market_open = is_market_open_at(now)
+    session = get_session_at(now) if market_open else "CLOSED"
+    phase = "OVERLAP" if cfg.TRADE_WINDOW_OVERLAP_START <= now.hour < cfg.TRADE_WINDOW_OVERLAP_END else session
+
+    allowed = market_open
+    premium_only = False
+    reason = f"SESSION_PASS: {phase}"
+
+    if rollover:
+        allowed = bool(getattr(cfg, "TRADE_ROLLOVER", False))
+        reason = "SESSION_PASS: ROLLOVER" if allowed else "SESSION_BLOCK: ROLLOVER"
+        return {
+            "session": "ROLLOVER",
+            "phase": "ROLLOVER",
+            "market_open": False,
+            "rollover": True,
+            "allowed": allowed,
+            "premium_only": False,
+            "reason": reason,
+            "label": "ROLLOVER",
+        }
+
+    if not market_open:
+        allowed = bool(getattr(cfg, "TRADE_CLOSED_SESSION", False))
+        reason = "SESSION_PASS: CLOSED" if allowed else "SESSION_BLOCK: CLOSED"
+        return {
+            "session": "CLOSED",
+            "phase": "CLOSED",
+            "market_open": False,
+            "rollover": False,
+            "allowed": allowed,
+            "premium_only": False,
+            "reason": reason,
+            "label": "CLOSED",
+        }
+
+    if session == "ASIAN":
+        if bool(getattr(cfg, "PREMIUM_ONLY_ASIA", True)):
+            allowed = True
+            premium_only = True
+            reason = "SESSION_PREMIUM_ONLY: ASIA"
+        else:
+            allowed = bool(getattr(cfg, "TRADE_ASIA_SESSION", False))
+            reason = "SESSION_PASS: ASIA" if allowed else "SESSION_BLOCK: ASIA"
+    else:
+        allowed = True
+        reason = f"SESSION_PASS: {phase}"
+
+    return {
+        "session": session,
+        "phase": phase,
+        "market_open": market_open,
+        "rollover": False,
+        "allowed": allowed,
+        "premium_only": premium_only,
+        "reason": reason,
+        "label": phase,
+    }
 
 
 def is_session_open_blocked() -> tuple:
@@ -50,6 +121,11 @@ def is_market_open_at(now: datetime) -> bool:
     if h == 21:
         return False
     return True
+
+
+def _is_rollover_hour(now: datetime) -> bool:
+    wd, h = now.weekday(), now.hour
+    return wd not in (5,) and h == 21
 
 
 def _now_utc() -> datetime:

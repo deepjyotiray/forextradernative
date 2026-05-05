@@ -95,6 +95,12 @@ async def get_order_summary():
     }
 
 
+@router.get("/review", response_model=Dict)
+async def get_trade_outcome_review(days: int = Query(30, ge=1, le=365)):
+    """Get segmented trade outcome review for tuning entries and exits."""
+    return order_db.get_trade_outcome_review(days)
+
+
 @router.get("/validate/{ticket}", response_model=Dict)
 async def validate_order_pnl(ticket: int):
     """Validate PnL accuracy for specific order."""

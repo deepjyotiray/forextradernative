@@ -7,3 +7,5 @@ uvicorn>=0.46.0
 fastapi>=0.136.0
 xgboost>=3.2.0
 websockets
+requests>=2.32.0
+openai>=1.0.0

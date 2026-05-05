@@ -20,6 +20,7 @@ import config as cfg
 from .session_filter import get_session, is_market_open
 from .trade_attribution import get_recent_attributions
 from .backtest_context import get_backtest_now, is_backtest_mode
+from .time_utils import date_str_ist, isoformat_ist
 
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -65,7 +66,7 @@ class SessionRiskController:
         """Update current session and reset counters if needed."""
         self._sync_configured_limits()
         now = _now_utc()
-        date = now.strftime("%Y-%m-%d")
+        date = date_str_ist(now)
         session = get_session() if is_market_open() else "CLOSED"
         
         # Reset session trades if new session
@@ -121,7 +122,7 @@ class SessionRiskController:
             }
         
         # Check session trades
-        if self._session_trades >= self._max_trades_per_session:
+        if self._max_trades_per_session > 0 and self._session_trades >= self._max_trades_per_session:
             self._risk_blocks["session_trades"] = True
             return {
                 "allowed": False,
@@ -184,7 +185,7 @@ class SessionRiskController:
             "account_balance": self._account_balance,
             "risk_blocks": self._risk_blocks.copy(),
             "last_trade_outcome": self._last_trade_outcome,
-            "trades_remaining_session": max(0, self._max_trades_per_session - self._session_trades),
+            "trades_remaining_session": None if self._max_trades_per_session <= 0 else max(0, self._max_trades_per_session - self._session_trades),
         }
     
     def get_risk_limits(self) -> Dict:
@@ -212,7 +213,8 @@ class SessionRiskController:
         
         if "max_trades_per_session" in kwargs:
             old_val = self._max_trades_per_session
-            self._max_trades_per_session = max(1, min(10, kwargs["max_trades_per_session"]))
+            requested = int(kwargs["max_trades_per_session"])
+            self._max_trades_per_session = 0 if requested <= 0 else max(1, min(10, requested))
             updated.append(f"max_trades_per_session: {old_val} -> {self._max_trades_per_session}")
         
         if updated:
@@ -296,7 +298,7 @@ class SessionRiskController:
         """Log a risk management event."""
         event = {
             "timestamp": _now_ts(),
-            "datetime": _now_utc().isoformat(),
+            "datetime": isoformat_ist(_now_utc()),
             "type": event_type,
             "description": description,
             "session": self._current_session,

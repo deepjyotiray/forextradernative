@@ -222,14 +222,21 @@ class BacktestJobManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._jobs: Dict[str, BacktestJob] = {}
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="BacktestJob")
+        _job_slots = max(2, (os.cpu_count() or 2) // 2)
+        self._executor = ThreadPoolExecutor(max_workers=_job_slots, thread_name_prefix="BacktestJob")
         os.makedirs(_BACKTEST_DIR, exist_ok=True)
         self._load_state()
 
     def create_job(self, req: BacktestRequest) -> BacktestJob:
         if req.symbol not in cfg.AVAILABLE_SYMBOLS:
             raise ValueError(f"Unsupported symbol: {req.symbol}")
-        if req.strategy not in ("AUTO", "SMC_CONFLUENCE", "SWEEP_SCALPER"):
+        if req.strategy not in (
+            "AUTO",
+            "SMC_CONFLUENCE",
+            "M15_SUPPORT_RESISTANCE_REJECTION_V1",
+            "SWEEP_SCALPER",
+            "TREND_CHANNEL",
+        ):
             raise ValueError(f"Unsupported strategy: {req.strategy}")
         if req.split_mode not in _ALLOWED_SPLITS:
             raise ValueError(f"Unsupported split_mode: {req.split_mode}")

@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from .ai_analysis import ai_analysis_service
 from .visual_analytics import generate_visual_suite
 
 
@@ -144,6 +145,11 @@ def _build_analytics_page(result: dict, days: int) -> str:
       grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
       gap: 16px;
     }}
+    .stack {{
+      display: grid;
+      gap: 16px;
+      margin-bottom: 16px;
+    }}
     .card {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -166,6 +172,27 @@ def _build_analytics_page(result: dict, days: int) -> str:
       margin: 0;
       color: var(--muted);
       font-size: 13px;
+    }}
+    .mini-actions {{
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }}
+    .ai-status {{
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 10px;
+    }}
+    .ai-summary {{
+      white-space: pre-wrap;
+      margin: 0;
+      padding: 14px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(15,107,168,.06), rgba(255,255,255,.7));
+      font: 500 14px/1.55 "Segoe UI", system-ui, sans-serif;
+      min-height: 132px;
     }}
     img {{
       display: block;
@@ -192,6 +219,7 @@ def _build_analytics_page(result: dict, days: int) -> str:
       <div class="actions">
         <a class="btn primary" href="/analytics?days={days}&refresh=1">Refresh Charts</a>
         <a class="btn" href="/analytics/api/generate?days={days}">JSON Summary</a>
+        <a class="btn" href="/analytics/api/ai-summary?days={days}">AI Summary JSON</a>
       </div>
     </section>
     <section class="meta">
@@ -200,10 +228,55 @@ def _build_analytics_page(result: dict, days: int) -> str:
       <div class="stat"><div class="k">Decisions</div><div class="v">{result.get('decision_count', 0)}</div></div>
       <div class="stat"><div class="k">Generated</div><div class="v" style="font-size:16px">{generated_at or 'n/a'}</div></div>
     </section>
+    <section class="stack">
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>AI Quick Analysis</h2>
+            <p>Short commentary generated from the existing analytics and order-review data.</p>
+          </div>
+          <div class="mini-actions">
+            <button class="btn" type="button" onclick="loadAiSummary(1)">Refresh AI Analysis</button>
+            <a class="link" href="/analytics/api/ai-summary?days={days}" target="_blank" rel="noopener">Open JSON</a>
+          </div>
+        </div>
+        <div class="ai-status" id="aiSummaryStatus">Loading AI analysis...</div>
+        <pre class="ai-summary" id="aiSummaryText">Loading...</pre>
+      </section>
+    </section>
     <section class="grid">
       {''.join(chart_cards)}
     </section>
   </main>
+  <script>
+    async function loadAiSummary(refresh) {{
+      const statusEl = document.getElementById('aiSummaryStatus');
+      const textEl = document.getElementById('aiSummaryText');
+      statusEl.textContent = refresh ? 'Refreshing AI analysis...' : 'Loading AI analysis...';
+      textEl.textContent = 'Loading...';
+      try {{
+        const response = await fetch(`/analytics/api/ai-summary?days={days}&refresh=${{refresh ? 1 : 0}}`);
+        const payload = await response.json();
+        if (payload.status === 'ready') {{
+          const cached = payload.cached ? 'Cached' : 'Fresh';
+          statusEl.textContent = `${{cached}} summary using ${{payload.model}} at ${{payload.generated_at}}`;
+          textEl.textContent = payload.analysis || 'No summary returned.';
+          return;
+        }}
+        if (payload.status === 'disabled') {{
+          statusEl.textContent = 'AI analysis is disabled';
+          textEl.textContent = payload.message || 'Set OPENAI_API_KEY to enable AI analysis.';
+          return;
+        }}
+        statusEl.textContent = 'AI analysis unavailable';
+        textEl.textContent = payload.error || payload.message || 'AI analysis failed.';
+      }} catch (error) {{
+        statusEl.textContent = 'AI analysis unavailable';
+        textEl.textContent = String(error);
+      }}
+    }}
+    loadAiSummary(0);
+  </script>
 </body>
 </html>"""
 
@@ -237,3 +310,11 @@ async def analytics_generate(days: int = Query(30, ge=1, le=365)):
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return JSONResponse(result)
+
+
+@router.get("/analytics/api/ai-summary")
+async def analytics_ai_summary(
+    days: int = Query(30, ge=1, le=365),
+    refresh: int = Query(0, ge=0, le=1),
+):
+    return JSONResponse(ai_analysis_service.generate_summary(days=days, refresh=bool(refresh)))

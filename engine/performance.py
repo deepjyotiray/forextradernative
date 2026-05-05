@@ -4,8 +4,20 @@ Provides adaptive feedback for risk adjustment.
 """
 import json
 import os
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List
 from collections import deque
+from .time_utils import coerce_utc, isoformat_ist
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _trading_day_start_utc() -> datetime:
+    """Return midnight IST (00:00) of the current calendar day as UTC.
+    Streak resets at midnight IST, independent of the noon P&L reset."""
+    now_ist = datetime.now(_IST)
+    day_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_start.astimezone(timezone.utc)
 
 
 class PerformanceTracker:
@@ -18,12 +30,12 @@ class PerformanceTracker:
         self._load()
 
     def record(self, trade: Dict):
+        trade = self._normalize_trade_record(trade)
         ticket = trade.get("ticket")
         if ticket and ticket in self._ticket_set:
-            # Update existing record with richer data (MT5 sync may enrich)
             for i, t in enumerate(self.trades):
                 if t.get("ticket") == ticket:
-                    self.trades[i] = {**t, **trade}  # merge, new data wins
+                    self.trades[i] = {**t, **trade}
                     break
         else:
             self.trades.append(trade)
@@ -43,7 +55,7 @@ class PerformanceTracker:
                 "ticket": ticket,
                 "pnl": mt5t.get("pnl", 0),
                 "won": mt5t.get("won", False),
-                "time": mt5t.get("close_time", ""),
+                "time": self._normalize_time(mt5t.get("close_time", "")),
                 "direction": mt5t.get("direction", ""),
                 "volume": mt5t.get("volume", 0),
                 "entry_price": mt5t.get("entry_price", 0),
@@ -51,7 +63,6 @@ class PerformanceTracker:
                 "symbol": mt5t.get("symbol", ""),
                 "comment": mt5t.get("comment", ""),
             }
-            # Enrich with features from order DB if available
             if order_db and "features" not in record:
                 try:
                     db_order = order_db.get_order(ticket)
@@ -62,7 +73,6 @@ class PerformanceTracker:
             if ticket in self._ticket_set:
                 for i, t in enumerate(self.trades):
                     if t.get("ticket") == ticket:
-                        # Preserve existing features, update P&L from MT5
                         existing_features = t.get("features", {})
                         self.trades[i] = {**t, **record}
                         if existing_features and not self.trades[i].get("features"):
@@ -128,22 +138,33 @@ class PerformanceTracker:
         wr = rs.get("win_rate", 0.5)
         streak = rs.get("streak", 0)
         if wr < 0.3:
-            return 0.5  # halve risk
+            return 0.5
         if wr < 0.4:
             return 0.75
         if streak >= 3 and wr > 0.6:
-            return min(1.25, 1.0 + streak * 0.05)  # bounded increase
+            return min(1.25, 1.0 + streak * 0.05)
         return 1.0
 
     def _current_streak(self) -> int:
         """Positive = win streak, negative = loss streak.
-        Breakeven trades (pnl == 0.0) are ignored — they don't reset or extend
-        either streak direction.
+        Only counts trades from the current trading day (resets at 12:00 IST).
+        Breakeven trades (pnl == 0.0) are ignored.
         """
         if not self._recent:
             return 0
-        # Filter out exact breakeven (pnl == 0.0)
-        meaningful = [t for t in self._recent if t.get("pnl", 0) != 0.0]
+        day_start_utc = _trading_day_start_utc()
+
+        def in_today(t):
+            raw = t.get("time") or t.get("close_time", "")
+            if not raw:
+                return False
+            try:
+                dt = coerce_utc(raw)
+                return dt is not None and dt >= day_start_utc
+            except Exception:
+                return False
+
+        meaningful = [t for t in self._recent if t.get("pnl", 0) != 0.0 and in_today(t)]
         if not meaningful:
             return 0
         streak = 0
@@ -166,9 +187,20 @@ class PerformanceTracker:
         if os.path.isfile(self._path):
             try:
                 with open(self._path) as f:
-                    self.trades = json.load(f)
+                    self.trades = [self._normalize_trade_record(t) for t in json.load(f)]
                 self._ticket_set = {t.get("ticket") for t in self.trades if t.get("ticket")}
                 for t in self.trades[-50:]:
                     self._recent.append(t)
             except Exception:
                 pass
+
+    @staticmethod
+    def _normalize_time(value):
+        dt = coerce_utc(value)
+        return isoformat_ist(dt) if dt is not None else value
+
+    def _normalize_trade_record(self, trade: Dict) -> Dict:
+        normalized = dict(trade or {})
+        if normalized.get("time"):
+            normalized["time"] = self._normalize_time(normalized.get("time"))
+        return normalized

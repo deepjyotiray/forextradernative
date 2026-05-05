@@ -1,4 +1,4 @@
-"""
+﻿"""
 XGBoost Learning Pipeline — learns from trade history, predicts win probability.
 
 Features extracted from each trade:
@@ -19,6 +19,7 @@ import json
 import numpy as np
 from typing import Dict, List, Optional
 import xgboost as xgb
+import config as cfg
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MODEL_PATH = os.path.join(_BASE_DIR, "xgb_model.json")
@@ -31,6 +32,27 @@ _FEATURES = [
     "atr", "atr_ratio", "rsi", "ema_slope", "body_ratio", "spread",
     "regime", "bias_conf", "sl_distance", "volume",
 ]
+
+
+def xgb_bypass_enabled() -> bool:
+    """Return True when XGBoost must not influence live decisions."""
+    return bool(getattr(cfg, "XGB_BYPASS_ENABLED", False))
+
+
+def xgb_training_enabled() -> bool:
+    return not xgb_bypass_enabled() and bool(getattr(cfg, "XGB_TRAINING_ENABLED", True))
+
+
+def xgb_blocking_enabled() -> bool:
+    return not xgb_bypass_enabled() and bool(getattr(cfg, "XGB_BLOCKING_ENABLED", False))
+
+
+def xgb_blending_enabled() -> bool:
+    return not xgb_bypass_enabled() and bool(getattr(cfg, "XGB_BLEND_CONFIDENCE_ENABLED", False))
+
+
+def xgb_logging_enabled() -> bool:
+    return not xgb_bypass_enabled() and bool(getattr(cfg, "XGB_LOG_CONFIDENCE_ENABLED", True))
 
 
 def _encode_session(s: str) -> int:
@@ -234,23 +256,31 @@ def apply_xgb_filter(signal: Dict, indicators: Dict, regime: Dict, bias: Dict, t
     """Apply XGBoost as a filter only. Returns modified signal or blocks it."""
     if signal.get("signal") not in ("BUY", "SELL"):
         return signal
-    
+    if xgb_bypass_enabled():
+        signal["_xgb_bypassed"] = True
+        return signal
+
+    signal["_xgb_trained"] = bool(xgb_model.is_trained)
+    threshold = float(getattr(cfg, "XGB_BLOCK_THRESHOLD", 0.35) or 0.35)
+    signal["_xgb_threshold"] = threshold
+
+    if not xgb_model.is_trained:
+        signal["_xgb_prob"] = None
+        return signal
+
     win_prob = xgb_model.predict_win_prob(signal, indicators, regime, bias, tick)
-    
-    # Use XGBoost only as a filter with threshold
-    threshold = 0.55  # Only trade if win probability > 55%
-    
-    if win_prob < threshold:
+    if xgb_logging_enabled() or xgb_blending_enabled() or xgb_blocking_enabled():
+        signal["_xgb_prob"] = win_prob
+        signal["xgb_prob"] = win_prob
+
+    if xgb_blocking_enabled() and win_prob < threshold:
         return {
             "signal": "NO_TRADE",
             "reason": f"XGBoost filter: win probability {win_prob:.0%} < {threshold:.0%}",
             "xgb_prob": win_prob,
             "xgb_threshold": threshold
         }
-    
-    # Add XGB info to signal but don't modify confidence
-    signal["_xgb_prob"] = win_prob
-    signal["_xgb_threshold"] = threshold
+
     return signal
 
 # Singleton

@@ -14,12 +14,22 @@ from .regime import classify_regime
 from .mtf_bias import compute_bias
 from .liquidity import compute_liquidity
 from .indicators import ema, atr, rsi, compute_indicators
-from .tick_processor import TickProcessor
+from .tick_processor import TickProcessor, entry_pressure_block_reason
 from .session_filter import get_session
 from .decision_logger import log_smc_decision
 from .anti_starvation import anti_starvation
 from .signal_quality import quality_score
 import config as cfg
+
+
+def _relative_volume_ratio(df: pd.DataFrame, lookback: int = 8) -> float:
+    if df is None or "volume" not in df or len(df) < max(3, lookback + 1):
+        return 0.0
+    recent = df["volume"].tail(lookback + 1).astype(float)
+    baseline = float(recent.iloc[:-1].mean() or 0.0)
+    if baseline <= 0:
+        return 0.0
+    return round(float(recent.iloc[-1] or 0.0) / baseline, 3)
 
 class SMCStrategy(BaseStrategy):
     name = "SMC_CONFLUENCE"
@@ -42,6 +52,7 @@ class SMCStrategy(BaseStrategy):
         h4 = data.get("h4_df")
         zones = data.get("zones", {})
         ind = data.get("indicators", {})
+        tick_pressure = data.get("tick_pressure") or {}
 
         price = tick["bid"]
         spread = tick.get("spread", 0)
@@ -80,6 +91,10 @@ class SMCStrategy(BaseStrategy):
 
         if m1 is None or len(m1) < 50 or m5 is None or len(m5) < 50:
             return skip("Insufficient M1/M5 data")
+        volume_ratio = _relative_volume_ratio(m1)
+        _vol_min = float(getattr(cfg, "SMC_MIN_ENTRY_VOLUME_RATIO", 0.0))
+        if _vol_min > 0 and volume_ratio > 0 and volume_ratio < _vol_min:
+            return skip(f"Volume ratio {volume_ratio:.2f} < {_vol_min:.2f}")
 
         # === 1. Session filter (tightened windows) ===
         from datetime import datetime, timezone
@@ -117,6 +132,16 @@ class SMCStrategy(BaseStrategy):
             return skip("No setup detected", compression_ok=True)
 
         direction = setup["direction"]
+        pressure_score = float(tick_pressure.get("pressure_score", 0.0) or 0.0)
+        pressure_bias = str(tick_pressure.get("directional_bias", "NEUTRAL") or "NEUTRAL")
+        pressure_reason = entry_pressure_block_reason(
+            direction,
+            tick_pressure,
+            strong_threshold=float(getattr(cfg, "TICK_PRESSURE_ENTRY_BLOCK_THRESHOLD", 0.35) or 0.35),
+            short_positive_veto_threshold=float(getattr(cfg, "TICK_PRESSURE_SHORT_ENTRY_VETO_THRESHOLD", 0.05) or 0.05),
+        )
+        if pressure_reason:
+            return skip(pressure_reason, setup_direction=direction, compression_ok=True, setup_features=setup)
 
         # === 6. Compute bias + regime separately ===
         bias = compute_bias(h4, h1, m15)
@@ -140,6 +165,27 @@ class SMCStrategy(BaseStrategy):
                                "quality": 0, "threshold": threshold, "counter": True,
                                "pullback": False}
                 )
+            # Also require M15 structure to have turned — at least one HL (LONG) or LH (SHORT)
+            if m15 is not None and len(m15) >= 20:
+                if not self._m15_structure_turned(m15, direction):
+                    if self._should_soften_counter_trend_structure_guard(setup):
+                        setup["_m15_structure_turned"] = False
+                        setup["_m15_structure_penalty"] = 0.10
+                        setup["_m15_structure_softened"] = True
+                    else:
+                        return skip(
+                            f"Counter-trend {direction}: M15 structure not yet turned",
+                            setup_direction=direction,
+                            bias_direction=bias["direction"],
+                            threshold=threshold,
+                            compression_ok=True,
+                            setup_features=setup,
+                            log_extra={"setup_dir": direction, "bias_dir": bias["direction"],
+                                       "quality": 0, "threshold": threshold, "counter": True,
+                                       "m15_structure": False}
+                        )
+                else:
+                    setup["_m15_structure_turned"] = True
 
         # === 8. LTF conflict blocker ===
         ltf_conflict = self._check_ltf_conflict(direction, bias, m1, m5, tick_snap)
@@ -204,6 +250,11 @@ class SMCStrategy(BaseStrategy):
 
         tp_dist = abs(tp - price)
         rr = tp_dist / sl_dist if sl_dist > 0 else 0
+
+        # Counter-trend: cap TP at nearest opposing zone to avoid running into the trend
+        if counter_trend:
+            tp, tp_dist = self._cap_counter_trend_tp(price, signal, tp, zones)
+            rr = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
         if rr < cfg.SMC_MIN_RR:
             return skip(f"RR {rr:.1f} < {cfg.SMC_MIN_RR}", setup_direction=direction,
                         bias_direction=bias["direction"], quality_score_value=score,
@@ -221,6 +272,8 @@ class SMCStrategy(BaseStrategy):
 
         # === 12. Log decision context ===
         reasons.append(f"[Q:{score:.0%} T:{threshold:.0%} {'CTR' if counter_trend else 'WTR'}]")
+        reasons.append(f"[Vol:x{volume_ratio:.2f}]")
+        reasons.append(f"[Press:{pressure_score:+.2f}]")
 
         signal_result = {
             "signal": signal,
@@ -240,14 +293,33 @@ class SMCStrategy(BaseStrategy):
             "_quality_score": score,
             "_threshold": threshold,
             "_ltf_conflict": False,
+            "_signal_family": "SMC",
+            "_sweep_confirmed": bool(setup.get("has_sweep")),
+            "_candle_confirmation": bool(setup.get("has_rejection") or setup.get("has_reversal_seq")),
+            "_exit_profile": "swing_fast",
             "_be_trigger": 0.30,
+            "_be_trigger_r": cfg.EXIT_PROFILE_SMC_BE_TRIGGER_R,
+            "_breakeven_min_hold_seconds": cfg.EXIT_PROFILE_SMC_BREAKEVEN_MIN_HOLD_SECONDS,
+            "_breakeven_volume_hold_ratio": cfg.EXIT_PROFILE_SMC_BREAKEVEN_VOLUME_HOLD_RATIO,
             "_timeout": 60,
+            "_timeout_min_progress_r": cfg.EXIT_PROFILE_SMC_TIMEOUT_MIN_PROGRESS_R,
+            "_min_hold_seconds": cfg.EXIT_PROFILE_SMC_MIN_HOLD_SECONDS,
             "_early_fail": self._resolve_early_fail(regime, score),
             "_high_conf": score >= cfg.SMC_HIGH_CONF_THRESHOLD,
             "_tier1_min_ticks": cfg.SMC_TIER1_MIN_TICKS,
             "_tier1_max_ticks": cfg.SMC_TIER1_MAX_TICKS,
+            "_reversal_arm_r": cfg.EXIT_PROFILE_SMC_REVERSAL_ARM_R,
+            "_reversal_drawdown_pct": cfg.EXIT_PROFILE_SMC_REVERSAL_DRAWDOWN_PCT,
+            "_reversal_floor_r": cfg.EXIT_PROFILE_SMC_REVERSAL_FLOOR_R,
+            "_trail_activate_r": cfg.EXIT_PROFILE_SMC_TRAIL_ACTIVATE_R,
+            "_trail_lock_r": cfg.EXIT_PROFILE_SMC_TRAIL_LOCK_R,
+            "_velocity_drop_enabled": cfg.EXIT_PROFILE_SMC_VELOCITY_DROP_ENABLED,
             "_entry_spread": spread,
             "_entry_tick_velocity": tick_snap.get("velocity", 0),
+            "_entry_tick_pressure_score": pressure_score,
+            "_entry_tick_pressure_bias": pressure_bias,
+            "_entry_volume_ratio": volume_ratio,
+            "_entry_volume_strong": volume_ratio >= float(getattr(cfg, "SMC_MIN_ENTRY_VOLUME_RATIO", 1.0) or 1.0),
         }
 
         # Log successful trade decision
@@ -301,13 +373,14 @@ class SMCStrategy(BaseStrategy):
                 s["has_rejection"],
                 s["has_reversal_seq"]
             ])
+            min_conditions = max(1, int(getattr(cfg, "SMC_MIN_SETUP_CONDITIONS", 2) or 2))
 
-            if zone_dir == "LONG" and conditions >= 2:
+            if zone_dir == "LONG" and conditions >= min_conditions:
                 s["total"] = zone_score + (0.20 if s["has_sweep"] else 0) + \
                             (0.15 if s["has_rejection"] else 0) + \
                             (0.10 if s["has_reversal_seq"] else 0)
                 setups.append(s)
-            elif zone_dir == "SHORT" and conditions >= 2:
+            elif zone_dir == "SHORT" and conditions >= min_conditions:
                 s["total"] = zone_score + (0.20 if s["has_sweep"] else 0) + \
                             (0.15 if s["has_rejection"] else 0) + \
                             (0.10 if s["has_reversal_seq"] else 0)
@@ -494,6 +567,10 @@ class SMCStrategy(BaseStrategy):
             reasons.append(f"Reversal: {setup.get('reversal_detail', '')}")
         if counter_trend:
             reasons.append(f"Counter-trend threshold {threshold:.0%}")
+        if counter_trend and setup.get("_m15_structure_softened") and setup.get("_m15_structure_turned") is False:
+            penalty = float(setup.get("_m15_structure_penalty", 0.10) or 0.10)
+            score = max(0.0, score - penalty)
+            reasons.append(f"M15 structure turn pending (-{penalty:.0%})")
         if relaxed_params["active"] and relaxed_params.get("type") == "tick_ratio":
             reasons.append(f"Anti-starvation tick ratio {tick_threshold:.0%}")
 
@@ -530,13 +607,64 @@ class SMCStrategy(BaseStrategy):
         if not (setup.get("has_sweep") or setup.get("has_rejection")):
             return "SHORT setup needs sweep or rejection"
 
-        if not self._check_timeframe_alignment(m5, direction, "M5"):
+        if bool(getattr(cfg, "SMC_REQUIRE_M5_ALIGNMENT_SHORT", True)) and not self._check_timeframe_alignment(m5, direction, "M5"):
             return "SHORT setup requires M5 alignment"
 
         if bias.get("direction") == "LONG" and not setup.get("has_sweep"):
             return "Counter-bias SHORT needs sweep confirmation"
 
         return None
+
+    def _cap_counter_trend_tp(self, price: float, signal: str, tp: float, zones: Dict) -> tuple:
+        """For counter-trend trades, cap TP at the nearest opposing zone.
+        A LONG counter-trend trade should not run into resistance above.
+        A SHORT counter-trend trade should not run into support below."""
+        if signal == "BUY":
+            # Find nearest resistance above price
+            resistances = [
+                z["zone_low"] for z in zones.get("resistance", [])
+                if z["zone_low"] > price
+            ]
+            if resistances:
+                nearest_r = min(resistances)
+                # Cap TP just below the resistance zone, but only if it tightens the TP
+                capped = round(nearest_r - 0.20, 2)
+                if capped < tp and capped > price:
+                    tp = capped
+        else:  # SELL
+            # Find nearest support below price
+            supports = [
+                z["zone_high"] for z in zones.get("support", [])
+                if z["zone_high"] < price
+            ]
+            if supports:
+                nearest_s = max(supports)
+                capped = round(nearest_s + 0.20, 2)
+                if capped > tp and capped < price:
+                    tp = capped
+        return tp, round(abs(tp - price), 2)
+
+    def _m15_structure_turned(self, m15: pd.DataFrame, direction: str) -> bool:
+        """Check M15 has formed at least one HL (LONG) or LH (SHORT) in the last 10 bars.
+        This confirms the pullback is showing early reversal signs on M15 before we
+        take a counter-trend entry on M5."""
+        if m15 is None or len(m15) < 10:
+            return False
+        l = m15["low"].values.astype(float)[-10:]
+        h = m15["high"].values.astype(float)[-10:]
+        if direction == "LONG":
+            # Need at least one swing low that is higher than the previous swing low
+            swing_lows = [l[i] for i in range(1, len(l) - 1) if l[i] < l[i-1] and l[i] < l[i+1]]
+            return len(swing_lows) >= 2 and swing_lows[-1] > swing_lows[-2]
+        else:  # SHORT
+            # Need at least one swing high that is lower than the previous swing high
+            swing_highs = [h[i] for i in range(1, len(h) - 1) if h[i] > h[i-1] and h[i] > h[i+1]]
+            return len(swing_highs) >= 2 and swing_highs[-1] < swing_highs[-2]
+
+    def _should_soften_counter_trend_structure_guard(self, setup: Dict) -> bool:
+        zone_score = float(setup.get("zone_score", 0.0) or 0.0)
+        has_rejection = bool(setup.get("has_rejection", False))
+        return zone_score >= 0.25 and has_rejection
 
     def _resolve_threshold(self, bias: Dict, counter_trend: bool, regime: Dict) -> float:
         regime_state = regime.get("state", "TRENDING")

@@ -1,14 +1,54 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# IDE
 .idea/
+.vscode/
+
+# Logs & runtime logs
 *.log
-deploy_watcher.log
-*.txt
-!requirements.txt
-!cf_url.txt
-cloudflared.exe
+logs/
+backup_logs/
+recent_logs_since_restart/
+
+# Runtime data / state
+*.jsonl
 *.json
+*.db
+*.pkl
+
+# Exceptions - committed config/model files
 !xgb_model.json
 !xgb_model.json.meta
-decision_log.jsonl
-trade_attribution.jsonl
+!engine/strategy_configs/data/*.json
+
+# Text files (logs, outputs)
+*.txt
+!requirements.txt
+
+# Backtest outputs & cache
+backtests/
+analytics_outputs/
+analytics.db
+
+# Snapshots / Excel / backups
+*.xlsx
+*.bak
+*.bak2
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.ico
+
+# Tunnel / deploy binaries
+cloudflared.exe
+cloudflared-config.yml
+
+# Misc generated/temp files
+'2026-04-24'
+0
+_dashboard_script.js

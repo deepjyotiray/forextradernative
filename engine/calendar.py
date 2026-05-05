@@ -5,8 +5,8 @@ Uses nofap.cc free forex calendar API (no key needed).
 Falls back to hardcoded recurring events if API fails.
 
 Blackout rules:
-  - 30 min BEFORE high-impact event: block new trades
-  - 15 min AFTER high-impact event: block new trades
+  - configurable minutes BEFORE high-impact event: block new trades
+  - configurable minutes AFTER high-impact event: block new trades
   - Open trades get tightened SL during blackout
 """
 import time
@@ -17,6 +17,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+import config as cfg
 
 
 # High-impact USD events that move gold hard
@@ -33,8 +34,6 @@ _CRITICAL_KEYWORDS = {
     "Powell", "Fed Chair",
 }
 
-_BLACKOUT_BEFORE = 30 * 60   # 30 min before
-_BLACKOUT_AFTER = 15 * 60    # 15 min after
 _POLL_INTERVAL = 3600         # re-fetch every hour
 _CACHE_FILE = "calendar_cache.json"
 
@@ -58,6 +57,8 @@ class EconomicCalendar:
         Returns: {blocked: bool, reason: str, next_event: dict or None, events_today: int}
         """
         now = datetime.now(timezone.utc)
+        blackout_before = max(0, int(getattr(cfg, "CALENDAR_BLOCK_BEFORE_MINUTES", 30) or 0)) * 60
+        blackout_after = max(0, int(getattr(cfg, "CALENDAR_BLOCK_AFTER_MINUTES", 15) or 0)) * 60
         closest = None
         closest_dist = float("inf")
 
@@ -68,7 +69,7 @@ class EconomicCalendar:
             dist = (ev_time - now).total_seconds()
 
             # Within blackout window?
-            if -_BLACKOUT_AFTER <= dist <= _BLACKOUT_BEFORE:
+            if -blackout_after <= dist <= blackout_before:
                 if dist > 0:
                     return {
                         "blocked": True,

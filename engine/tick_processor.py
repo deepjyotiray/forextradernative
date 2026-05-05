@@ -5,7 +5,147 @@ Tracks velocity, momentum, spread (mean/std/percentile), direction stability.
 import time
 import math
 from collections import deque
-from typing import Dict
+from typing import Dict, Optional
+
+
+def _tick_field(raw_ticks, idx: int, name: str, default=0.0):
+    try:
+        tick = raw_ticks[idx]
+        if isinstance(tick, dict):
+            return tick.get(name, default)
+        if hasattr(tick, name):
+            return getattr(tick, name)
+        return tick[name]
+    except Exception:
+        return default
+
+
+def analyze_tick_pressure(raw_ticks) -> Dict:
+    if raw_ticks is None:
+        return {"ready": False}
+    try:
+        count = len(raw_ticks)
+    except Exception:
+        return {"ready": False}
+    if count < 5:
+        return {"ready": False, "tick_count": count}
+
+    mids = []
+    spreads = []
+    times = []
+    for idx in range(count):
+        bid = float(_tick_field(raw_ticks, idx, "bid", 0.0) or 0.0)
+        ask = float(_tick_field(raw_ticks, idx, "ask", 0.0) or 0.0)
+        ts_msc = float(_tick_field(raw_ticks, idx, "time_msc", 0.0) or 0.0)
+        ts = float(_tick_field(raw_ticks, idx, "time", 0.0) or 0.0)
+        mid = (bid + ask) / 2.0 if ask or bid else 0.0
+        mids.append(mid)
+        spreads.append(max(0.0, ask - bid))
+        times.append(ts_msc if ts_msc > 0 else ts * 1000.0)
+
+    duration_ms = max(1.0, times[-1] - times[0])
+    duration_s = duration_ms / 1000.0
+    burst_rate = count / duration_s if duration_s > 0 else 0.0
+
+    up_events = 0
+    down_events = 0
+    bid_up = 0
+    bid_down = 0
+    ask_up = 0
+    ask_down = 0
+    for idx in range(1, count):
+        bid_delta = float(_tick_field(raw_ticks, idx, "bid", 0.0) or 0.0) - float(_tick_field(raw_ticks, idx - 1, "bid", 0.0) or 0.0)
+        ask_delta = float(_tick_field(raw_ticks, idx, "ask", 0.0) or 0.0) - float(_tick_field(raw_ticks, idx - 1, "ask", 0.0) or 0.0)
+        if bid_delta > 0:
+            bid_up += 1
+        elif bid_delta < 0:
+            bid_down += 1
+        if ask_delta > 0:
+            ask_up += 1
+        elif ask_delta < 0:
+            ask_down += 1
+        if bid_delta > 0 or ask_delta > 0:
+            up_events += 1
+        elif bid_delta < 0 or ask_delta < 0:
+            down_events += 1
+
+    directional_events = max(1, up_events + down_events)
+    pressure_score = (up_events - down_events) / directional_events
+    price_move = mids[-1] - mids[0]
+    price_move_per_second = price_move / duration_s if duration_s > 0 else 0.0
+    spread_mean = sum(spreads) / len(spreads)
+    spread_std = math.sqrt(sum((s - spread_mean) ** 2 for s in spreads) / len(spreads)) if spreads else 0.0
+    baseline_spread = sum(spreads[:-5]) / max(1, len(spreads[:-5])) if len(spreads) > 5 else spread_mean
+    spread_shock = spreads[-1] - baseline_spread
+
+    first_half = max(2, count // 2)
+    first_window_ms = max(1.0, times[first_half - 1] - times[0])
+    second_window_ms = max(1.0, times[-1] - times[first_half])
+    first_burst = first_half / (first_window_ms / 1000.0)
+    second_burst = (count - first_half) / (second_window_ms / 1000.0) if count - first_half > 0 else 0.0
+    burst_decay = (second_burst / first_burst) if first_burst > 0 else 1.0
+
+    bias = "NEUTRAL"
+    if pressure_score >= 0.15 or price_move > 0.05:
+        bias = "LONG"
+    elif pressure_score <= -0.15 or price_move < -0.05:
+        bias = "SHORT"
+
+    return {
+        "ready": True,
+        "tick_count": count,
+        "burst_rate": round(burst_rate, 2),
+        "pressure_score": round(pressure_score, 3),
+        "directional_bias": bias,
+        "price_move": round(price_move, 3),
+        "price_move_per_second": round(price_move_per_second, 4),
+        "spread_mean": round(spread_mean, 3),
+        "spread_std": round(spread_std, 4),
+        "spread_shock": round(spread_shock, 3),
+        "burst_decay": round(burst_decay, 3),
+        "quote_up_ratio": round(up_events / directional_events, 3),
+        "quote_down_ratio": round(down_events / directional_events, 3),
+        "bid_up_ratio": round(bid_up / max(1, bid_up + bid_down), 3),
+        "ask_down_ratio": round(ask_down / max(1, ask_up + ask_down), 3),
+        "favorable_long": pressure_score >= 0.20 and price_move >= -0.02,
+        "favorable_short": pressure_score <= -0.20 and price_move <= 0.02,
+        "pressure_fading": burst_decay < 0.80,
+    }
+
+
+def entry_pressure_block_reason(
+    direction: str,
+    tick_pressure: Dict,
+    *,
+    strong_threshold: float = 0.35,
+    short_positive_veto_threshold: float = 0.05,
+) -> Optional[str]:
+    if not tick_pressure or not tick_pressure.get("ready"):
+        return None
+
+    trade_direction = str(direction or "").upper()
+    if trade_direction == "BUY":
+        trade_direction = "LONG"
+    elif trade_direction == "SELL":
+        trade_direction = "SHORT"
+    if trade_direction not in {"LONG", "SHORT"}:
+        return None
+
+    score = float(tick_pressure.get("pressure_score", 0.0) or 0.0)
+    bias = str(tick_pressure.get("directional_bias", "NEUTRAL") or "NEUTRAL").upper()
+    strong_limit = abs(float(strong_threshold or 0.0))
+    short_veto_limit = max(0.0, float(short_positive_veto_threshold or 0.0))
+
+    if trade_direction == "LONG" and bias == "SHORT" and score <= -strong_limit:
+        return "Tick pressure strongly SHORT against LONG setup"
+
+    if trade_direction == "SHORT":
+        if (short_veto_limit > 0 and score >= short_veto_limit) or (short_veto_limit <= 0 and score > 0):
+            return f"Tick pressure positive ({score:+.2f}) against SHORT setup"
+        if bias == "LONG" and score >= strong_limit:
+            return "Tick pressure strongly LONG against SHORT setup"
+
+    return None
 
 
 class TickProcessor:
@@ -20,6 +160,9 @@ class TickProcessor:
             "bid": tick["bid"], "ask": tick["ask"],
             "spread": tick.get("spread", tick["ask"] - tick["bid"]),
             "ts": float(ts),
+            "volume": float(tick.get("volume", 0.0) or 0.0),
+            "volume_real": float(tick.get("volume_real", 0.0) or 0.0),
+            "flags": int(tick.get("flags", 0) or 0),
         })
 
     def snapshot(self) -> Dict:

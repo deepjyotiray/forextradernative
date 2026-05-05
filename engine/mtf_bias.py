@@ -1,8 +1,7 @@
 """
 Multi-Timeframe Bias Engine.
-H4: EMA50/200 macro bias + slope
-H1: Structure (HH, HL, LH, LL) + BOS detection
-M15: Pullback zone identification
+H1: Structure (HH, HL, LH, LL) + EMA20 slope as lighter context
+M15: Primary directional structure + pullback confirmation
 Output: direction (LONG/SHORT/NEUTRAL), confidence 0-1
 """
 import numpy as np
@@ -45,43 +44,8 @@ def compute_bias(h4_df: pd.DataFrame, h1_df: pd.DataFrame,
                  m15_df: pd.DataFrame) -> Dict:
     reasons = []
     scores = {"LONG": 0.0, "SHORT": 0.0}
-
-    # === H4 Macro Bias ===
-    h4_bias = "NEUTRAL"
-    if h4_df is not None and len(h4_df) >= 55:
-        c = h4_df["close"].values.astype(float)
-        ema50 = ema(c, 50)
-        slope50 = ema50[-1] - ema50[-5] if len(ema50) >= 5 else 0
-
-        # EMA50/200 alignment if enough data
-        if len(c) >= 200:
-            ema200 = ema(c, 200)
-            if ema50[-1] > ema200[-1]:
-                h4_bias = "LONG"
-                scores["LONG"] += 0.20
-                reasons.append(f"H4: EMA50 > EMA200")
-            elif ema50[-1] < ema200[-1]:
-                h4_bias = "SHORT"
-                scores["SHORT"] += 0.20
-                reasons.append(f"H4: EMA50 < EMA200")
-
-        # Slope adds to bias (lower threshold: 0.1 instead of 0.5)
-        if slope50 > 0.1:
-            if h4_bias != "SHORT":
-                h4_bias = "LONG"
-            scores["LONG"] += min(0.20, abs(slope50) * 0.1)
-            reasons.append(f"H4 slope +{slope50:.2f}")
-        elif slope50 < -0.1:
-            if h4_bias != "LONG":
-                h4_bias = "SHORT"
-            scores["SHORT"] += min(0.20, abs(slope50) * 0.1)
-            reasons.append(f"H4 slope {slope50:.2f}")
-
-        # Price vs EMA50 — simple but effective
-        if c[-1] > ema50[-1]:
-            scores["LONG"] += 0.10
-        elif c[-1] < ema50[-1]:
-            scores["SHORT"] += 0.10
+    h1_candles_used = int(len(h1_df)) if h1_df is not None else 0
+    m15_candles_used = int(len(m15_df)) if m15_df is not None else 0
 
     # === H1 Structure ===
     h1_struct = {"pattern": "UNKNOWN", "bos": False, "bos_direction": None}
@@ -94,58 +58,101 @@ def compute_bias(h4_df: pd.DataFrame, h1_df: pd.DataFrame,
 
         if h1_struct["bos"]:
             d = h1_struct["bos_direction"]
-            scores[d] += 0.30
+            scores[d] += 0.18
             reasons.append(f"H1: BOS {d} ({h1_struct.get('detail','')})")
         elif h1_struct["pattern"] == "BULLISH":
-            scores["LONG"] += 0.15
+            scores["LONG"] += 0.10
             reasons.append("H1: Bullish structure")
         elif h1_struct["pattern"] == "BEARISH":
-            scores["SHORT"] += 0.15
+            scores["SHORT"] += 0.10
             reasons.append("H1: Bearish structure")
         elif h1_struct["pattern"] == "EXPANSION":
             # Expansion — use recent price direction
             if len(c1) >= 5:
                 recent_move = c1[-1] - c1[-5]
                 if recent_move > 0:
-                    scores["LONG"] += 0.10
+                    scores["LONG"] += 0.07
                     reasons.append("H1: Expansion (recent bullish)")
                 elif recent_move < 0:
-                    scores["SHORT"] += 0.10
+                    scores["SHORT"] += 0.07
                     reasons.append("H1: Expansion (recent bearish)")
 
-        # Additional: EMA20 direction on H1
+        # H1 EMA20 slope is now context only, not a dominant vote.
         if len(c1) >= 25:
             ema20_h1 = ema(c1, 20)
             h1_slope = ema20_h1[-1] - ema20_h1[-3]
             if h1_slope > 0.3:
-                scores["LONG"] += 0.10
+                scores["LONG"] += 0.07
                 reasons.append(f"H1 EMA20 slope +{h1_slope:.2f}")
             elif h1_slope < -0.3:
-                scores["SHORT"] += 0.10
+                scores["SHORT"] += 0.07
                 reasons.append(f"H1 EMA20 slope {h1_slope:.2f}")
 
-    # === M15 Pullback Detection ===
+    # === M15 Primary Bias ===
+    m15_struct = {"pattern": "UNKNOWN", "bos": False, "bos_direction": None}
     m15_pullback = {"active": False, "direction": None}
     if m15_df is not None and len(m15_df) >= 30:
         c = m15_df["close"].values.astype(float)
         h = m15_df["high"].values.astype(float)
         l = m15_df["low"].values.astype(float)
+        highs15, lows15 = _swing_points(h, l, window=2)
+        m15_struct = _detect_structure(highs15, lows15)
         ema20 = ema(c, 20)
         atr14 = atr(h, l, c, 14)
         price = c[-1]
         ema_val = ema20[-1]
         atr_val = atr14[-1]
+        m15_slope = ema20[-1] - ema20[-3] if len(ema20) >= 3 else 0.0
 
-        # Pullback to EMA in any direction with bias
+        if m15_struct["bos"]:
+            d = m15_struct["bos_direction"]
+            scores[d] += 0.35
+            reasons.append(f"M15: BOS {d} ({m15_struct.get('detail','')})")
+        elif m15_struct["pattern"] == "BULLISH":
+            scores["LONG"] += 0.22
+            reasons.append("M15: Bullish structure")
+        elif m15_struct["pattern"] == "BEARISH":
+            scores["SHORT"] += 0.22
+            reasons.append("M15: Bearish structure")
+        elif m15_struct["pattern"] == "EXPANSION":
+            recent_move = c[-1] - c[-5] if len(c) >= 5 else 0.0
+            if recent_move > 0:
+                scores["LONG"] += 0.12
+                reasons.append("M15: Expansion (recent bullish)")
+            elif recent_move < 0:
+                scores["SHORT"] += 0.12
+                reasons.append("M15: Expansion (recent bearish)")
+
+        if price > ema_val:
+            scores["LONG"] += 0.10
+        elif price < ema_val:
+            scores["SHORT"] += 0.10
+
+        if m15_slope > 0.15:
+            scores["LONG"] += 0.15
+            reasons.append(f"M15 EMA20 slope +{m15_slope:.2f}")
+        elif m15_slope < -0.15:
+            scores["SHORT"] += 0.15
+            reasons.append(f"M15 EMA20 slope {m15_slope:.2f}")
+
+        # Pullback-to-EMA confirmation now uses M15's own directional read first.
         near_ema = abs(price - ema_val) < atr_val * 0.8
         if near_ema:
-            if scores["LONG"] > scores["SHORT"] and price >= ema_val * 0.998:
+            if (
+                m15_struct.get("bos_direction") == "LONG"
+                or m15_struct.get("pattern") == "BULLISH"
+                or m15_slope > 0.15
+            ) and price >= ema_val * 0.998:
                 m15_pullback = {"active": True, "direction": "LONG"}
-                scores["LONG"] += 0.15
+                scores["LONG"] += 0.18
                 reasons.append("M15: Pullback to EMA20 (bullish)")
-            elif scores["SHORT"] > scores["LONG"] and price <= ema_val * 1.002:
+            elif (
+                m15_struct.get("bos_direction") == "SHORT"
+                or m15_struct.get("pattern") == "BEARISH"
+                or m15_slope < -0.15
+            ) and price <= ema_val * 1.002:
                 m15_pullback = {"active": True, "direction": "SHORT"}
-                scores["SHORT"] += 0.15
+                scores["SHORT"] += 0.18
                 reasons.append("M15: Pullback to EMA20 (bearish)")
 
     # === Final ===
@@ -164,8 +171,10 @@ def compute_bias(h4_df: pd.DataFrame, h1_df: pd.DataFrame,
     return {
         "direction": direction,
         "confidence": confidence,
-        "h4_bias": h4_bias,
+        "h1_candles_used": h1_candles_used,
         "h1_structure": h1_struct,
+        "m15_candles_used": m15_candles_used,
+        "m15_structure": m15_struct,
         "m15_pullback": m15_pullback,
         "scores": scores,
         "reasons": reasons,

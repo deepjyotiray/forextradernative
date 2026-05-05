@@ -176,7 +176,8 @@ class ReportingDashboard:
                     "total_pnl": round(sum(pnls), 2),
                     "avg_pnl": round(statistics.mean(pnls), 2),
                 }
-            else:\n                session_analysis[session] = {"trade_count": 0}
+            else:
+                session_analysis[session] = {"trade_count": 0}
         
         # Find best and worst sessions
         active_sessions = {k: v for k, v in session_analysis.items() if v["trade_count"] > 0}

@@ -1,9 +1,0 @@
-tunnel: 6b78a074-9b3d-4aee-bb00-fa6d35cf61c2
-credentials-file: C:\Users\deepjyotiray\.cloudflared\6b78a074-9b3d-4aee-bb00-fa6d35cf61c2.json
-
-ingress:
-  - hostname: trader.healthymealspot.com
-    service: http://127.0.0.1:8000
-    originRequest:
-      noTLSVerify: true
-  - service: http_status:404

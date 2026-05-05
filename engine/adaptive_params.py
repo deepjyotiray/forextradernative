@@ -60,7 +60,7 @@ def _bounds() -> dict:
         "SMC_MIN_RR":               (cfg.ADAPT_MIN_RR_MIN,        cfg.ADAPT_MIN_RR_MAX),
         "SESSION_MAX_TRADES":       (cfg.ADAPT_SESSION_TRADES_MIN, cfg.ADAPT_SESSION_TRADES_MAX),
         "MIN_TRADE_COOLDOWN":       (cfg.ADAPT_COOLDOWN_MIN,       cfg.ADAPT_COOLDOWN_MAX),
-        "SMC_SPREAD_MEAN_MAX":      (0.28, 0.50),
+        "SMC_SPREAD_MEAN_MAX":      (cfg.SMC_SPREAD_MEAN_MAX, cfg.SMC_SPREAD_MEAN_MAX),
         "SMC_EARLY_FAIL_RANGING":   (0.10, 0.20),
         "SMC_EARLY_FAIL_TRENDING":  (0.20, 0.35),
     }
@@ -171,7 +171,10 @@ def apply(regime: dict, risk_manager, perf_tracker) -> dict:
     _set("SMC_THRESHOLD_WITH_TREND", cfg_wt  + r_wt  + lv_off + p_wt,  b)
     _set("SMC_THRESHOLD_COUNTER",    cfg_ctr + r_ctr + lv_off + p_ctr, b)
     _set("SMC_MIN_RR",               cfg_rr  + r_rr  + p_rr,           b)
-    _set("SESSION_MAX_TRADES",       int(cfg_trades - p_trades_sub - dd_trades_sub), b)
+    if int(cfg_trades or 0) > 0:
+        _set("SESSION_MAX_TRADES", int(cfg_trades - p_trades_sub - dd_trades_sub), b)
+    else:
+        cfg.SESSION_MAX_TRADES = 0
     _set("MIN_TRADE_COOLDOWN",       cfg_cool + p_cool_add + dd_cool_add, b)
     _set("SMC_SPREAD_MEAN_MAX",      r_spread,  b)
     _set("SMC_EARLY_FAIL_RANGING",   r_ef_r,    b)

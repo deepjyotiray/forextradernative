@@ -7,11 +7,29 @@ passes through one final, config-driven quality and safety checkpoint.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Any, Callable, Dict, Optional
 
 import config as cfg
 from .session_filter import get_session_state_at
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+# Optional callback set by auto_trader: fn(tag, msg) -> None
+_gate_log_fn: Optional[Callable[[str, str], None]] = None
+
+
+def set_gate_log_fn(fn: Callable[[str, str], None]) -> None:
+    global _gate_log_fn
+    _gate_log_fn = fn
+
+
+def _gate_log(tag: str, msg: str) -> None:
+    if _gate_log_fn is not None:
+        try:
+            _gate_log_fn(tag, msg)
+        except Exception:
+            pass
 
 
 def master_trade_gate(
@@ -44,8 +62,11 @@ def master_trade_gate(
     trade_dir = "LONG" if direction == "BUY" else "SHORT" if direction == "SELL" else "NEUTRAL"
     bias_dir = _resolve_bias_direction(signal, market_state)
     counter_trend = bias_dir not in ("", "NEUTRAL", trade_dir) and trade_dir in ("LONG", "SHORT")
+    signal_family = str(signal.get("_signal_family") or "").upper()
     tick_snap = signal.get("_tick_snapshot") or market_state.get("tick_snapshot") or {}
     current_rr = float(signal.get("rr", 0.0) or 0.0)
+
+    strategy = signal_family or str(signal.get("strategy") or "")
 
     result = {
         "allowed": True,
@@ -71,6 +92,7 @@ def master_trade_gate(
             result["score"] = int(score)
         result["failed_gates"].append(gate_name)
         result["gate_trace"].append({"gate": gate_name, "allowed": False, "reason": reason})
+        _gate_log("GATE", f"[{strategy}|{direction}] BLOCKED gate={gate_name} reason={reason}")
         return result
 
     def mark_pass(gate_name: str, reason: str) -> None:
@@ -115,14 +137,64 @@ def master_trade_gate(
         return block("spike", spike_reason)
     mark_pass("spike", spike_reason)
 
+    # For SWING and INTRADAY families: all filtering is done inside the strategy.
+    # Only enforce risk, session, and spread gates — skip score/confirmation/counter-trend.
+    if signal_family in {"SWING", "INTRADAY"}:
+        if not result["allowed"]:
+            return result
+        # spread already checked above, risk + session already checked above
+        result["score"] = 100
+        result["confirmation_count"] = 4
+        mark_pass("m15_context", "M15_CONTEXT_SKIPPED")
+        mark_pass("opposing_zone", "OPPOSING_ZONE_SKIPPED")
+        mark_pass("signal", "SIGNAL_PASS")
+        mark_pass("candle_confirmation", "CANDLE_PASS")
+        mark_pass("confirmation", "CONFIRMATION_PASS: 4/4")
+        mark_pass("trade_score", "TRADE_SCORE_SKIPPED")
+        mark_pass("rr", "RR_PASS")
+        mark_pass("counter_trend", "COUNTER_TREND_SKIPPED")
+        mark_pass("tier1", "TIER1_PASS")
+        return result
+
     # 5. M15 context gate
-    m15_context = {"allowed": True, "reason": "M15_CONTEXT_PASS", "distance_atr": None, "candle_confirmation": False}
+    m15_context = {
+        "allowed": True,
+        "reason": "M15_CONTEXT_PASS",
+        "distance_atr": None,
+        "candle_confirmation": False,
+        "zone": None,
+        "support_zone": None,
+        "resistance_zone": None,
+    }
+    skip_m15_context = signal_family in {"SWEEP", "M15", "TREND", "SWING", "INTRADAY"}
+    provider_context = None
     if m15_context_provider and hasattr(m15_context_provider, "evaluate_trade_context"):
-        m15_context = m15_context_provider.evaluate_trade_context(market_state, direction, signal)
+        provider_context = m15_context_provider.evaluate_trade_context(market_state, direction, signal)
+    if provider_context is not None:
+        if not skip_m15_context:
+            m15_context = provider_context
+        else:
+            m15_context.update(
+                {
+                    "reason": "M15_CONTEXT_SKIPPED",
+                    "distance_atr": provider_context.get("distance_atr"),
+                    "candle_confirmation": bool(signal.get("_candle_confirmation")) or bool(provider_context.get("candle_confirmation")),
+                    "zone": provider_context.get("zone"),
+                    "support_zone": provider_context.get("support_zone"),
+                    "resistance_zone": provider_context.get("resistance_zone"),
+                    "lookback_hours_used": provider_context.get("lookback_hours_used"),
+                    "breakout_confirmation": provider_context.get("breakout_confirmation"),
+                }
+            )
     result["m15_context"] = m15_context
-    if not m15_context.get("allowed", True):
+    if not skip_m15_context and not m15_context.get("allowed", True):
         return block("m15_context", str(m15_context.get("reason") or "M15_CONTEXT_BLOCK"))
     mark_pass("m15_context", str(m15_context.get("reason") or "M15_CONTEXT_PASS"))
+
+    zone_ok, zone_reason = _opposing_zone_entry_check(signal, tick, indicators, m15_context)
+    if not zone_ok:
+        return block("opposing_zone", zone_reason)
+    mark_pass("opposing_zone", zone_reason)
 
     # 6-8. Signal, candle, RR, score, and confirmation gates
     sweep_confirmed = bool(signal.get("_sweep_confirmed"))
@@ -131,12 +203,9 @@ def master_trade_gate(
     bias_confirmed = bias_dir == trade_dir and trade_dir in ("LONG", "SHORT")
     session_bonus_ok = session_state.get("session") in ("LONDON", "NEW_YORK")
     atr_healthy = _atr_is_healthy(indicators, spike_context)
-    if signal.get("_signal_family") == "SMC":
-        signal_confirmed = True
-    else:
-        signal_confirmed = sweep_confirmed
+    signal_confirmed = _signal_is_confirmed(signal_family, sweep_confirmed, candle_confirmed)
     if not signal_confirmed:
-        return block("signal", "SIGNAL_BLOCK: no sweep/smc confirmation")
+        return block("signal", f"SIGNAL_BLOCK: {signal_family or 'UNKNOWN'} confirmation missing")
     mark_pass("signal", "SIGNAL_PASS")
 
     if not candle_confirmed:
@@ -204,7 +273,7 @@ def master_trade_gate(
     if cfg_module.BLOCK_WEAK_COUNTER_TREND and counter_trend:
         if score < int(cfg_module.COUNTER_TREND_MIN_SCORE):
             return block("counter_trend", "COUNTER_TREND_BLOCK: weak counter-trend setup", score=score)
-        if cfg_module.COUNTER_TREND_REQUIRE_SWEEP and not sweep_confirmed:
+        if cfg_module.COUNTER_TREND_REQUIRE_SWEEP and not _counter_trend_confirmation_passes(signal_family, sweep_confirmed, candle_confirmed):
             return block("counter_trend", "COUNTER_TREND_BLOCK: weak counter-trend setup", score=score)
         if cfg_module.COUNTER_TREND_REQUIRE_M15_ZONE and not m15_context.get("allowed"):
             return block("counter_trend", "COUNTER_TREND_BLOCK: weak counter-trend setup", score=score)
@@ -301,10 +370,80 @@ def _resolve_bias_direction(signal: Dict[str, Any], market_state: Dict[str, Any]
 def _resolve_spread_limit(signal: Dict[str, Any], cfg_module=cfg) -> float:
     family = str(signal.get("_signal_family") or "").upper()
     if family == "SWEEP":
-        return float(cfg_module.M15_SR_MAX_SPREAD)
+        return float(getattr(cfg_module, "SCALPER_SPREAD_MEAN_MAX", cfg_module.M15_SR_MAX_SPREAD))
     if family == "SMC":
-        return min(float(cfg_module.M15_SR_MAX_SPREAD), float(cfg_module.SMC_SPREAD_MEAN_MAX))
+        return float(getattr(cfg_module, "SMC_SPREAD_MEAN_MAX", cfg_module.M15_SR_MAX_SPREAD))
+    if family == "TREND":
+        return float(getattr(cfg_module, "TREND_CHANNEL_MAX_SPREAD", cfg_module.M15_SR_MAX_SPREAD))
     return float(cfg_module.M15_SR_MAX_SPREAD)
+
+
+def _opposing_zone_entry_check(
+    signal: Dict[str, Any],
+    tick: Dict[str, Any],
+    indicators: Dict[str, Any],
+    m15_context: Dict[str, Any],
+) -> tuple[bool, str]:
+    direction = str(signal.get("signal") or "").upper()
+    if direction not in {"BUY", "SELL"}:
+        return True, "OPPOSING_ZONE_PASS"
+
+    if direction == "SELL":
+        entry = float(signal.get("entry", tick.get("bid", 0.0)) or 0.0)
+        opposing_zone = m15_context.get("support_zone")
+        zone_label = "support"
+    else:
+        entry = float(signal.get("entry", tick.get("ask", 0.0)) or 0.0)
+        opposing_zone = m15_context.get("resistance_zone")
+        zone_label = "resistance"
+
+    if entry <= 0 or not isinstance(opposing_zone, dict):
+        return True, "OPPOSING_ZONE_PASS"
+
+    zone_low = float(opposing_zone.get("zone_low", 0.0) or 0.0)
+    zone_high = float(opposing_zone.get("zone_high", 0.0) or 0.0)
+    if zone_high <= zone_low:
+        return True, "OPPOSING_ZONE_PASS"
+
+    spread = float(tick.get("spread", signal.get("_entry_spread", 0.0)) or 0.0)
+    atr = float(indicators.get("atr14", indicators.get("atr", signal.get("_atr14", 0.0))) or 0.0)
+    near_buffer = max(spread * 2.0, atr * 0.12, 0.25)
+
+    if zone_low <= entry <= zone_high:
+        return False, f"OPPOSING_ZONE_BLOCK: entry inside {zone_label} zone [{zone_low:.2f}-{zone_high:.2f}]"
+
+    if direction == "SELL":
+        distance = entry - zone_high
+        if distance >= 0 and distance < near_buffer:
+            return False, f"OPPOSING_ZONE_BLOCK: short too close to support [{zone_low:.2f}-{zone_high:.2f}] ({distance:.2f} pts)"
+    else:
+        distance = zone_low - entry
+        if distance >= 0 and distance < near_buffer:
+            return False, f"OPPOSING_ZONE_BLOCK: long too close to resistance [{zone_low:.2f}-{zone_high:.2f}] ({distance:.2f} pts)"
+
+    return True, "OPPOSING_ZONE_PASS"
+
+
+def _signal_is_confirmed(signal_family: str, sweep_confirmed: bool, candle_confirmed: bool) -> bool:
+    family = str(signal_family or "").upper()
+    if family == "SMC":
+        return True
+    if family == "SWEEP":
+        return sweep_confirmed
+    if family in {"M15", "TREND"}:
+        return candle_confirmed or sweep_confirmed
+    return sweep_confirmed or candle_confirmed
+
+
+def _counter_trend_confirmation_passes(signal_family: str, sweep_confirmed: bool, candle_confirmed: bool) -> bool:
+    family = str(signal_family or "").upper()
+    if family == "SWEEP":
+        return sweep_confirmed
+    if family in {"M15", "TREND"}:
+        return sweep_confirmed or candle_confirmed
+    if family == "SMC":
+        return sweep_confirmed or candle_confirmed
+    return sweep_confirmed
 
 
 def _strong_candle_body(signal: Dict[str, Any], indicators: Dict[str, Any]) -> bool:

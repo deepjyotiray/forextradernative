@@ -1,4 +1,4 @@
-"""
+﻿"""
 XAUUSD Auto Trader — Background Service (No HTTP Server)
 Works with unified_startup.py to consolidate all endpoints on port 8000.
 """
@@ -25,14 +25,16 @@ from engine.liquidity import compute_liquidity
 from engine.performance import PerformanceTracker
 from engine.strategy_manager import StrategyManager
 from engine.smc_strategy import SMCStrategy
+from engine.m15_sr_strategy import M15SupportResistanceStrategy
 from engine.sweep_scalper import SweepScalper
+from engine.strategies.trend_channel_strategy import TrendChannelStrategy
 from engine.calendar import calendar as eco_calendar
 from engine.correlation import correlation as corr_engine
-from engine.xgb_model import xgb_model
+from engine.xgb_model import xgb_model, xgb_bypass_enabled, xgb_training_enabled
 from engine.anti_starvation import record_trade_taken
 from engine.decision_logger import get_live_blockers
 
-_TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "H1": 60, "H4": 120}
+_TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -42,6 +44,7 @@ def _safe_dict(value):
 
 class AutoTrader:
     def __init__(self):
+        self._started_at_utc = datetime.now(timezone.utc)
         self.bridge = MT5Bridge()
         self.zone_detector = ZoneDetector()
         self.risk = RiskManager()
@@ -52,9 +55,12 @@ class AutoTrader:
         # Strategy manager
         self.strat_mgr = StrategyManager()
         self.strat_mgr.register(SMCStrategy())
+        self.strat_mgr.register(M15SupportResistanceStrategy())
         self.strat_mgr.register(SweepScalper())
-        if cfg.DEFAULT_STRATEGY in self.strat_mgr.available:
-            self.strat_mgr.set_active(cfg.DEFAULT_STRATEGY)
+        self.strat_mgr.register(TrendChannelStrategy())
+        startup_strategy = "AUTO"
+        if startup_strategy in self.strat_mgr.available:
+            self.strat_mgr.set_active(startup_strategy)
 
         self._candles: Dict = {}
         self._candle_counts: Dict = {}
@@ -89,15 +95,27 @@ class AutoTrader:
         self._cached_positions: list = []
         self._cached_floating_pnl: Dict = {"total": 0, "count": 0}
 
+    def mark_restart_time(self, started_at_utc=None):
+        if started_at_utc is None:
+            started_at_utc = datetime.now(timezone.utc)
+        if started_at_utc.tzinfo is None:
+            started_at_utc = started_at_utc.replace(tzinfo=timezone.utc)
+        self._started_at_utc = started_at_utc.astimezone(timezone.utc)
+
     def log(self, tag: str, msg: str):
         now = datetime.now(timezone.utc)
         utc_str = now.strftime("%H:%M:%S.%f")[:-3]
         ist_str = now.astimezone(_IST).strftime("%H:%M:%S.%f")[:-3]
-        entry = {"time": utc_str, "time_ist": ist_str, "tag": tag, "msg": msg}
+        raw_price = (self._last_tick or {}).get("bid")
+        price = None
+        if isinstance(raw_price, (int, float)):
+            price = round(float(raw_price), 2)
+        entry = {"time": utc_str, "time_ist": ist_str, "tag": tag, "msg": msg, "price": price}
         self._log.append(entry)
         try:
             with open(os.path.join(_BASE_DIR, "trader.log"), "a") as f:
-                f.write(f"[{utc_str} UTC | {ist_str} IST][{tag}] {msg}\n")
+                price_part = f"[{price:.2f}]" if price is not None else ""
+                f.write(f"[{utc_str} UTC | {ist_str} IST][{tag}]{price_part} {msg}\n")
         except Exception:
             pass
 
@@ -126,7 +144,11 @@ class AutoTrader:
             featured = [t for t in perf_trades if t.get("features") and
                         any(isinstance(v, (int, float)) and v != 0
                             for v in t["features"].values())]
-            if not xgb_model.is_trained and len(featured) >= 15:
+            if xgb_bypass_enabled():
+                self.log("INIT", "XGBoost bypass enabled")
+            elif not xgb_training_enabled():
+                self.log("INIT", "XGBoost training disabled")
+            elif not xgb_model.is_trained and len(featured) >= 15:
                 xgb_model.train(featured)
                 self.log("INIT", f"XGBoost trained on {len(featured)} trades")
             elif xgb_model.is_trained and xgb_model.should_retrain(len(featured)):
@@ -153,6 +175,7 @@ class AutoTrader:
             self.trades = TradeManager(self.bridge)
 
         self._running = True
+        self.mark_restart_time()
         self.log("ENGINE", "Trading engine started")
 
     def _engine_loop(self):
@@ -260,7 +283,7 @@ class AutoTrader:
                 if tf == "M5":
                     zones_dirty = True
                     self._refresh_timeframe_context()
-                if tf in ("M15", "H1", "H4"):
+                if tf in ("M15", "M30", "H1", "H4"):
                     regime_dirty = True
                     if tf == "H1":
                         self._refresh_timeframe_context()
@@ -349,11 +372,8 @@ class AutoTrader:
         try:
             self._mt5_today_pnl = self.bridge.get_today_pnl()
             self._mt5_closed_history = self.bridge.get_closed_trades(30)
-            # Sync risk manager daily P&L from MT5 deals
-            today_str = datetime.now(_IST).strftime("%Y-%m-%d")
-            ist_midnight_utc = datetime.now(_IST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
-            today_closed = [t for t in self._mt5_closed_history if t.get("close_time", "") >= ist_midnight_utc]
-            self.risk.seed_from_mt5(self._mt5_today_pnl, today_closed)
+            # Sync risk manager — pass full list, seed_from_mt5 filters by trading day
+            self.risk.seed_from_mt5(self._mt5_today_pnl, self._mt5_closed_history)
         except Exception as e:
             self.log("ERR", f"History poll failed: {e}")
 
@@ -386,6 +406,8 @@ class AutoTrader:
             "zones": _safe_dict(self._zones),
             "regime": _safe_dict(self._regime),
             "bias": _safe_dict(self._bias),
+            "last_restart_utc": self._started_at_utc.isoformat(),
+            "last_restart_ist": self._started_at_utc.astimezone(_IST).strftime("%Y-%m-%d %H:%M:%S IST"),
             "stats": self._stats,
             "log": list(self._log)[-50:],
         }

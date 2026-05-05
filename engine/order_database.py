@@ -7,6 +7,7 @@ import sqlite3
 import json
 import os
 import time
+import math
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
 try:
@@ -31,6 +32,89 @@ def _json_safe(value):
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(v) for v in value]
     return value
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _bucket_volume_ratio(value: float) -> str:
+    if value <= 0:
+        return "unknown"
+    if value < 1.0:
+        return "low(<1.0x)"
+    if value < 1.2:
+        return "baseline(1.0-1.2x)"
+    if value < 1.5:
+        return "strong(1.2-1.5x)"
+    return "very_strong(>=1.5x)"
+
+
+def _bucket_pressure_score(value: float) -> str:
+    if math.isnan(value):
+        return "unknown"
+    if value <= -0.35:
+        return "strong_short(<=-0.35)"
+    if value <= -0.10:
+        return "short_bias(-0.35..-0.10)"
+    if value < 0.10:
+        return "neutral(-0.10..0.10)"
+    if value < 0.35:
+        return "long_bias(0.10..0.35)"
+    return "strong_long(>=0.35)"
+
+
+def _aggregate_review_rows(rows: List[Dict[str, Any]], key_name: str, value_getter) -> List[Dict[str, Any]]:
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        key = str(value_getter(row) or "unknown")
+        bucket = buckets.setdefault(
+            key,
+            {
+                key_name: key,
+                "trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "breakeven": 0,
+                "total_pnl": 0.0,
+                "sum_peak_r": 0.0,
+                "sum_final_r": 0.0,
+                "sum_held_seconds": 0.0,
+            },
+        )
+        pnl = _safe_float(row.get("final_pnl"), 0.0)
+        bucket["trades"] += 1
+        bucket["wins"] += 1 if pnl > 0 else 0
+        bucket["losses"] += 1 if pnl < 0 else 0
+        bucket["breakeven"] += 1 if pnl == 0 else 0
+        bucket["total_pnl"] += pnl
+        bucket["sum_peak_r"] += _safe_float(row.get("peak_r"), 0.0)
+        bucket["sum_final_r"] += _safe_float(row.get("final_r"), 0.0)
+        bucket["sum_held_seconds"] += _safe_float(row.get("held_seconds"), 0.0)
+
+    result = []
+    for bucket in buckets.values():
+        trades = max(1, int(bucket["trades"]))
+        result.append(
+            {
+                key_name: bucket[key_name],
+                "trades": bucket["trades"],
+                "wins": bucket["wins"],
+                "losses": bucket["losses"],
+                "breakeven": bucket["breakeven"],
+                "win_rate": round(bucket["wins"] / trades, 3),
+                "total_pnl": round(bucket["total_pnl"], 2),
+                "avg_pnl": round(bucket["total_pnl"] / trades, 2),
+                "avg_peak_r": round(bucket["sum_peak_r"] / trades, 3),
+                "avg_final_r": round(bucket["sum_final_r"] / trades, 3),
+                "avg_held_seconds": round(bucket["sum_held_seconds"] / trades, 1),
+            }
+        )
+    result.sort(key=lambda item: (-item["trades"], item[key_name]))
+    return result
 
 
 class OrderDatabase:
@@ -87,6 +171,19 @@ class OrderDatabase:
                     -- Status
                     status TEXT DEFAULT 'OPEN',
                     close_reason TEXT,
+                    close_reason_category TEXT,
+                    close_signal_live_pnl REAL,
+                    peak_r REAL,
+                    final_r REAL,
+                    drawdown_from_peak_r REAL,
+                    drawdown_from_peak_pct REAL,
+                    held_seconds REAL,
+                    profile_name TEXT,
+                    mt5_close_reason TEXT,
+                    mt5_close_reason_code INTEGER,
+                    mt5_close_comment TEXT,
+                    mt5_close_deal_time TEXT,
+                    mt5_close_deal_ticket INTEGER,
                     
                     -- Features (JSON)
                     features TEXT,
@@ -98,12 +195,28 @@ class OrderDatabase:
                 )
             """)
             
-            # Add exit_price column if missing (migration)
-            try:
-                conn.execute("ALTER TABLE orders ADD COLUMN exit_price REAL")
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-            
+            # Add columns introduced after the initial schema (migration).
+            for column_name, column_type in (
+                ("exit_price", "REAL"),
+                ("close_reason_category", "TEXT"),
+                ("close_signal_live_pnl", "REAL"),
+                ("peak_r", "REAL"),
+                ("final_r", "REAL"),
+                ("drawdown_from_peak_r", "REAL"),
+                ("drawdown_from_peak_pct", "REAL"),
+                ("held_seconds", "REAL"),
+                ("profile_name", "TEXT"),
+                ("mt5_close_reason", "TEXT"),
+                ("mt5_close_reason_code", "INTEGER"),
+                ("mt5_close_comment", "TEXT"),
+                ("mt5_close_deal_time", "TEXT"),
+                ("mt5_close_deal_ticket", "INTEGER"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}")
+                except sqlite3.OperationalError:
+                    pass
+
             # Create indexes for performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ticket ON orders(ticket)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON orders(status)")
@@ -177,7 +290,14 @@ class OrderDatabase:
             return conn.total_changes > 0
     
     def close_order(self, ticket: int, final_pnl: float, close_reason: str = "",
-                   swap: float = 0, commission: float = 0, exit_price: float = 0) -> bool:
+                   swap: float = 0, commission: float = 0, exit_price: float = 0,
+                   close_reason_category: str = "", close_signal_live_pnl: float | None = None,
+                   peak_r: float | None = None, final_r: float | None = None,
+                   drawdown_from_peak_r: float | None = None, drawdown_from_peak_pct: float | None = None,
+                   held_seconds: float | None = None, profile_name: str = "",
+                   mt5_close_reason: str = "", mt5_close_reason_code: int | None = None,
+                   mt5_close_comment: str = "", mt5_close_deal_time: str = "",
+                   mt5_close_deal_ticket: int = 0) -> bool:
         """Mark order as closed with final PnL."""
         now = datetime.now(timezone.utc)
         ist_now = now.astimezone(_IST)
@@ -190,13 +310,53 @@ class OrderDatabase:
                     close_time_ist = ?,
                     final_pnl = ?,
                     close_reason = ?,
+                    close_reason_category = ?,
+                    close_signal_live_pnl = ?,
                     swap = ?,
                     commission = ?,
+                    peak_r = ?,
+                    final_r = ?,
+                    drawdown_from_peak_r = ?,
+                    drawdown_from_peak_pct = ?,
+                    held_seconds = ?,
+                    profile_name = CASE WHEN ? != '' THEN ? ELSE profile_name END,
+                    mt5_close_reason = CASE WHEN ? != '' THEN ? ELSE mt5_close_reason END,
+                    mt5_close_reason_code = COALESCE(?, mt5_close_reason_code),
+                    mt5_close_comment = CASE WHEN ? != '' THEN ? ELSE mt5_close_comment END,
+                    mt5_close_deal_time = CASE WHEN ? != '' THEN ? ELSE mt5_close_deal_time END,
+                    mt5_close_deal_ticket = CASE WHEN ? > 0 THEN ? ELSE mt5_close_deal_ticket END,
                     exit_price = CASE WHEN ? > 0 THEN ? ELSE exit_price END,
                     updated_at = strftime('%s', 'now')
                 WHERE ticket = ?
-            """, (now.isoformat(), ist_now.isoformat(), final_pnl, close_reason,
-                  swap, commission, exit_price, exit_price, ticket))
+            """, (
+                now.isoformat(),
+                ist_now.isoformat(),
+                final_pnl,
+                close_reason,
+                close_reason_category,
+                close_signal_live_pnl,
+                swap,
+                commission,
+                peak_r,
+                final_r,
+                drawdown_from_peak_r,
+                drawdown_from_peak_pct,
+                held_seconds,
+                profile_name,
+                profile_name,
+                mt5_close_reason,
+                mt5_close_reason,
+                mt5_close_reason_code,
+                mt5_close_comment,
+                mt5_close_comment,
+                mt5_close_deal_time,
+                mt5_close_deal_time,
+                mt5_close_deal_ticket,
+                mt5_close_deal_ticket,
+                exit_price,
+                exit_price,
+                ticket,
+            ))
             
             return conn.total_changes > 0
     
@@ -307,6 +467,19 @@ class OrderDatabase:
             
             return orders
     
+    def get_closed_orders_compact(self, days: int = 30) -> List[Dict]:
+        """Get closed orders (compact — only dashboard fields) from last N days."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT ticket, direction, volume, entry_price, exit_price, final_pnl, close_time
+                FROM orders
+                WHERE status = 'CLOSED' AND close_time >= ?
+                ORDER BY close_time DESC
+            """, (cutoff.isoformat(),))
+            return [dict(row) for row in cursor.fetchall()]
+
     def get_closed_orders(self, days: int = 30) -> List[Dict]:
         """Get closed orders from last N days."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -443,6 +616,101 @@ class OrderDatabase:
                 results.append(stats)
             
             return results
+
+    def get_trade_outcome_review(self, days: int = 30) -> Dict:
+        """Segment closed trades for tuning exits and entries from recent live outcomes."""
+        rows = self.get_closed_orders(days)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        if not rows:
+            return {
+                "generated_at": generated_at,
+                "days": days,
+                "summary": {
+                    "trades": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "breakeven": 0,
+                    "win_rate": 0.0,
+                    "total_pnl": 0.0,
+                },
+                "close_reason_categories": [],
+                "mt5_close_reasons": [],
+                "strategies": [],
+                "profiles": [],
+                "volume_ratio_buckets": [],
+                "pressure_score_buckets": [],
+                "breakeven_review": {},
+            }
+
+        trades = len(rows)
+        wins = sum(1 for row in rows if _safe_float(row.get("final_pnl"), 0.0) > 0)
+        losses = sum(1 for row in rows if _safe_float(row.get("final_pnl"), 0.0) < 0)
+        breakeven = trades - wins - losses
+        total_pnl = round(sum(_safe_float(row.get("final_pnl"), 0.0) for row in rows), 2)
+
+        for row in rows:
+            features = row.get("features") or {}
+            row["_entry_volume_ratio"] = _safe_float(
+                features.get("entry_volume_ratio", row.get("entry_volume_ratio")),
+                0.0,
+            )
+            row["_entry_tick_pressure_score"] = _safe_float(
+                features.get("entry_tick_pressure_score", row.get("entry_tick_pressure_score")),
+                0.0,
+            )
+
+        close_reason_categories = _aggregate_review_rows(rows, "close_reason_category", lambda row: row.get("close_reason_category") or "unknown")
+        mt5_close_reasons = _aggregate_review_rows(rows, "mt5_close_reason", lambda row: row.get("mt5_close_reason") or "unknown")
+        strategies = _aggregate_review_rows(rows, "strategy", lambda row: row.get("strategy") or "unknown")
+        profiles = _aggregate_review_rows(rows, "profile_name", lambda row: row.get("profile_name") or "unknown")
+        volume_ratio_buckets = _aggregate_review_rows(
+            rows,
+            "volume_ratio_bucket",
+            lambda row: _bucket_volume_ratio(_safe_float(row.get("_entry_volume_ratio"), 0.0)),
+        )
+        pressure_score_buckets = _aggregate_review_rows(
+            rows,
+            "pressure_score_bucket",
+            lambda row: _bucket_pressure_score(_safe_float(row.get("_entry_tick_pressure_score"), float("nan"))),
+        )
+
+        be_rows = [row for row in rows if str(row.get("close_reason_category") or "") == "breakeven_stop"]
+        breakeven_review = {
+            "count": len(be_rows),
+            "share": round(len(be_rows) / trades, 3),
+            "by_strategy": _aggregate_review_rows(be_rows, "strategy", lambda row: row.get("strategy") or "unknown"),
+            "by_profile": _aggregate_review_rows(be_rows, "profile_name", lambda row: row.get("profile_name") or "unknown"),
+            "by_volume_ratio_bucket": _aggregate_review_rows(
+                be_rows,
+                "volume_ratio_bucket",
+                lambda row: _bucket_volume_ratio(_safe_float(row.get("_entry_volume_ratio"), 0.0)),
+            ),
+            "by_pressure_score_bucket": _aggregate_review_rows(
+                be_rows,
+                "pressure_score_bucket",
+                lambda row: _bucket_pressure_score(_safe_float(row.get("_entry_tick_pressure_score"), float("nan"))),
+            ),
+        }
+
+        return {
+            "generated_at": generated_at,
+            "days": days,
+            "summary": {
+                "trades": trades,
+                "wins": wins,
+                "losses": losses,
+                "breakeven": breakeven,
+                "win_rate": round(wins / max(1, trades), 3),
+                "total_pnl": total_pnl,
+            },
+            "close_reason_categories": close_reason_categories,
+            "mt5_close_reasons": mt5_close_reasons,
+            "strategies": strategies,
+            "profiles": profiles,
+            "volume_ratio_buckets": volume_ratio_buckets,
+            "pressure_score_buckets": pressure_score_buckets,
+            "breakeven_review": breakeven_review,
+        }
     
     def cleanup_old_data(self, days: int = 90):
         """Remove orders older than specified days."""

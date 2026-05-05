@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "risk_pct": 1.0,
+  "fixed_lot": null,
+  "max_active_trades": 1,
+  "max_trades_day": 2,
+  "spread_max": 0.8,
+  "sl_min": 15.0,
+  "sl_max": 30.0,
+  "min_rr": 1.8,
+  "sessions": [
+    "LONDON",
+    "NEW_YORK",
+    "ASIAN"
+  ],
+  "news_block": true,
+  "cooldown_seconds": 3600,
+  "consecutive_loss_limit": 2,
+  "loss_pause_seconds": 3600,
+  "notes": "Higher-timeframe bias engine. BUY only. Macro auto-fetched from Yahoo Finance."
+}

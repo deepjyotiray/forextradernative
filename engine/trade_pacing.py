@@ -11,6 +11,7 @@ from typing import Dict, Optional
 import json
 import os
 from .backtest_context import get_backtest_now, is_backtest_mode
+from .time_utils import isoformat_ist
 
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,13 +71,13 @@ class TradePacingController:
     
     def record_trade_taken(self, outcome: Optional[str] = None):
         """Record that a trade was taken."""
-        current_time = time.time()
+        current_time = _now_ts()
         self._last_trade_time = current_time
         
         # Keep trade history for adaptive pacing
         trade_record = {
             "timestamp": current_time,
-            "datetime": _now_utc().isoformat(),
+            "datetime": isoformat_ist(_now_utc()),
             "outcome": outcome
         }
         

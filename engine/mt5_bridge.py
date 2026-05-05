@@ -12,16 +12,33 @@ import config as cfg
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 _MT5_TZ = timezone(timedelta(hours=3))  # MT5 broker server time (UTC+3)
+_MT5_OFFSET_SECONDS = int(_MT5_TZ.utcoffset(None).total_seconds())
 
 
 def _mt5_ts_to_utc(ts: int) -> datetime:
-    """MT5 timestamps are broker local time (UTC+3). Convert to true UTC."""
-    return datetime.fromtimestamp(ts, tz=_MT5_TZ).astimezone(timezone.utc)
+    """MT5 timestamps are broker-local wall-clock seconds (UTC+3). Convert to true UTC."""
+    return datetime.fromtimestamp(int(ts) - _MT5_OFFSET_SECONDS, tz=timezone.utc)
 
 
 def _mt5_ts_to_ist(ts: int) -> datetime:
-    """MT5 timestamp → IST (UTC+3 + 2h30m = UTC+5:30)."""
-    return datetime.fromtimestamp(ts, tz=_MT5_TZ).astimezone(_IST)
+    """MT5 broker timestamp converted directly to IST."""
+    return _mt5_ts_to_utc(ts).astimezone(_IST)
+
+
+def _deal_reason_name(reason_code: int) -> str:
+    mapping = {
+        getattr(mt5, "DEAL_REASON_CLIENT", None): "client",
+        getattr(mt5, "DEAL_REASON_MOBILE", None): "mobile",
+        getattr(mt5, "DEAL_REASON_WEB", None): "web",
+        getattr(mt5, "DEAL_REASON_EXPERT", None): "expert",
+        getattr(mt5, "DEAL_REASON_SL", None): "sl",
+        getattr(mt5, "DEAL_REASON_TP", None): "tp",
+        getattr(mt5, "DEAL_REASON_SO", None): "stopout",
+        getattr(mt5, "DEAL_REASON_ROLLOVER", None): "rollover",
+        getattr(mt5, "DEAL_REASON_VMARGIN", None): "variation_margin",
+        getattr(mt5, "DEAL_REASON_SPLIT", None): "split",
+    }
+    return str(mapping.get(reason_code, "unknown"))
 
 
 class MT5Bridge:
@@ -135,18 +152,40 @@ class MT5Bridge:
         self._last_tick = {
             "bid": tick.bid,
             "ask": tick.ask,
+            "last": tick.last,
             "spread": round(tick.ask - tick.bid, 2),
             "time": datetime.fromtimestamp(tick.time, tz=timezone.utc).isoformat(),
+            "time_msc": getattr(tick, "time_msc", 0),
             "volume": tick.volume,
+            "volume_real": getattr(tick, "volume_real", 0.0),
+            "flags": getattr(tick, "flags", 0),
         }
         return self._last_tick
+
+    def get_recent_ticks(
+        self,
+        window_seconds: int | None = None,
+        max_ticks: int | None = None,
+    ):
+        window = int(window_seconds or getattr(cfg, "TICK_PRESSURE_WINDOW_SECONDS", 8) or 8)
+        cap = int(max_ticks or getattr(cfg, "TICK_PRESSURE_MAX_TICKS", 250) or 250)
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(seconds=max(1, window))
+        ticks = mt5.copy_ticks_range(self._current_symbol, start, end, mt5.COPY_TICKS_INFO)
+        if ticks is None or len(ticks) == 0:
+            return ticks
+        if cap > 0 and len(ticks) > cap:
+            return ticks[-cap:]
+        return ticks
 
     # --- Candle Data ---
 
     TF_MAP = {
         "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
-        "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1,
+        "M15": mt5.TIMEFRAME_M15, "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1,
         "H4": mt5.TIMEFRAME_H4,
+        "D1": mt5.TIMEFRAME_D1,
     }
 
     def fetch_candles(self, timeframe: str = "M5", count: int = 0) -> pd.DataFrame:
@@ -159,7 +198,10 @@ class MT5Bridge:
         if rates is None or len(rates) == 0:
             return self._candle_cache.get(timeframe, pd.DataFrame())
         df = pd.DataFrame(rates)
-        df["datetime"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        # MT5 bar timestamps are broker-server time (UTC+3), not raw UTC.
+        # Normalize them to true UTC once here so every downstream consumer
+        # can format or compare candle times correctly.
+        df["datetime"] = pd.to_datetime(df["time"].map(_mt5_ts_to_utc), utc=True)
         df = df.rename(columns={"tick_volume": "volume"})
         for col in ["open", "high", "low", "close"]:
             df[col] = df[col].astype(float)
@@ -265,6 +307,66 @@ class MT5Bridge:
             "volume": result.volume,
         }
 
+    def open_pending_trade(
+        self,
+        direction: str,
+        volume: float,
+        entry_price: float,
+        sl: float,
+        tp: float,
+        comment: str = "FT_AI_PENDING",
+    ) -> Dict:
+        tick = mt5.symbol_info_tick(self._current_symbol)
+        if not tick:
+            return {"success": False, "error": "No tick data"}
+
+        side = str(direction or "").upper()
+        entry = round(float(entry_price or 0.0), 2)
+        if side not in {"BUY", "SELL"} or entry <= 0:
+            return {"success": False, "error": "Invalid direction or entry price"}
+
+        bid = float(tick.bid or 0.0)
+        ask = float(tick.ask or 0.0)
+        if side == "BUY":
+            order_type = mt5.ORDER_TYPE_BUY_LIMIT if entry < max(ask, bid) else mt5.ORDER_TYPE_BUY_STOP
+            order_type_name = "BUY_LIMIT" if entry < max(ask, bid) else "BUY_STOP"
+        else:
+            order_type = mt5.ORDER_TYPE_SELL_LIMIT if entry > min(bid or entry, ask or entry) else mt5.ORDER_TYPE_SELL_STOP
+            order_type_name = "SELL_LIMIT" if entry > min(bid or entry, ask or entry) else "SELL_STOP"
+
+        request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": self._current_symbol,
+            "volume": round(volume, 2),
+            "type": order_type,
+            "price": entry,
+            "sl": round(sl, 2),
+            "tp": round(tp, 2),
+            "deviation": cfg.DEVIATION,
+            "magic": cfg.MAGIC_NUMBER,
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": getattr(mt5, "ORDER_FILLING_RETURN", mt5.ORDER_FILLING_IOC),
+        }
+
+        result = mt5.order_send(request)
+        if result is None:
+            return {"success": False, "error": str(mt5.last_error())}
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            return {
+                "success": False,
+                "error": f"Code {result.retcode}: {result.comment}",
+                "retcode": result.retcode,
+                "order_type": order_type_name,
+            }
+        return {
+            "success": True,
+            "ticket": result.order,
+            "price": entry,
+            "volume": result.volume,
+            "order_type": order_type_name,
+        }
+
     def close_trade(self, ticket: int) -> Dict:
         pos = mt5.positions_get(ticket=ticket)
         if not pos:
@@ -352,6 +454,9 @@ class MT5Bridge:
             "magic": d.magic,
             "comment": d.comment,
             "entry": d.entry,  # 0=in, 1=out, 2=inout, 3=out_by
+            "reason_code": getattr(d, "reason", None),
+            "reason": _deal_reason_name(getattr(d, "reason", None)),
+            "time_msc": getattr(d, "time_msc", 0),
         } for d in deals]
 
     def get_closed_trades(self, days: int = 30) -> List[Dict]:
@@ -407,8 +512,11 @@ class MT5Bridge:
                 "open_time": entry["time"] if entry else "",
                 "close_time": last_out["time"],
                 "reason": last_out["comment"],
+                "mt5_reason": last_out.get("reason", ""),
+                "mt5_reason_code": last_out.get("reason_code"),
                 "magic": last_out["magic"],
                 "comment": last_out["comment"],
+                "source": "deals",
             })
             deal_pids.add(pid)
 
@@ -468,6 +576,8 @@ class MT5Bridge:
                         "open_time": _mt5_ts_to_utc(open_ord.time_setup).isoformat(),
                         "close_time": _mt5_ts_to_utc(close_ord.time_setup).isoformat(),
                         "reason": close_ord.comment,
+                        "mt5_reason": "orders_fallback",
+                        "mt5_reason_code": None,
                         "magic": open_ord.magic,
                         "comment": close_ord.comment,
                         "source": "orders",  # flag that this came from order fallback

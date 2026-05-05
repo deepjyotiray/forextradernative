@@ -21,6 +21,7 @@ try:
 except Exception:  # pragma: no cover - numpy should exist, but keep logger resilient
     np = None
 from .backtest_context import get_backtest_now, is_backtest_mode
+from .time_utils import isoformat_ist
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ATTRIBUTION_FILE = os.path.join(_BASE_DIR, "trade_attribution.jsonl")
@@ -77,7 +78,7 @@ class TradeAttributionEngine:
                 trade_type = "COUNTER_TREND"
         
         attribution = {
-            "timestamp": _now_utc().isoformat(),
+            "timestamp": isoformat_ist(_now_utc()),
             "unix_time": _now_utc().timestamp(),
             "strategy": strategy,
             "setup_direction": setup_direction,
@@ -140,7 +141,7 @@ class TradeAttributionEngine:
             "pnl": round(pnl, 2),
             "trade_duration": trade_duration,
             "exit_reason": exit_reason,
-            "completion_time": _now_utc().isoformat(),
+            "completion_time": isoformat_ist(_now_utc()),
         })
         
         self._write_attribution(attribution)

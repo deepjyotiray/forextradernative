@@ -43,11 +43,23 @@ async def get_presets():
     )
     return {
         "symbols": cfg.AVAILABLE_SYMBOLS,
-        "strategies": ["AUTO", "SMC_CONFLUENCE", "SWEEP_SCALPER"],
+        "strategies": [
+            "AUTO",
+            "SMC_CONFLUENCE",
+            "M15_SUPPORT_RESISTANCE_REJECTION_V1",
+            "SWEEP_SCALPER",
+            "TREND_CHANNEL",
+        ],
         "profiles": cfg.list_runtime_profiles("backtest"),
         "defaults": {
             "symbol": cfg.SYMBOL,
-            "strategy": cfg.DEFAULT_STRATEGY if cfg.DEFAULT_STRATEGY in ("AUTO", "SMC_CONFLUENCE", "SWEEP_SCALPER") else "AUTO",
+            "strategy": cfg.DEFAULT_STRATEGY if cfg.DEFAULT_STRATEGY in (
+                "AUTO",
+                "SMC_CONFLUENCE",
+                "M15_SUPPORT_RESISTANCE_REJECTION_V1",
+                "SWEEP_SCALPER",
+                "TREND_CHANNEL",
+            ) else "AUTO",
             "initial_balance": 10000.0,
             "config_profile": cfg.get_active_profile("backtest"),
             "use_runtime_config": True,

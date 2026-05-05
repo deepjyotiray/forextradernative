@@ -39,11 +39,21 @@ class _FakeRiskManager:
 
 
 class _FakeM15Context:
-    def __init__(self, allowed=True, reason="M15_CONTEXT_PASS", candle_confirmation=True, spike_allowed=True):
+    def __init__(
+        self,
+        allowed=True,
+        reason="M15_CONTEXT_PASS",
+        candle_confirmation=True,
+        spike_allowed=True,
+        support_zone=None,
+        resistance_zone=None,
+    ):
         self.allowed = allowed
         self.reason = reason
         self.candle_confirmation = candle_confirmation
         self.spike_allowed = spike_allowed
+        self.support_zone = support_zone
+        self.resistance_zone = resistance_zone
 
     def evaluate_trade_context(self, data, direction, signal=None):
         return {
@@ -51,6 +61,8 @@ class _FakeM15Context:
             "reason": self.reason,
             "distance_atr": 0.12,
             "candle_confirmation": self.candle_confirmation,
+            "support_zone": self.support_zone,
+            "resistance_zone": self.resistance_zone,
         }
 
     def evaluate_spike_context(self, data):
@@ -67,6 +79,7 @@ class MasterTradeGateTests(unittest.TestCase):
             "TRADE_SCORE_MIN": cfg.TRADE_SCORE_MIN,
             "TRADE_SCORE_PREMIUM": cfg.TRADE_SCORE_PREMIUM,
             "TRADE_SCORE_STRICT_AFTER_LOSS": cfg.TRADE_SCORE_STRICT_AFTER_LOSS,
+            "COUNTER_TREND_MIN_SCORE": cfg.COUNTER_TREND_MIN_SCORE,
             "AUTO_RELAX_ENABLED": cfg.AUTO_RELAX_ENABLED,
             "AUTO_RELAX_ONLY_GOOD_SESSION": cfg.AUTO_RELAX_ONLY_GOOD_SESSION,
             "AUTO_RELAX_BLOCK_AFTER_LOSS": cfg.AUTO_RELAX_BLOCK_AFTER_LOSS,
@@ -86,10 +99,15 @@ class MasterTradeGateTests(unittest.TestCase):
             "XGB_BLOCK_THRESHOLD": cfg.XGB_BLOCK_THRESHOLD,
             "XGB_BLEND_CONFIDENCE_ENABLED": cfg.XGB_BLEND_CONFIDENCE_ENABLED,
             "XGB_LOG_CONFIDENCE_ENABLED": cfg.XGB_LOG_CONFIDENCE_ENABLED,
+            "M15_SR_MAX_SPREAD": cfg.M15_SR_MAX_SPREAD,
+            "SMC_SPREAD_MEAN_MAX": cfg.SMC_SPREAD_MEAN_MAX,
+            "SCALPER_SPREAD_MEAN_MAX": cfg.SCALPER_SPREAD_MEAN_MAX,
+            "TREND_CHANNEL_MAX_SPREAD": cfg.TREND_CHANNEL_MAX_SPREAD,
         }
         cfg.TRADE_SCORE_MIN = 75
         cfg.TRADE_SCORE_PREMIUM = 85
         cfg.TRADE_SCORE_STRICT_AFTER_LOSS = 85
+        cfg.COUNTER_TREND_MIN_SCORE = 80
         cfg.AUTO_RELAX_ENABLED = True
         cfg.AUTO_RELAX_ONLY_GOOD_SESSION = True
         cfg.AUTO_RELAX_BLOCK_AFTER_LOSS = True
@@ -109,6 +127,10 @@ class MasterTradeGateTests(unittest.TestCase):
         cfg.XGB_BLOCK_THRESHOLD = 0.35
         cfg.XGB_BLEND_CONFIDENCE_ENABLED = False
         cfg.XGB_LOG_CONFIDENCE_ENABLED = True
+        cfg.M15_SR_MAX_SPREAD = 0.45
+        cfg.SMC_SPREAD_MEAN_MAX = 0.50
+        cfg.SCALPER_SPREAD_MEAN_MAX = 0.65
+        cfg.TREND_CHANNEL_MAX_SPREAD = 0.60
 
     def tearDown(self):
         for key, value in self._original.items():
@@ -211,6 +233,120 @@ class MasterTradeGateTests(unittest.TestCase):
         )
         self.assertFalse(result["allowed"])
         self.assertEqual(result["reason"], "COUNTER_TREND_BLOCK: weak counter-trend setup")
+
+    def test_m15_signal_can_pass_on_candle_confirmation_without_sweep_reclaim(self):
+        signal = self._signal()
+        signal.update(
+            {
+                "_signal_family": "M15",
+                "_sweep_confirmed": False,
+                "_candle_confirmation": True,
+            }
+        )
+        result = master_trade_gate(
+            signal,
+            self._market_state(),
+            risk_manager=_FakeRiskManager(),
+            m15_context_provider=_FakeM15Context(allowed=False, reason="M15_CONTEXT_BLOCK: should be ignored"),
+        )
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["reason"], "MASTER_GATE_PASS")
+
+    def test_sweep_short_blocked_when_entry_is_inside_support_zone(self):
+        signal = self._signal(bias="SHORT", entry_spread=0.18)
+        signal.update(
+            {
+                "signal": "SELL",
+                "entry": 4565.24,
+                "_signal_family": "SWEEP",
+                "_sweep_confirmed": True,
+                "_candle_confirmation": True,
+            }
+        )
+        market_state = self._market_state(spread=0.18, bias="SHORT")
+        market_state["tick"] = {"bid": 4565.24, "ask": 4565.42, "spread": 0.18}
+        market_state["bias"] = {"direction": "SHORT"}
+        market_state["indicators"] = {"atr14": 1.867, "atr_ratio": 1.0, "body_ratio": 0.72}
+
+        result = master_trade_gate(
+            signal,
+            market_state,
+            risk_manager=_FakeRiskManager(),
+            m15_context_provider=_FakeM15Context(
+                allowed=False,
+                reason="M15_CONTEXT_BLOCK: should be ignored for sweep",
+                support_zone={"zone_low": 4563.10, "zone_high": 4565.30, "zone_mid": 4564.20},
+            ),
+        )
+
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["reason"], "OPPOSING_ZONE_BLOCK: entry inside support zone [4563.10-4565.30]")
+
+    def test_sweep_long_blocked_when_entry_is_inside_resistance_zone(self):
+        signal = self._signal(entry_spread=0.18)
+        signal.update(
+            {
+                "signal": "BUY",
+                "entry": 4568.20,
+                "_signal_family": "SWEEP",
+                "_sweep_confirmed": True,
+                "_candle_confirmation": True,
+            }
+        )
+        market_state = self._market_state(spread=0.18, bias="LONG")
+        market_state["tick"] = {"bid": 4568.02, "ask": 4568.20, "spread": 0.18}
+        market_state["bias"] = {"direction": "LONG"}
+        market_state["indicators"] = {"atr14": 1.95, "atr_ratio": 1.0, "body_ratio": 0.72}
+
+        result = master_trade_gate(
+            signal,
+            market_state,
+            risk_manager=_FakeRiskManager(),
+            m15_context_provider=_FakeM15Context(
+                allowed=False,
+                reason="M15_CONTEXT_BLOCK: should be ignored for sweep",
+                resistance_zone={"zone_low": 4568.00, "zone_high": 4568.40, "zone_mid": 4568.20},
+            ),
+        )
+
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["reason"], "OPPOSING_ZONE_BLOCK: entry inside resistance zone [4568.00-4568.40]")
+
+    def test_sweep_signal_uses_scalper_spread_limit_in_master_gate(self):
+        signal = self._signal(entry_spread=0.55)
+        signal.update(
+            {
+                "_signal_family": "SWEEP",
+                "_sweep_confirmed": True,
+                "_candle_confirmation": True,
+            }
+        )
+        result = master_trade_gate(
+            signal,
+            self._market_state(spread=0.55),
+            risk_manager=_FakeRiskManager(),
+            m15_context_provider=_FakeM15Context(),
+        )
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["reason"], "MASTER_GATE_PASS")
+
+    def test_trend_signal_uses_trend_spread_limit_in_master_gate(self):
+        signal = self._signal(entry_spread=0.55)
+        signal.update(
+            {
+                "_signal_family": "TREND",
+                "_sweep_confirmed": True,
+                "_candle_confirmation": True,
+            }
+        )
+        result = master_trade_gate(
+            signal,
+            self._market_state(spread=0.55),
+            risk_manager=_FakeRiskManager(),
+            m15_context_provider=_FakeM15Context(allowed=False, reason="M15_CONTEXT_BLOCK: should be ignored"),
+        )
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["reason"], "MASTER_GATE_PASS")
 
     def test_bot_stops_after_two_consecutive_losses(self):
         risk = RiskManager()

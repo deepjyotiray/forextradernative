@@ -210,6 +210,49 @@ class M15SupportResistanceStrategyTests(unittest.TestCase):
         self.assertEqual(outcome["signal"], "NO_TRADE")
         self.assertEqual(outcome["reason"], "Post-sweep candle did not confirm BUY")
 
+    def test_directional_setup_uses_passed_tick_pressure_without_name_error(self):
+        closed = _frame(
+            [
+                (100.30, 100.50, 100.10, 100.22, 110),
+                (100.18, 100.60, 99.92, 100.48, 135),
+            ]
+        )
+        zone = {
+            "zone_id": "SUP_6H_100.10",
+            "type": "support",
+            "zone_low": 100.00,
+            "zone_high": 100.20,
+            "zone_mid": 100.10,
+            "touches": 3,
+            "distance": 0.02,
+            "max_distance_abs": 0.40,
+            "lookback_hours": 6,
+            "single_extreme": False,
+            "spike_based": False,
+            "random_cross": False,
+        }
+        outcome = self.strategy._evaluate_directional_setup(
+            direction="BUY",
+            active_zone=zone,
+            opposite_zones=[{"zone_id": "RES_6H_101.20", "zone_mid": 101.20}],
+            closed=closed,
+            tick={"bid": 100.47, "ask": 100.49, "spread": 0.02},
+            current_price=100.48,
+            atr_m15=0.40,
+            positions=[],
+            now_utc=closed.iloc[-1]["datetime"].to_pydatetime(),
+            filter_results={
+                "spread": {"passed": True, "reason": "OK", "current": 0.02},
+                "manipulation": {"passed": True, "reason": "OK"},
+                "tick_pressure": {"passed": True, "reason": "OK"},
+                "zone_quality": {"passed": True, "reason": "OK"},
+            },
+            nearest_support=zone,
+            nearest_resistance={"zone_id": "RES_6H_101.20", "zone_low": 101.00, "zone_high": 101.30, "zone_mid": 101.20, "touches": 2},
+            tick_pressure={"pressure_score": 0.18, "directional_bias": "LONG"},
+        )
+        self.assertIn(outcome["signal"], ("BUY", "NO_TRADE"))
+
     def test_cooldown_logic_blocks_before_required_candles(self):
         last_trade = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
         self.strategy._last_trade_candle_by_direction["BUY"] = last_trade
@@ -246,6 +289,54 @@ class M15SupportResistanceStrategyTests(unittest.TestCase):
             self.assertTrue(resistance)
         finally:
             cfg.M15_SR_EXTENDED_LOOKBACK_HOURS = original_extended
+
+
+    def test_choppy_market_not_triggered_by_single_wide_candle(self):
+        """A single candle spanning both zones should NOT be flagged as choppy."""
+        support_zone = {"zone_low": 100.00, "zone_high": 100.20, "zone_mid": 100.10}
+        resistance_zone = {"zone_low": 101.80, "zone_high": 102.00, "zone_mid": 101.90}
+        # One wide candle that touches both zones simultaneously
+        df = _frame([
+            (100.50, 100.60, 100.40, 100.55, 100),
+            (100.55, 100.65, 100.45, 100.60, 100),
+            (100.10, 102.00, 99.95, 101.50, 200),  # wide candle touching both
+        ])
+        self.assertFalse(self.strategy._is_choppy_market(df, support_zone, resistance_zone))
+
+    def test_choppy_market_triggered_by_different_candles_touching_each_zone(self):
+        """Touches on different candles — one at support, one at resistance — is genuinely choppy."""
+        support_zone = {"zone_low": 100.00, "zone_high": 100.20, "zone_mid": 100.10}
+        resistance_zone = {"zone_low": 101.80, "zone_high": 102.00, "zone_mid": 101.90}
+        df = _frame([
+            (100.50, 100.60, 100.40, 100.55, 100),
+            (100.55, 102.00, 101.70, 101.90, 110),  # touches resistance only
+            (101.80, 101.95, 100.05, 100.15, 120),  # touches support only
+        ])
+        self.assertTrue(self.strategy._is_choppy_market(df, support_zone, resistance_zone))
+
+
+    def test_random_cross_not_flagged_when_last_close_above_support_zone(self):
+        """Support zone: last close above zone_high means price has bounced — not a random cross."""
+        # Older closes dipped below, but last close is cleanly above — valid support bounce
+        closes = [100.50, 99.80, 100.10, 100.55, 100.70]
+        self.assertFalse(M15SupportResistanceStrategy._has_random_closes(closes, 100.00, 100.20, "support"))
+
+    def test_random_cross_not_flagged_when_last_close_below_resistance_zone(self):
+        """Resistance zone: last close below zone_low means price has rejected — not a random cross."""
+        closes = [100.50, 101.30, 100.90, 100.60, 100.40]
+        self.assertFalse(M15SupportResistanceStrategy._has_random_closes(closes, 101.00, 101.20, "resistance"))
+
+    def test_random_cross_flagged_when_recent_closes_straddle_zone_indecisively(self):
+        """Recent closes alternating above and below with last close inside zone — genuine random cross."""
+        # Last close is inside the zone (no clear directional bias)
+        closes = [100.50, 101.30, 100.90, 101.25, 101.05]
+        self.assertTrue(M15SupportResistanceStrategy._has_random_closes(closes, 101.00, 101.10, "resistance"))
+
+    def test_random_cross_only_uses_last_3_closes_not_older_history(self):
+        """Old closes that straddle the zone should not flag it if the 3 most recent are clean."""
+        # First 2 closes straddle the zone, but last 3 are all cleanly above
+        closes = [99.80, 101.50, 100.60, 100.65, 100.70]
+        self.assertFalse(M15SupportResistanceStrategy._has_random_closes(closes, 100.00, 100.20, "support"))
 
 
 if __name__ == "__main__":

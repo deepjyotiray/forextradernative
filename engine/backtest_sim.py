@@ -24,8 +24,10 @@ from .mtf_bias import compute_bias
 from .regime import classify_regime
 from .session_filter import is_market_open, is_session_open_blocked
 from .smc_strategy import SMCStrategy
+from .m15_sr_strategy import M15SupportResistanceStrategy
 from .strategy_manager import StrategyManager
 from .sweep_scalper import SweepScalper
+from .strategies.trend_channel_strategy import TrendChannelStrategy
 from .tick_processor import TickProcessor
 from .zones import ZoneDetector
 from .xgb_model import xgb_model
@@ -175,10 +177,17 @@ class SimExecutionEngine:
             )
         return out
 
-    def calculate_lot(self, sl_distance: float, high_conf: bool = False) -> float:
+    def calculate_lot(self, sl_distance: float, high_conf: bool = False, strategy: str = "") -> float:
         if sl_distance <= 0:
             return cfg.MIN_LOT
-        risk_pct = self._risk_pct * (cfg.SMC_HIGH_CONF_RISK_MULTIPLIER if high_conf else 1.0)
+        strategy_name = str(strategy or "").upper()
+        if strategy_name == "SWEEP_SCALPER":
+            base_risk_pct = float(getattr(cfg, "INTRADAY_RISK_PCT", self._risk_pct))
+        elif strategy_name in {"SMC_CONFLUENCE", "M15_SUPPORT_RESISTANCE_REJECTION_V1", "TREND_CHANNEL"}:
+            base_risk_pct = float(getattr(cfg, "SWING_RISK_PCT", self._risk_pct))
+        else:
+            base_risk_pct = self._risk_pct
+        risk_pct = base_risk_pct * (cfg.SMC_HIGH_CONF_RISK_MULTIPLIER if high_conf else 1.0)
         risk_amount = self.balance * (risk_pct / 100.0)
         lot = risk_amount / (sl_distance * cfg.PIP_VALUE_PER_LOT)
         lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
@@ -202,7 +211,7 @@ class SimExecutionEngine:
         sl_distance = abs(entry - sl)
         if sl_distance <= 0:
             return None
-        vol = self.calculate_lot(sl_distance, high_conf=bool(signal.get("_high_conf", False)))
+        vol = self.calculate_lot(sl_distance, high_conf=bool(signal.get("_high_conf", False)), strategy=strategy)
         self._ticket_counter += 1
         t = SimTrade(
             ticket=self._ticket_counter,
@@ -442,9 +451,13 @@ class BacktestRunner:
         self.zone_detector = ZoneDetector()
         self.smc = SMCStrategy()
         self.scalper = SweepScalper()
+        self.m15_sr = M15SupportResistanceStrategy()
+        self.trend_channel = TrendChannelStrategy()
         self.strategy_manager = StrategyManager()
         self.strategy_manager.register(self.smc)
         self.strategy_manager.register(self.scalper)
+        self.strategy_manager.register(self.m15_sr)
+        self.strategy_manager.register(self.trend_channel)
         self._decision_entries: List[Dict] = []
 
     def run(
@@ -635,22 +648,24 @@ class BacktestRunner:
                     continue
 
                 # Live-equivalent XGB guard.
-                xgb_prob = xgb_model.predict_win_prob(sig, indicators, regime, bias, last_tick)
-                if xgb_model.is_trained and xgb_prob < 0.35:
-                    strat_counts[strat_name]["skipped"] += 1
-                    reason = f"XGB blocked ({xgb_prob:.0%})"
-                    top_skip_reasons[reason] += 1
-                    thought_kind = "XGB_BLOCK"
-                    thought_message = f"[{strat_name}] {reason}"
-                    event_tag = "XGB_BLOCK"
-                    self._capture_replay_point(
-                        replay_frames, replay_thoughts, tick_count, capture_every, now_utc, last_tick,
-                        sim, current_frames, thought_kind, thought_message, event_tag, force=True
-                    )
-                    continue
-                if xgb_model.is_trained:
-                    sig["confidence"] = round(float(sig.get("confidence", 0)) * 0.7 + xgb_prob * 0.3, 3)
-                    sig["xgb_prob"] = xgb_prob
+                if not getattr(cfg, "XGB_BYPASS_ENABLED", False):
+                    xgb_prob = xgb_model.predict_win_prob(sig, indicators, regime, bias, last_tick)
+                    sig["xgb_prob"] = xgb_prob if xgb_model.is_trained else None
+                    sig["_xgb_trained"] = bool(xgb_model.is_trained)
+                    if bool(getattr(cfg, "XGB_BLOCKING_ENABLED", False)) and xgb_model.is_trained and xgb_prob < float(getattr(cfg, "XGB_BLOCK_THRESHOLD", 0.35) or 0.35):
+                        strat_counts[strat_name]["skipped"] += 1
+                        reason = f"XGB blocked ({xgb_prob:.0%})"
+                        top_skip_reasons[reason] += 1
+                        thought_kind = "XGB_BLOCK"
+                        thought_message = f"[{strat_name}] {reason}"
+                        event_tag = "XGB_BLOCK"
+                        self._capture_replay_point(
+                            replay_frames, replay_thoughts, tick_count, capture_every, now_utc, last_tick,
+                            sim, current_frames, thought_kind, thought_message, event_tag, force=True
+                        )
+                        continue
+                    if bool(getattr(cfg, "XGB_BLEND_CONFIDENCE_ENABLED", False)) and xgb_model.is_trained:
+                        sig["confidence"] = round(float(sig.get("confidence", 0)) * 0.7 + xgb_prob * 0.3, 3)
 
                 can_open, why = sim.can_open(now_utc)
                 if not can_open:
@@ -848,11 +863,12 @@ class BacktestRunner:
         market_data: Dict,
         decision_sink: Callable[[Dict], None],
     ) -> Tuple[Dict, str]:
-        # Mirror live path: StrategyManager.generate_signal (includes validation path).
         self.strategy_manager.set_active(selected_strategy if selected_strategy != "AUTO" else "AUTO")
         with backtest_context(decision_sink=decision_sink):
-            sig, strat_name, _trade_id = self.strategy_manager.generate_signal(market_data)
-        sig = sig or {"signal": "NO_TRADE", "reason": "Empty signal"}
+            chosen = self.strategy_manager.generate_signal(market_data)
+        chosen = chosen or {"signal": {"signal": "NO_TRADE", "reason": "Empty signal"}, "strategy": selected_strategy}
+        sig = chosen.get("signal") or {"signal": "NO_TRADE", "reason": "Empty signal"}
+        strat_name = chosen.get("strategy") or selected_strategy
         return sig, (strat_name or selected_strategy)
 
     def _decision_stats(self, top_skip_reasons: Counter) -> Dict:
@@ -870,9 +886,12 @@ class BacktestRunner:
     def _runtime_config_snapshot(use_runtime_config: bool) -> Dict:
         keys = [
             "MAX_RISK_PCT",
+            "INTRADAY_RISK_PCT",
+            "SWING_RISK_PCT",
             "MAX_POSITIONS",
             "MIN_TRADE_COOLDOWN",
             "SESSION_MAX_TRADES",
+            "MAX_TRADES_PER_DAY",
             "SMC_THRESHOLD_WITH_TREND",
             "SMC_THRESHOLD_COUNTER",
             "SMC_MIN_RR",
@@ -883,6 +902,9 @@ class BacktestRunner:
             "SCALPER_SPREAD_PERCENTILE_MAX",
             "SCALPER_TICK_DIR_THRESHOLD",
             "COMPRESSION_ATR_MULTIPLIER",
+            "CALENDAR_BLOCKING_ENABLED",
+            "CALENDAR_BLOCK_BEFORE_MINUTES",
+            "CALENDAR_BLOCK_AFTER_MINUTES",
             "TRADE_WINDOW_LONDON_START",
             "TRADE_WINDOW_LONDON_END",
             "TRADE_WINDOW_OVERLAP_START",

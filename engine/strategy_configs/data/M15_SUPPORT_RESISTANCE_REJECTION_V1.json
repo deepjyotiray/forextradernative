@@ -1,0 +1,30 @@
+{
+  "enabled": true,
+  "risk_pct": 1,
+  "fixed_lot": null,
+  "max_active_trades": 2,
+  "max_trades_day": 100,
+  "spread_max": 0.6,
+  "sl_min": 8,
+  "sl_max": 20,
+  "tp1_r": 1.5,
+  "tp2_r": 2.5,
+  "tp3_r": 3,
+  "sessions": [
+    "LONDON",
+    "NEW_YORK"
+  ],
+  "news_block": false,
+  "cooldown_seconds": 120,
+  "consecutive_loss_limit": 3,
+  "loss_pause_seconds": 900,
+  "notes": "",
+  "lookback_hours": 2,
+  "min_touches": 2,
+  "zone_atr_mult": 0.25,
+  "entry_buffer_atr": 0.1,
+  "sl_buffer_atr": 0.35,
+  "min_rr": 1.5,
+  "require_candle_confirmation": true,
+  "spike_zone_bypass": false
+}

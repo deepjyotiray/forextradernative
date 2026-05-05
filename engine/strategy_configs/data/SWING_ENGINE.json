@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "risk_pct": 1,
+  "fixed_lot": null,
+  "max_active_trades": 1,
+  "max_trades_day": 5,
+  "spread_max": 0.7,
+  "sl_min": 10,
+  "sl_max": 25,
+  "tp1_r": 0.5,
+  "tp2_r": 0.75,
+  "tp3_r": 1.0,
+  "sessions": [
+    "LONDON",
+    "NEW_YORK"
+  ],
+  "news_block": false,
+  "cooldown_seconds": 120,
+  "consecutive_loss_limit": 3,
+  "loss_pause_seconds": 900,
+  "notes": ""
+}

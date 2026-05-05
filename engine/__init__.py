@@ -15,3 +15,5 @@ from .sweep_scalper import SweepScalper
 from .calendar import calendar
 from .correlation import correlation
 from .strategies import BaseStrategy
+from .trendline import detect_trendlines
+from .strategies.trend_channel_strategy import TrendChannelStrategy
