@@ -1083,7 +1083,7 @@ def load_runtime_config(profile_name: str | None = None) -> dict:
 # overwrite the intended baseline in runtime_config.json.
 _ADAPTIVE_MANAGED_KEYS = {
     "SMC_THRESHOLD_WITH_TREND", "SMC_THRESHOLD_COUNTER",
-    "SMC_MIN_RR", "SESSION_MAX_TRADES", "MAX_TRADES_PER_DAY", "MIN_TRADE_COOLDOWN",
+    "SMC_MIN_RR", "SESSION_MAX_TRADES", "MIN_TRADE_COOLDOWN",
     "SMC_SPREAD_MEAN_MAX", "SMC_EARLY_FAIL_RANGING", "SMC_EARLY_FAIL_TRENDING",
 }
 

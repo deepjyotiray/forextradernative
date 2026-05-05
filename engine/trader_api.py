@@ -1124,16 +1124,10 @@ def _build_tick_data(trader) -> dict:
 def _refresh_tick_cache(trader) -> str:
     """Serialize tick data once per market tick or engine cycle. Returns cached JSON string."""
     global _ws_latest_tick, _ws_latest_cycle
-    cached_pnl = (getattr(trader, "_cached_floating_pnl", None) or {})
-    cached_pos = getattr(trader, "_cached_positions", None) or []
-    marker = (
-        trader._stats.get("cycles", 0),
-        getattr(trader, "_tick_seq", 0),
-        getattr(trader, "_positions_version", 0),
-        round(cached_pnl.get("total", 0) * 100),
-        # include per-position current_price so any price move triggers a push
-        tuple(round(p.get("current_price", 0) * 10) for p in cached_pos),
-    )
+    tick_seq = getattr(trader, "_tick_seq", 0)
+    pos_ver = getattr(trader, "_positions_version", 0)
+    pnl_cents = round((getattr(trader, "_cached_floating_pnl", None) or {}).get("total", 0) * 100)
+    marker = (tick_seq, pos_ver, pnl_cents)
     if marker == _ws_latest_cycle:
         return _ws_latest_tick
     _ws_latest_tick = _fast_json(_build_tick_data(trader))
@@ -1157,25 +1151,23 @@ async def ws_tick(ws: WebSocket):
             pass
 
     reader_task = asyncio.create_task(_reader())
-    last_pushed_marker = None
+    last_tick_seq = -1
+    last_positions_version = -1
+    last_pnl_cents = None
     try:
         while not reader_task.done():
             trader = _auto_trader_instance
             if trader is not None:
-                cached_pnl = (getattr(trader, "_cached_floating_pnl", None) or {})
-                cached_pos = getattr(trader, "_cached_positions", None) or []
-                marker = (
-                    trader._stats.get("cycles", 0),
-                    getattr(trader, "_tick_seq", 0),
-                    getattr(trader, "_positions_version", 0),
-                    round(cached_pnl.get("total", 0) * 100),
-                    tuple(round(p.get("current_price", 0) * 10) for p in cached_pos),
-                )
-                if marker != last_pushed_marker:
+                tick_seq = getattr(trader, "_tick_seq", 0)
+                pos_ver = getattr(trader, "_positions_version", 0)
+                pnl_cents = round((getattr(trader, "_cached_floating_pnl", None) or {}).get("total", 0) * 100)
+                if tick_seq != last_tick_seq or pos_ver != last_positions_version or pnl_cents != last_pnl_cents:
                     msg = _refresh_tick_cache(trader)
                     await ws.send_text(msg)
-                    last_pushed_marker = marker
-            await asyncio.sleep(max(0.005, float(getattr(cfg, "DASHBOARD_WS_PUSH_INTERVAL", 0.03))))
+                    last_tick_seq = tick_seq
+                    last_positions_version = pos_ver
+                    last_pnl_cents = pnl_cents
+            await asyncio.sleep(0.02)
     except (WebSocketDisconnect, Exception):
         pass
     finally:

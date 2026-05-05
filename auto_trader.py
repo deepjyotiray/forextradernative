@@ -318,7 +318,7 @@ class AutoTrader:
         threading.Thread(target=self._tick_pump_loop, daemon=True, name="MarketTickPump").start()
 
     def _tick_pump_loop(self):
-        _pos_refresh_interval = 0.03  # refresh positions every 30ms — matches WS push cadence
+        _pos_refresh_interval = 1.0  # full MT5 positions_get every 1s (structure/SL/TP sync)
         _last_pos_refresh = 0.0
         _last_pos_count = -1
         while self._running:
@@ -332,8 +332,10 @@ class AutoTrader:
                             self._last_tick_signature = signature
                             self._tick_seq += 1
                             self.tick_proc.feed(tick)
-                    # Refresh positions at 30ms cadence so live P&L stays smooth
-                    # regardless of how long the engine cycle takes
+                            # Recompute floating PnL from tick price on every new tick
+                            # — same speed as the price display, no extra MT5 call needed
+                            self._recompute_floating_pnl_from_tick(tick)
+                    # Full positions_get at 1s cadence for structure sync (SL/TP/volume)
                     now = time.monotonic()
                     if now - _last_pos_refresh >= _pos_refresh_interval:
                         _last_pos_refresh = now
@@ -351,6 +353,42 @@ class AutoTrader:
             except Exception:
                 pass
             time.sleep(max(0.005, float(getattr(cfg, "MARKET_TICK_POLL_INTERVAL", 0.02))))
+
+    def _recompute_floating_pnl_from_tick(self, tick: Dict):
+        """Recompute floating PnL from the live tick price without calling MT5.
+        Uses cached open trade records (entry price, volume, direction) so PnL
+        updates at the same frequency as the bid/ask price display."""
+        if not self.trades or not self.trades.open_trades:
+            return
+        bid = float(tick.get("bid") or 0.0)
+        ask = float(tick.get("ask") or 0.0)
+        if not bid and not ask:
+            return
+        total = 0.0
+        updated_positions = []
+        for pos in self._cached_positions:
+            ticket = pos.get("ticket")
+            trade = self.trades.open_trades.get(ticket) if ticket else None
+            if trade is None:
+                updated_positions.append(pos)
+                total += pos.get("net_profit", 0.0)
+                continue
+            close_price = bid if trade.direction == "BUY" else ask
+            if trade.direction == "BUY":
+                raw_pnl = (close_price - trade.entry) * trade.volume * cfg.PIP_VALUE_PER_LOT
+            else:
+                raw_pnl = (trade.entry - close_price) * trade.volume * cfg.PIP_VALUE_PER_LOT
+            pnl = round(raw_pnl, 2)
+            updated = dict(pos)
+            updated["current_price"] = close_price
+            updated["net_profit"] = pnl
+            updated_positions.append(updated)
+            total += pnl
+        self._cached_positions = updated_positions
+        self._cached_floating_pnl = {
+            "total": round(total, 2),
+            "count": len(updated_positions),
+        }
 
     def _cycle_once(self):
         self._cycle += 1

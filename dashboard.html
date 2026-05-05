@@ -801,7 +801,7 @@ function render(d,opts={}){
     `);
   }
 
-  // Open trades
+  // Open trades — always re-render on every WS tick so PnL stays live
   const mt5pos=d.mt5_positions||[];
   const tmTrades=tr.open_trades||[];
   const tmMap={}; tmTrades.forEach(t=>{tmMap[t.ticket]=t;});
@@ -862,10 +862,10 @@ function render(d,opts={}){
     <span><span class="label">Max DD:</span> <span class="red">${(perf.max_drawdown||0).toFixed(2)}</span></span>
   </div>`:'';
 
-  // Closed trades
+  // Closed trades (full render only)
   if(full){
     const cl=d.closed_history||[];
-    if(!cl.length){setHTML($('closedT'),openHtml+perfHtml+'<div style="color:var(--dim);padding:6px 0">No closed trades</div>');}
+    if(!cl.length){setHTML($('closedT'),perfHtml+'<div style="color:var(--dim);padding:6px 0">No closed trades</div>');setHTML($('openT'),openHtml);$('openT').style.display=op.length?'block':'none';}
     else{
     function parseDate(raw){
       if(!raw)return null;
@@ -899,7 +899,7 @@ function render(d,opts={}){
     });
     const days=Object.values(grouped).sort((a,b)=>b.date.localeCompare(a.date));
     if(!window._cc)window._cc={};
-    let h=openHtml+perfHtml+'<table><th>#</th><th>Dir</th><th>Vol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Setup</th><th>MT5</th><th>IST</th>';
+    let h=perfHtml+'<table><th>#</th><th>Dir</th><th>Vol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Setup</th><th>MT5</th><th>IST</th>';
     days.forEach(day=>{
       day.trades.sort((a,b)=>(b._dt||0)-(a._dt||0));
       const dp=day.pnl;
@@ -929,6 +929,10 @@ function render(d,opts={}){
 
   // Live log — merge today's history with live WS entries
   _renderLiveLog(d.log||[]);
+
+  // Always sync open trades element
+  const _otEl=$('openT');
+  if(_otEl){_otEl.style.display=op.length?'block':'none';if(op.length)_otEl.innerHTML=openHtml;}
 
   const floatPnl=fp.total||0;
   updateTabTitle(d);
