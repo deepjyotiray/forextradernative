@@ -120,10 +120,23 @@ class PerformanceTracker:
         }
 
     def recent_stats(self, n: int = 20) -> Dict:
-        """Stats over last N trades for adaptive risk."""
-        recent = list(self._recent)[-n:]
+        """Stats over last N trades for today IST only (resets at midnight IST)."""
+        day_start_utc = _trading_day_start_utc()
+
+        def _in_today(t):
+            raw = t.get("time") or t.get("close_time", "")
+            if not raw:
+                return False
+            try:
+                dt = coerce_utc(raw)
+                return dt is not None and dt >= day_start_utc
+            except Exception:
+                return False
+
+        today = [t for t in self._recent if _in_today(t)]
+        recent = today[-n:] if today else []
         if not recent:
-            return {"total": 0, "win_rate": 0.5}
+            return {"total": 0, "win_rate": 0.5, "streak": self._current_streak()}
         pnls = [t.get("pnl", 0) for t in recent]
         wins = sum(1 for p in pnls if p > 0)
         return {
@@ -145,9 +158,23 @@ class PerformanceTracker:
             return min(1.25, 1.0 + streak * 0.05)
         return 1.0
 
+    def reset_for_new_day(self):
+        """Purge _recent of any trades not from today IST. Called at midnight IST."""
+        day_start_utc = _trading_day_start_utc()
+        kept = [
+            t for t in self._recent
+            if (lambda raw: (
+                bool(raw) and
+                (lambda dt: dt is not None and dt >= day_start_utc)(coerce_utc(raw))
+            ))(t.get("time") or t.get("close_time", ""))
+        ]
+        self._recent.clear()
+        for t in kept:
+            self._recent.append(t)
+
     def _current_streak(self) -> int:
         """Positive = win streak, negative = loss streak.
-        Only counts trades from the current trading day (resets at 12:00 IST).
+        Only counts trades from the current trading day (resets at midnight IST).
         Breakeven trades (pnl == 0.0) are ignored.
         """
         if not self._recent:

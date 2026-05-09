@@ -17,8 +17,6 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from ..strategies.base_strategy import BaseStrategy
-from ..indicators import ema, wilder_atr, supertrend
-from ..trendline import detect_trendlines
 import config as cfg
 
 
@@ -50,23 +48,21 @@ class TrendChannelStrategy(BaseStrategy):
             return _no(f"Spread {spread:.2f} > {max_spread}")
 
         price = tick["bid"]
-        h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        c = df["close"].values.astype(float)
 
-        # ── Supertrend ──────────────────────────────────────────────────
-        st_period = int(getattr(cfg, "TREND_CHANNEL_ST_PERIOD", 10))
-        st_mult   = float(getattr(cfg, "TREND_CHANNEL_ST_MULTIPLIER", 3.0))
-        st_dir, st_line = supertrend(h, l, c, st_period, st_mult)
-        st_direction = int(st_dir[-1])   # +1 up, -1 down
-        st_value     = float(st_line[-1])
+        ms = data.get("market_state") or {}
+        st = (ms.get("supertrend") or {}).get("M15") or {}
+        st_direction = int(st.get("direction", 0))
+        st_value     = float(st.get("value", 0.0))
+        st_stable    = bool(st.get("stable", False))
 
-        # Require supertrend to have been stable for at least 3 bars
-        if not all(int(d) == st_direction for d in st_dir[-3:]):
+        if not st_stable or st_direction == 0:
             return _no("Supertrend not yet stable (< 3 bars)")
 
-        # ── Channel detection ────────────────────────────────────────────
-        tl = detect_trendlines(df, symbol=getattr(cfg, "SYMBOL", "XAUUSD"), timeframe=tf)
+        tl = (ms.get("trendlines") or {}).get("M15") or {}
+        if not tl:
+            return _no("Trendlines not available")
+
+        c = df["close"].values.astype(float)
         channel = self._find_channel(tl, c, price, st_direction)
         if channel is None:
             trendlines = tl.get("trendlines", [])
@@ -77,12 +73,20 @@ class TrendChannelStrategy(BaseStrategy):
         support_price, resistance_price = channel
 
         # ── H1 bias alignment (optional) ────────────────────────────────
-        if getattr(cfg, "TREND_CHANNEL_REQUIRE_H1_ALIGN", True) and h1 is not None and len(h1) >= 50:
-            if not self._h1_aligned(h1, st_direction):
-                return _no(f"H1 not aligned with supertrend direction {st_direction:+d}")
+        if getattr(cfg, "TREND_CHANNEL_REQUIRE_H1_ALIGN", True):
+            h1_ema = (ms.get("ema") or {}).get("H1_20") or {}
+            h1_ema_val = float(h1_ema.get("value", 0.0))
+            h1_slope   = float(h1_ema.get("slope", 0.0))
+            if h1 is not None and len(h1) >= 50 and h1_ema_val > 0:
+                price_h1 = float(h1["close"].iloc[-1])
+                if st_direction == 1 and not (price_h1 > h1_ema_val and h1_slope > 0):
+                    return _no(f"H1 not aligned with supertrend direction {st_direction:+d}")
+                if st_direction == -1 and not (price_h1 < h1_ema_val and h1_slope < 0):
+                    return _no(f"H1 not aligned with supertrend direction {st_direction:+d}")
 
-        # ── Entry condition: price touching channel boundary ─────────────
-        atr_val = float(wilder_atr(h, l, c, 14)[-1])
+        atr_val = float((ms.get("atr") or {}).get("M15") or 0.0)
+        if atr_val <= 0:
+            return _no("M15 ATR unavailable")
         touch_tol = atr_val * float(getattr(cfg, "TREND_CHANNEL_TOUCH_ATR_MULT", 0.5))
 
         direction, entry_zone = None, None
@@ -239,16 +243,15 @@ class TrendChannelStrategy(BaseStrategy):
         return tl["slope"] * bar_index + tl["intercept"]
 
     # ------------------------------------------------------------------ #
-    # H1 alignment check
+    # H1 alignment check — kept for backward compat but no longer called
     # ------------------------------------------------------------------ #
 
     def _h1_aligned(self, h1: pd.DataFrame, st_direction: int) -> bool:
+        from ..indicators import ema as _ema
         c = h1["close"].values.astype(float)
-        h = h1["high"].values.astype(float)
-        l = h1["low"].values.astype(float)
         if len(c) < 20:
-            return True  # not enough data — don't block
-        ema20 = ema(c, 20)
+            return True
+        ema20 = _ema(c, 20)
         slope = ema20[-1] - ema20[-5] if len(ema20) >= 5 else 0
         price = c[-1]
         if st_direction == 1:

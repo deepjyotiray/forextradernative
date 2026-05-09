@@ -125,22 +125,28 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
           <label style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);font-weight:600;margin-bottom:8px;display:block">Selected Strategies</label>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" value="SMC_CONFLUENCE" onchange="updateSelectedStrategies()"> SMC
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" value="M15_SUPPORT_RESISTANCE_REJECTION_V1" onchange="updateSelectedStrategies()"> M15 SR
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" value="SWEEP_SCALPER" onchange="updateSelectedStrategies()"> SCALPER
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" value="TREND_CHANNEL" onchange="updateSelectedStrategies()"> TREND
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input type="checkbox" value="SWING_ENGINE" onchange="updateSelectedStrategies()"> SWING ENGINE
             </label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input type="checkbox" value="INTRADAY_ENGINE" onchange="updateSelectedStrategies()"> INTRADAY ENGINE
             </label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" value="SMC_CONFLUENCE" onchange="updateSelectedStrategies()"> SMC
+              <input type="checkbox" value="HTF_LONG" onchange="updateSelectedStrategies()"> HTF LONG
             </label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" value="SWEEP_SCALPER" onchange="updateSelectedStrategies()"> SCALPER
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" value="M15_SUPPORT_RESISTANCE_REJECTION_V1" onchange="updateSelectedStrategies()"> M15 SR
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" value="TREND_CHANNEL" onchange="updateSelectedStrategies()"> TREND
+              <input type="checkbox" value="HTF_SHORT" onchange="updateSelectedStrategies()"> HTF SHORT
             </label>
           </div>
         </div>
@@ -299,7 +305,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
           <h2 style="font-size:18px;font-weight:700;margin:0">SWING ENGINE</h2>
           <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">D1+H4 trend alignment → pullback to key level → H4 candle confirmation. SL 10–25pts, TP at 1.5R/2.5R/3R. Max 1 active trade.</p>
         </div>
-        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'SWING')" style="transform:scale(1.2)"></div>
+        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'SWING_ENGINE')" style="transform:scale(1.2)"></div>
       </div>
 
       <div class="card">
@@ -364,10 +370,10 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
                 <input type="checkbox" checked> London
               </label>
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" checked> Overlap
+                <input type="checkbox" checked> New York
               </label>
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" checked> New York
+                <input type="checkbox"> Asia
               </label>
             </div>
           </div>
@@ -416,7 +422,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
           <h2 style="font-size:18px;font-weight:700;margin:0">INTRADAY ENGINE</h2>
           <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">H1+M15 trend alignment → liquidity sweep at Asia/PDH/PDL/EQL → M5 body+volume+close confirmation. SL 1.5–3pts, TP at 1.5R/2R. London+NY only.</p>
         </div>
-        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'INTRADAY')" style="transform:scale(1.2)"></div>
+        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'INTRADAY_ENGINE')" style="transform:scale(1.2)"></div>
       </div>
 
       <div class="card">
@@ -478,13 +484,13 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
             <label>Trading Sessions</label>
             <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px">
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" checked> London
+                <input type="checkbox" id="intraday_session_asian"> Asian
               </label>
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" checked> Overlap
+                <input type="checkbox" id="intraday_session_london" checked> London
               </label>
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" checked> New York
+                <input type="checkbox" id="intraday_session_newyork" checked> New York
               </label>
             </div>
           </div>
@@ -808,6 +814,10 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
             <div class="toggle-switch enabled" onclick="toggleFilter(this, 'scalper_news_block')"></div>
           </div>
           <div class="form-group">
+            <label>Allow Asian Session</label>
+            <div class="toggle-switch" id="scalper_allow_asian_session" onclick="toggleFilter(this)"></div>
+          </div>
+          <div class="form-group">
             <label>Cooldown (seconds)</label>
             <input type="number" id="scalper_cooldown" min="0" max="3600" value="60">
           </div>
@@ -1085,6 +1095,186 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
       </div>
     </div>
     
+    <div id="tab-htflong" class="tab-content">
+      <div class="strategy-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:12px;background:var(--card);border:1px solid var(--border);border-radius:8px">
+        <div>
+          <h2 style="font-size:18px;font-weight:700;margin:0">HTF LONG</h2>
+          <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">Higher-timeframe macro bias engine — BUY only. DXY+US10Y trending down, weekly bullish, pullback into range, H1 structure UP.</p>
+        </div>
+        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'HTF_LONG')" style="transform:scale(1.2)"></div>
+      </div>
+
+      <div class="card">
+        <h3>Risk Settings</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Risk %</label>
+            <input type="number" id="htflong_risk_pct" min="0.1" max="5" step="0.1" value="1.0">
+          </div>
+          <div class="form-group">
+            <label>Fixed Lot</label>
+            <input type="number" id="htflong_fixed_lot" min="0.01" max="10" step="0.01" placeholder="blank = use risk%">
+          </div>
+          <div class="form-group">
+            <label>Max Active Trades <small style="color:var(--dim)">(locked: 1)</small></label>
+            <input type="number" id="htflong_max_active" min="1" max="3" value="1" disabled>
+          </div>
+          <div class="form-group">
+            <label>Max Trades/Day</label>
+            <input type="number" id="htflong_max_trades_day" min="1" max="5" value="2">
+          </div>
+          <div class="form-group">
+            <label>Max Spread</label>
+            <input type="number" id="htflong_spread_max" min="0.1" max="2" step="0.1" value="0.8">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Levels</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Min R:R</label>
+            <input type="number" id="htflong_min_rr" min="0.5" max="5" step="0.1" value="1.8">
+          </div>
+          <div class="form-group">
+            <label>SL Min</label>
+            <input type="number" id="htflong_sl_min" min="5" max="50" step="1" value="15">
+          </div>
+          <div class="form-group">
+            <label>SL Max</label>
+            <input type="number" id="htflong_sl_max" min="10" max="50" step="1" value="30">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Filters</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>News Block</label>
+            <div class="toggle-switch enabled" onclick="toggleFilter(this, 'htflong_news_block')"></div>
+          </div>
+          <div class="form-group">
+            <label>Cooldown (seconds)</label>
+            <input type="number" id="htflong_cooldown" min="0" max="14400" value="3600">
+          </div>
+          <div class="form-group">
+            <label>Consecutive Loss Limit</label>
+            <input type="number" id="htflong_loss_limit" min="1" max="5" value="2">
+          </div>
+          <div class="form-group">
+            <label>Loss Pause (seconds)</label>
+            <input type="number" id="htflong_loss_pause" min="0" max="14400" value="3600">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Notes</h3>
+        <textarea id="htflong_notes" rows="4" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;color:var(--text);font-family:inherit;resize:vertical" placeholder="Strategy-specific notes..."></textarea>
+      </div>
+
+      <div class="footer">
+        <div class="status-text"><span id="htflongSaveStatus"></span><span id="htflongLastSaved">Last saved: Never</span></div>
+        <div style="display:flex;gap:12px">
+          <button class="btn btn-reset" onclick="resetStrategyDefaults('htflong')">Reset to Defaults</button>
+          <button class="btn btn-save" onclick="saveStrategyConfig('htflong')">Save HTF LONG Config</button>
+        </div>
+        <div class="status-text">Open HTF LONG trades: <span id="htflongOpenTrades">0</span></div>
+      </div>
+    </div>
+
+    <div id="tab-htfshort" class="tab-content">
+      <div class="strategy-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:12px;background:var(--card);border:1px solid var(--border);border-radius:8px">
+        <div>
+          <h2 style="font-size:18px;font-weight:700;margin:0">HTF SHORT</h2>
+          <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">Higher-timeframe macro bias engine — SELL only. DXY+US10Y trending up, weekly bearish, pullback into range, H1 structure DOWN.</p>
+        </div>
+        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'HTF_SHORT')" style="transform:scale(1.2)"></div>
+      </div>
+
+      <div class="card">
+        <h3>Risk Settings</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Risk %</label>
+            <input type="number" id="htfshort_risk_pct" min="0.1" max="5" step="0.1" value="1.0">
+          </div>
+          <div class="form-group">
+            <label>Fixed Lot</label>
+            <input type="number" id="htfshort_fixed_lot" min="0.01" max="10" step="0.01" placeholder="blank = use risk%">
+          </div>
+          <div class="form-group">
+            <label>Max Active Trades <small style="color:var(--dim)">(locked: 1)</small></label>
+            <input type="number" id="htfshort_max_active" min="1" max="3" value="1" disabled>
+          </div>
+          <div class="form-group">
+            <label>Max Trades/Day</label>
+            <input type="number" id="htfshort_max_trades_day" min="1" max="5" value="2">
+          </div>
+          <div class="form-group">
+            <label>Max Spread</label>
+            <input type="number" id="htfshort_spread_max" min="0.1" max="2" step="0.1" value="0.8">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Levels</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Min R:R</label>
+            <input type="number" id="htfshort_min_rr" min="0.5" max="5" step="0.1" value="1.8">
+          </div>
+          <div class="form-group">
+            <label>SL Min</label>
+            <input type="number" id="htfshort_sl_min" min="5" max="50" step="1" value="15">
+          </div>
+          <div class="form-group">
+            <label>SL Max</label>
+            <input type="number" id="htfshort_sl_max" min="10" max="50" step="1" value="30">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Filters</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>News Block</label>
+            <div class="toggle-switch enabled" onclick="toggleFilter(this, 'htfshort_news_block')"></div>
+          </div>
+          <div class="form-group">
+            <label>Cooldown (seconds)</label>
+            <input type="number" id="htfshort_cooldown" min="0" max="14400" value="3600">
+          </div>
+          <div class="form-group">
+            <label>Consecutive Loss Limit</label>
+            <input type="number" id="htfshort_loss_limit" min="1" max="5" value="2">
+          </div>
+          <div class="form-group">
+            <label>Loss Pause (seconds)</label>
+            <input type="number" id="htfshort_loss_pause" min="0" max="14400" value="3600">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Notes</h3>
+        <textarea id="htfshort_notes" rows="4" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;color:var(--text);font-family:inherit;resize:vertical" placeholder="Strategy-specific notes..."></textarea>
+      </div>
+
+      <div class="footer">
+        <div class="status-text"><span id="htfshortSaveStatus"></span><span id="htfshortLastSaved">Last saved: Never</span></div>
+        <div style="display:flex;gap:12px">
+          <button class="btn btn-reset" onclick="resetStrategyDefaults('htfshort')">Reset to Defaults</button>
+          <button class="btn btn-save" onclick="saveStrategyConfig('htfshort')">Save HTF SHORT Config</button>
+        </div>
+        <div class="status-text">Open HTF SHORT trades: <span id="htfshortOpenTrades">0</span></div>
+      </div>
+    </div>
+
     <div id="tab-trend" class="tab-content">
       <div class="strategy-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:12px;background:var(--card);border:1px solid var(--border);border-radius:8px">
         <div>
@@ -1229,20 +1419,24 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 <script>
 // ── Labels & tab mapping ──────────────────────────────────────────────────
 const STRAT_LABELS = {
+  'SMC_CONFLUENCE': 'SMC',
+  'M15_SUPPORT_RESISTANCE_REJECTION_V1': 'M15 SR',
+  'SWEEP_SCALPER': 'SCALPER',
+  'TREND_CHANNEL': 'TREND',
   'SWING_ENGINE': 'SWING ENGINE',
   'INTRADAY_ENGINE': 'INTRADAY ENGINE',
-  'SMC_CONFLUENCE': 'SMC',
-  'SWEEP_SCALPER': 'SCALPER',
-  'M15_SUPPORT_RESISTANCE_REJECTION_V1': 'M15 SR',
-  'TREND_CHANNEL': 'TREND'
+  'HTF_LONG': 'HTF LONG',
+  'HTF_SHORT': 'HTF SHORT'
 };
 const STRAT_TAB = {
+  'SMC_CONFLUENCE': 'smc',
+  'M15_SUPPORT_RESISTANCE_REJECTION_V1': 'm15sr',
+  'SWEEP_SCALPER': 'scalper',
+  'TREND_CHANNEL': 'trend',
   'SWING_ENGINE': 'swing',
   'INTRADAY_ENGINE': 'intraday',
-  'SMC_CONFLUENCE': 'smc',
-  'SWEEP_SCALPER': 'scalper',
-  'M15_SUPPORT_RESISTANCE_REJECTION_V1': 'm15sr',
-  'TREND_CHANNEL': 'trend'
+  'HTF_LONG': 'htflong',
+  'HTF_SHORT': 'htfshort'
 };
 
 // ── Live state ────────────────────────────────────────────────────────────
@@ -1481,8 +1675,10 @@ function saveGlobalConfig() {
 
 // ── Per-strategy config save/reset ───────────────────────────────────────────
 const STRAT_KEY_MAP = {
-  swing:'SWING_ENGINE', intraday:'INTRADAY_ENGINE', smc:'SMC_CONFLUENCE',
-  scalper:'SWEEP_SCALPER', m15sr:'M15_SUPPORT_RESISTANCE_REJECTION_V1', trend:'TREND_CHANNEL'
+  smc:'SMC_CONFLUENCE', m15sr:'M15_SUPPORT_RESISTANCE_REJECTION_V1',
+  scalper:'SWEEP_SCALPER', trend:'TREND_CHANNEL',
+  swing:'SWING_ENGINE', intraday:'INTRADAY_ENGINE',
+  htflong:'HTF_LONG', htfshort:'HTF_SHORT'
 };
 function _readTabConfig(key) {
   const v = id => { const el=document.getElementById(id); return el?el.value:null; };
@@ -1499,6 +1695,16 @@ function _readTabConfig(key) {
     return Number.isFinite(parsed) ? parsed : undefined;
   };
   const tog = id => { const el=document.getElementById(id); return el?el.classList.contains('enabled'):undefined; };
+  const sessionList = prefix => {
+    const sessions = [];
+    const asian = document.getElementById(`${prefix}_session_asian`);
+    const london = document.getElementById(`${prefix}_session_london`);
+    const newYork = document.getElementById(`${prefix}_session_newyork`);
+    if (asian?.checked) sessions.push('ASIAN');
+    if (london?.checked) sessions.push('LONDON');
+    if (newYork?.checked) sessions.push('NEW_YORK');
+    return sessions.length ? sessions : undefined;
+  };
   const base = {
     enabled: tog(`tab-${key}-header`) ?? true,
     risk_pct: n(`${key}_risk_pct`),
@@ -1548,6 +1754,7 @@ function _readTabConfig(key) {
     tick_dir_threshold: n('scalper_tick_dir_threshold'),
     sweep_lookback: ni('scalper_sweep_lookback'),
     sweep_tolerance: n('scalper_sweep_tolerance'),
+    allow_asian_session: tog('scalper_allow_asian_session'),
     max_trades_session: ni('scalper_max_trades_session'),
     level_cooldown: ni('scalper_level_cooldown'),
     override_post_signal_spread: tog('scalper_override_post_signal'),
@@ -1572,6 +1779,11 @@ function _readTabConfig(key) {
     min_rr: n('trend_min_rr'),
     require_h1_align: tog('trend_require_h1_align'),
   });
+  if (key === 'intraday') Object.assign(base, {
+    sessions: sessionList('intraday'),
+  });
+  if (key === 'htflong') Object.assign(base, { min_rr: n('htflong_min_rr') });
+  if (key === 'htfshort') Object.assign(base, { min_rr: n('htfshort_min_rr') });
   return Object.fromEntries(Object.entries(base).filter(([,val])=>val!==undefined));
 }
 function saveStrategyConfig(key) {
@@ -1596,11 +1808,7 @@ function loadInitialData() {
   ]).then(([cfg, scfg, status]) => {
     const strats = cfg.strategies || {};
     _enabled = strats.enabled || [];
-    // Always use the canonical 6 strategies — ignore legacy group aliases from server
-    _available = [
-      'SMC_CONFLUENCE', 'M15_SUPPORT_RESISTANCE_REJECTION_V1',
-      'SWEEP_SCALPER', 'TREND_CHANNEL', 'SWING_ENGINE', 'INTRADAY_ENGINE'
-    ];
+    _available = (strats.available || []).filter(s => s !== 'AUTO');
     renderSidebar();
     syncManualStrategySelectors(strats.selected || strats.enabled || [], !!strats.is_auto);
     document.getElementById('currentStrategy').textContent =
@@ -1694,6 +1902,7 @@ function loadStrategyConfig(key, cfg) {
     set('scalper_ema20_slope_min', cfg.ema20_slope_min);
     set('scalper_body_ratio_min', cfg.body_ratio_min); set('scalper_tick_dir_threshold', cfg.tick_dir_threshold);
     set('scalper_sweep_lookback', cfg.sweep_lookback); set('scalper_sweep_tolerance', cfg.sweep_tolerance);
+    setTog('scalper_allow_asian_session', cfg.allow_asian_session);
     set('scalper_max_trades_session', cfg.max_trades_session); set('scalper_level_cooldown', cfg.level_cooldown);
     setTog('scalper_override_post_signal', cfg.override_post_signal_spread);
     setTog('scalper_override_execution', cfg.override_execution_quality);
@@ -1714,14 +1923,23 @@ function loadStrategyConfig(key, cfg) {
     set('trend_min_rr', cfg.min_rr);
     setTog('trend_require_h1_align', cfg.require_h1_align);
   }
+  if (key === 'intraday') {
+    const sessions = new Set(cfg.sessions || []);
+    const asian = document.getElementById('intraday_session_asian');
+    const london = document.getElementById('intraday_session_london');
+    const newYork = document.getElementById('intraday_session_newyork');
+    if (asian) asian.checked = sessions.has('ASIAN');
+    if (london) london.checked = sessions.has('LONDON');
+    if (newYork) newYork.checked = sessions.has('NEW_YORK');
+  }
+  if (key === 'htflong') { set('htflong_min_rr', cfg.min_rr); }
+  if (key === 'htfshort') { set('htfshort_min_rr', cfg.min_rr); }
 }
 
 // ── Unused stubs kept for HTML onclick compatibility ──────────────────────────
 function saveProfile(){}
 function loadProfile(){}
 function resetToDefaults(){}
-</script>
-
 </script>
 
 </body>

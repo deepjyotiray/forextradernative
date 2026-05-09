@@ -327,16 +327,16 @@ class UltraFastDataLoader:
             # Load original data
             import pandas as pd
             
-            if tick_file.endswith('.pkl'):
-                tick_df = pd.read_pickle(tick_file)
+            if tick_file.endswith('.parquet'):
+                tick_df = pd.read_parquet(tick_file)
             else:
                 tick_df = pd.read_csv(tick_file, parse_dates=['datetime'])
             
             candle_dfs = {}
             for tf, file_path in candle_files.items():
                 if os.path.exists(file_path):
-                    if file_path.endswith('.pkl'):
-                        candle_dfs[tf] = pd.read_pickle(file_path)
+                    if file_path.endswith('.parquet'):
+                        candle_dfs[tf] = pd.read_parquet(file_path)
                     else:
                         candle_dfs[tf] = pd.read_csv(file_path, parse_dates=['datetime'])
             

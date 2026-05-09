@@ -115,8 +115,9 @@ class SweepScalper(BaseStrategy):
             return skip("Insufficient M1 data")
         if m5 is None or len(m5) < 25:
             return skip("Insufficient M5 data")
+        ms = data.get("market_state") or {}
         if bool(getattr(cfg, "SCALPER_M15_TREND_REQUIRED", True)):
-            m15_filter = self._resolve_m15_trade_direction(m15, bias)
+            m15_filter = self._resolve_m15_trade_direction(m15, bias, ms)
             m15_trade_dir = str(m15_filter.get("direction") or "NEUTRAL").upper()
             if m15_trade_dir not in {"LONG", "SHORT"}:
                 return skip(f"M15 trend unclear ({m15_filter.get('reason', 'no M15 edge')})")
@@ -188,26 +189,24 @@ class SweepScalper(BaseStrategy):
         highs = m1["high"].values.astype(float)
         lows = m1["low"].values.astype(float)
         opens = m1["open"].values.astype(float)
-        atr_val = atr(highs, lows, closes, 14)[-1]
+        atr_val = float((ms.get("atr") or {}).get("M1") or 0.0)
+        if atr_val <= 0:
+            atr_val = atr(highs, lows, closes, 14)[-1]
         if atr_val < cfg.SCALPER_ATR_MIN:
             return skip(f"ATR {atr_val:.3f} < {cfg.SCALPER_ATR_MIN}")
         if atr_val > cfg.SCALPER_ATR_MAX:
             return skip(f"ATR {atr_val:.3f} > {cfg.SCALPER_ATR_MAX}")
 
-        # Block entries during RSI extremes — oversold bounces kill SHORT setups and vice versa
-        try:
-            from .indicators import rsi as rsi_calc
-            _rsi_val = rsi_calc(closes, 14)[-1]
-            _rsi_oversold = float(getattr(cfg, "SCALPER_RSI_OVERSOLD_BLOCK", 25.0))
-            _rsi_overbought = float(getattr(cfg, "SCALPER_RSI_OVERBOUGHT_BLOCK", 75.0))
-            if _rsi_val <= _rsi_oversold:
-                return skip(f"RSI oversold ({_rsi_val:.1f}) - no SHORT entries")
-            if _rsi_val >= _rsi_overbought:
-                return skip(f"RSI overbought ({_rsi_val:.1f}) - no LONG entries")
-        except Exception:
-            pass
+        # Block entries during RSI extremes
+        _rsi_val = float((ms.get("rsi") or {}).get("M1") or 50.0)
+        _rsi_oversold = float(getattr(cfg, "SCALPER_RSI_OVERSOLD_BLOCK", 25.0))
+        _rsi_overbought = float(getattr(cfg, "SCALPER_RSI_OVERBOUGHT_BLOCK", 75.0))
+        if _rsi_val <= _rsi_oversold:
+            return skip(f"RSI oversold ({_rsi_val:.1f}) - no SHORT entries")
+        if _rsi_val >= _rsi_overbought:
+            return skip(f"RSI overbought ({_rsi_val:.1f}) - no LONG entries")
 
-        # Block ATR spike entries - wide SL + spike = outsized loss
+        # Block ATR spike entries
         _atr_ratio_max = float(getattr(cfg, "SCALPER_ATR_RATIO_MAX", 1.5))
         _atr_baseline = atr(highs, lows, closes, 50)[-1] if len(closes) >= 50 else atr_val
         _atr_ratio = atr_val / _atr_baseline if _atr_baseline > 0 else 1.0
@@ -218,12 +217,12 @@ class SweepScalper(BaseStrategy):
         if not compression_ok:
             return skip(f"Compression: {comp_reason}")
 
+        ema_m1 = (ms.get("ema") or {}).get("M1_20") or {}
+        ema20_val   = float(ema_m1.get("value") or 0.0) or float(ema(closes, 20)[-1])
+        ema20_slope = float(ema_m1.get("slope") or 0.0)
         ema15 = ema(closes, 15)
-        ema20 = ema(closes, 20)
-        ema15_val = ema15[-1]
-        ema15_slope = ema15[-1] - ema15[-3] if len(ema15) >= 3 else 0
-        ema20_val = ema20[-1]
-        ema20_slope = ema20[-1] - ema20[-3] if len(ema20) >= 3 else 0
+        ema15_val   = float(ema15[-1])
+        ema15_slope = float(ema15[-1] - ema15[-3]) if len(ema15) >= 3 else 0.0
         if abs(ema15_slope) < cfg.SCALPER_EMA15_SLOPE_MIN:
             return skip(f"EMA15 flat ({ema15_slope:.3f})")
         if abs(ema20_slope) < cfg.SCALPER_EMA20_SLOPE_MIN:
@@ -697,13 +696,13 @@ class SweepScalper(BaseStrategy):
         if candle_ts > 0:
             self._last_candle_ts = candle_ts
 
-    def _resolve_m15_trade_direction(self, m15_df: pd.DataFrame, bias: Dict) -> Dict:
+    def _resolve_m15_trade_direction(self, m15_df: pd.DataFrame, bias: Dict, ms: Dict = None) -> Dict:
         if m15_df is None or len(m15_df) < 25:
             return {"direction": "NEUTRAL", "reason": "M15 unavailable"}
 
         bias = bias or {}
         m15_struct = bias.get("m15_structure") or {}
-        pullback = bias.get("m15_pullback") or {}
+        pullback   = bias.get("m15_pullback") or {}
 
         pullback_dir = str(pullback.get("direction") or "").upper()
         if bool(pullback.get("active")) and pullback_dir in {"LONG", "SHORT"}:
@@ -714,22 +713,25 @@ class SweepScalper(BaseStrategy):
             return {"direction": struct_dir, "reason": f"M15 BOS {struct_dir}"}
 
         pattern = str(m15_struct.get("pattern") or "").upper()
-        if pattern == "BULLISH":
-            return {"direction": "LONG", "reason": "M15 bullish structure"}
-        if pattern == "BEARISH":
-            return {"direction": "SHORT", "reason": "M15 bearish structure"}
+        if pattern == "BULLISH": return {"direction": "LONG",  "reason": "M15 bullish structure"}
+        if pattern == "BEARISH": return {"direction": "SHORT", "reason": "M15 bearish structure"}
 
-        closes = m15_df["close"].values.astype(float)
-        ema20 = ema(closes, 20)
-        if len(ema20) < 3:
-            return {"direction": "NEUTRAL", "reason": "M15 EMA unavailable"}
+        ema_snap  = ((ms or {}).get("ema") or {}).get("M15_20") or {}
+        ema20_val = float(ema_snap.get("value") or 0.0)
+        slope     = float(ema_snap.get("slope") or 0.0)
+        if ema20_val <= 0:
+            closes    = m15_df["close"].values.astype(float)
+            ema20_arr = ema(closes, 20)
+            if len(ema20_arr) < 3:
+                return {"direction": "NEUTRAL", "reason": "M15 EMA unavailable"}
+            slope     = float(ema20_arr[-1] - ema20_arr[-3])
+            ema20_val = float(ema20_arr[-1])
 
-        slope = float(ema20[-1] - ema20[-3])
-        price = float(closes[-1])
+        price     = float(m15_df["close"].iloc[-1])
         slope_min = float(getattr(cfg, "SCALPER_M15_SLOPE_MIN", 0.15) or 0.15)
-        if slope >= slope_min and price >= float(ema20[-1]):
-            return {"direction": "LONG", "reason": f"M15 EMA slope +{slope:.2f}"}
-        if slope <= -slope_min and price <= float(ema20[-1]):
+        if slope >= slope_min  and price >= ema20_val:
+            return {"direction": "LONG",  "reason": f"M15 EMA slope +{slope:.2f}"}
+        if slope <= -slope_min and price <= ema20_val:
             return {"direction": "SHORT", "reason": f"M15 EMA slope {slope:.2f}"}
         return {"direction": "NEUTRAL", "reason": f"M15 mixed (slope {slope:+.2f})"}
 

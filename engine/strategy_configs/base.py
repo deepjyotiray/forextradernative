@@ -21,6 +21,7 @@ from . import sweep_scalper
 from . import m15_sr
 from . import trend_channel
 from . import htf_long
+from . import htf_short
 
 # Registry: strategy name → definition module
 _REGISTRY = {
@@ -31,6 +32,7 @@ _REGISTRY = {
     m15_sr.NAME: m15_sr,
     trend_channel.NAME: trend_channel,
     htf_long.NAME: htf_long,
+    htf_short.NAME: htf_short,
 }
 
 _DATA_DIR = Path(__file__).parent / "data"

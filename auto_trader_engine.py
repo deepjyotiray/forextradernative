@@ -28,6 +28,9 @@ from engine.smc_strategy import SMCStrategy
 from engine.m15_sr_strategy import M15SupportResistanceStrategy
 from engine.sweep_scalper import SweepScalper
 from engine.strategies.trend_channel_strategy import TrendChannelStrategy
+from engine.strategies.htf_long_strategy import HTFLongStrategy
+from engine.swing_engine_strategy import SwingEngineStrategy
+from engine.intraday_engine_strategy import IntradayEngineStrategy
 from engine.calendar import calendar as eco_calendar
 from engine.correlation import correlation as corr_engine
 from engine.xgb_model import xgb_model, xgb_bypass_enabled, xgb_training_enabled
@@ -54,10 +57,20 @@ class AutoTrader:
 
         # Strategy manager
         self.strat_mgr = StrategyManager()
-        self.strat_mgr.register(SMCStrategy())
-        self.strat_mgr.register(M15SupportResistanceStrategy())
-        self.strat_mgr.register(SweepScalper())
-        self.strat_mgr.register(TrendChannelStrategy())
+        _strategy_classes = [
+            ("SMC_CONFLUENCE", SMCStrategy),
+            ("M15_SR", M15SupportResistanceStrategy),
+            ("SWEEP_SCALPER", SweepScalper),
+            ("TREND_CHANNEL", TrendChannelStrategy),
+            ("HTF_LONG", HTFLongStrategy),
+            ("SWING_ENGINE", SwingEngineStrategy),
+            ("INTRADAY_ENGINE", IntradayEngineStrategy),
+        ]
+        for label, cls in _strategy_classes:
+            try:
+                self.strat_mgr.register(cls())
+            except Exception as e:
+                print(f"[STRATEGY_ERR] Failed to register {label}: {e}")
         startup_strategy = "AUTO"
         if startup_strategy in self.strat_mgr.available:
             self.strat_mgr.set_active(startup_strategy)

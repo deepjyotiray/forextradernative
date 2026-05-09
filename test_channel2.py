@@ -1,11 +1,12 @@
-import sys, pickle, glob
+import sys, glob
 sys.path.insert(0, '.')
 import numpy as np
+import pandas as pd
 from engine.trendline import detect_trendlines
 from engine.strategies.trend_channel_strategy import TrendChannelStrategy
 
-files = glob.glob('backtests/data_cache/XAUUSD/*/M15.pkl')
-df = pickle.load(open(files[-1], 'rb')).tail(200).reset_index(drop=True)
+files = glob.glob('backtests/data_cache/XAUUSD/*/M15.parquet')
+df = pd.read_parquet(files[-1]).tail(200).reset_index(drop=True)
 
 tl = detect_trendlines(df, 'XAUUSD', 'M15')
 trendlines = tl.get('trendlines', [])

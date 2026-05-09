@@ -298,8 +298,8 @@ class UltraFastDataEngine:
         print("Loading data with maximum performance...")
         
         # Load tick data
-        if tick_file.endswith('.pkl'):
-            tick_df = pd.read_pickle(tick_file)
+        if tick_file.endswith('.parquet'):
+            tick_df = pd.read_parquet(tick_file)
         else:
             tick_df = pd.read_csv(tick_file, parse_dates=['datetime'])
         
@@ -318,8 +318,8 @@ class UltraFastDataEngine:
             if not os.path.exists(file_path):
                 continue
                 
-            if file_path.endswith('.pkl'):
-                df = pd.read_pickle(file_path)
+            if file_path.endswith('.parquet'):
+                df = pd.read_parquet(file_path)
             else:
                 df = pd.read_csv(file_path, parse_dates=['datetime'])
             

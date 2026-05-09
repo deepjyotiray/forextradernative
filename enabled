@@ -1,0 +1,7 @@
+HTF_LONG.json -=True
+INTRADAY_ENGINE.json -=True
+M15_SUPPORT_RESISTANCE_REJECTION_V1.json -=True
+SMC_CONFLUENCE.json -=True
+SWEEP_SCALPER.json -=True
+SWING_ENGINE.json -=True
+TREND_CHANNEL.json -=True

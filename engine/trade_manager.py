@@ -358,6 +358,24 @@ def _is_day_break_candle(df: Any, gap_threshold_hours: float = 4.0) -> bool:
         return False
 
 
+def _last_candle_marker(df: Any) -> str:
+    try:
+        if df is None or len(df) < 1:
+            return ""
+        last = df.iloc[-1]
+        times = df["time"] if "time" in df.columns else df.index
+        ts = str(times.iloc[-1] if hasattr(times, "iloc") else times[-1])
+        return (
+            f"{ts}|"
+            f"{_safe_float(last.get('open')):.2f}|"
+            f"{_safe_float(last.get('high')):.2f}|"
+            f"{_safe_float(last.get('low')):.2f}|"
+            f"{_safe_float(last.get('close')):.2f}"
+        )
+    except Exception:
+        return ""
+
+
 class TradeRecord:
     __slots__ = (
         "ticket", "direction", "volume", "entry", "sl", "tp",
@@ -688,18 +706,79 @@ class TradeManager:
         last_candle = candle_df.iloc[-1]
         body_ratio = _candle_body_ratio(last_candle)
         candle_direction = _candle_direction(last_candle)
-        if body_ratio < 0.6:
+        trade_confidence = _safe_float(
+            (t.features or {}).get("signal_confidence") or t.confidence, 0.0
+        )
+        high_conf_min = _safe_float(
+            getattr(cfg, "INTRADAY_ENGINE_REVERSAL_HIGH_CONF_MIN", 0.80), 0.80
+        )
+        high_conf = trade_confidence >= high_conf_min
+        min_peak_r = _safe_float(
+            getattr(
+                cfg,
+                "INTRADAY_ENGINE_REVERSAL_HIGH_CONF_MIN_PEAK_R"
+                if high_conf else "INTRADAY_ENGINE_REVERSAL_MIN_PEAK_R",
+                0.50 if high_conf else 0.25,
+            ),
+            0.50 if high_conf else 0.25,
+        )
+        body_threshold = _safe_float(
+            getattr(
+                cfg,
+                "INTRADAY_ENGINE_REVERSAL_HIGH_CONF_BODY"
+                if high_conf else "INTRADAY_ENGINE_REVERSAL_BODY_THRESHOLD",
+                0.85 if high_conf else 0.60,
+            ),
+            0.85 if high_conf else 0.60,
+        )
+        candles_required = _safe_int(
+            getattr(
+                cfg,
+                "INTRADAY_ENGINE_REVERSAL_HIGH_CONF_CANDLES_REQUIRED"
+                if high_conf else "INTRADAY_ENGINE_REVERSAL_CANDLES_REQUIRED",
+                2 if high_conf else 1,
+            ),
+            2 if high_conf else 1,
+        )
+
+        if peak_r < min_peak_r or body_ratio < body_threshold:
+            t.features["_reversal_candle_count"] = 0
+            t.features.pop("_reversal_candle_marker", None)
             return
-        if t.direction == "BUY" and candle_direction == "BEARISH":
+
+        is_counter = (
+            (t.direction == "BUY" and candle_direction == "BEARISH") or
+            (t.direction == "SELL" and candle_direction == "BULLISH")
+        )
+        if not is_counter:
+            t.features["_reversal_candle_count"] = 0
+            t.features.pop("_reversal_candle_marker", None)
+            return
+
+        marker = _last_candle_marker(candle_df)
+        last_marker = str((t.features or {}).get("_reversal_candle_marker") or "")
+        count = _safe_int((t.features or {}).get("_reversal_candle_count", 0), 0)
+        if marker and marker != last_marker:
+            count += 1
+            t.features["_reversal_candle_count"] = count
+            t.features["_reversal_candle_marker"] = marker
+
+        if count >= candles_required:
+            direction_label = "bearish" if t.direction == "BUY" else "bullish"
+            if candles_required <= 1:
+                reason = (
+                    f"{structure_label} momentum reversal: strong {direction_label} candle "
+                    f"(body {body_ratio:.2f}, peak {peak_r:.2f}R, conf {trade_confidence:.0%})"
+                )
+            else:
+                reason = (
+                    f"{structure_label} momentum reversal: {count} consecutive strong "
+                    f"{direction_label} candles (body {body_ratio:.2f}, peak {peak_r:.2f}R, "
+                    f"conf {trade_confidence:.0%})"
+                )
             self._close_early(
                 t,
-                f"{structure_label} momentum reversal: strong bearish candle ({body_ratio:.2f})",
-                category="momentum_reversal",
-            )
-        elif t.direction == "SELL" and candle_direction == "BULLISH":
-            self._close_early(
-                t,
-                f"{structure_label} momentum reversal: strong bullish candle ({body_ratio:.2f})",
+                reason,
                 category="momentum_reversal",
             )
 
@@ -1101,13 +1180,23 @@ class TradeManager:
         if live_r >= 1.0:
             candidate_sls.append((round(_safe_float(t.entry), 2), False))
 
-        target_lock_r = 0.0
-        if peak_r >= 2.0:
-            target_lock_r = 1.0
-        elif peak_r >= 1.5:
-            target_lock_r = 0.5
-        if target_lock_r > 0 and self._locked_profit_r(t) < target_lock_r:
-            candidate_sls.append((self._profit_lock_price(t, target_lock_r), True))
+        # ── Granular profit lock: arm at 0.2R, lock in at every 0.1R step ──
+        # Each level locks in 70% of the peak reached so far, floored at 0.
+        # e.g. peak 0.2R → lock 0.0R (breakeven), peak 0.5R → lock 0.35R,
+        #      peak 1.0R → lock 0.7R, peak 2.0R → lock 1.4R, etc.
+        _LOCK_ARM_START = 0.2   # first arm threshold
+        _LOCK_STEP      = 0.1   # re-evaluate every 0.1R of new peak
+        _LOCK_RATIO     = 0.70  # lock in 70% of peak
+        if peak_r >= _LOCK_ARM_START:
+            # Snap peak_r down to nearest 0.1R step so we only move the lock
+            # when a new 0.1R milestone is crossed (avoids tick-noise churn).
+            snapped_peak = round(int(peak_r / _LOCK_STEP) * _LOCK_STEP, 2)
+            target_lock_r = round(max(0.0, snapped_peak * _LOCK_RATIO), 2)
+            if target_lock_r > 0 and self._locked_profit_r(t) < target_lock_r:
+                candidate_sls.append((self._profit_lock_price(t, target_lock_r), True))
+            elif target_lock_r == 0.0 and not t.sl_breakeven:
+                # At 0.2R peak, just move to breakeven
+                candidate_sls.append((round(_safe_float(t.entry), 2), False))
 
         h1_high, h1_low = self._recent_swing_levels(market_context.get("h1_df"))
         if t.direction == "BUY" and h1_low is not None:

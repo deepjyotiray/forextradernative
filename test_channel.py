@@ -5,14 +5,13 @@ from engine.trendline import detect_trendlines
 import pandas as pd, json
 
 # Load cached M15 data
-import pickle, os, glob
-cache_files = glob.glob('backtests/data_cache/XAUUSD/*/M15.pkl')
+import os, glob
+cache_files = glob.glob('backtests/data_cache/XAUUSD/*/M15.parquet')
 if not cache_files:
     print("No cached M15 data found")
     sys.exit()
 
-with open(cache_files[-1], 'rb') as f:
-    df = pickle.load(f)
+df = pd.read_parquet(cache_files[-1])
 
 if hasattr(df, 'columns'):
     print(f"Loaded M15 df: {len(df)} rows, cols={list(df.columns)}")

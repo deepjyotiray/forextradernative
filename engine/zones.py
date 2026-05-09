@@ -9,7 +9,7 @@ from sklearn.cluster import DBSCAN
 
 
 class ZoneDetector:
-    def __init__(self, eps: float = 3.0, min_samples: int = 2, max_width: float = 15.0):
+    def __init__(self, eps: float = 0.8, min_samples: int = 2, max_width: float = 4.0):
         self.eps = eps
         self.min_samples = min_samples
         self.max_width = max_width
@@ -52,13 +52,13 @@ class ZoneDetector:
                 levels.append({"price": float(h[i]), "idx": i})
             if lw > 0.55:
                 levels.append({"price": float(l[i]), "idx": i})
-        # Psychological levels
+        # Psychological levels (M5-scale: tight steps, tight window)
         cur = float(c[-1])
-        for step in [10, 25, 50, 100]:
+        for step in [5, 10, 25]:
             base = round(cur / step) * step
-            for off in range(-3, 4):
+            for off in range(-2, 3):
                 p = base + off * step
-                if abs(p - cur) <= 60:
+                if abs(p - cur) <= 20:
                     levels.append({"price": float(p), "idx": -1})
         return levels
 
@@ -92,7 +92,7 @@ class ZoneDetector:
             margin = max((z["zone_high"] - z["zone_low"]) * 0.3, 1.0)
             touch_mask = (l <= z["zone_high"] + margin) & (h >= z["zone_low"] - margin)
             w = recency[touch_mask].sum()
-            prox = max(0, 20 - abs(price - z["zone_mid"]) * 0.5)
+            prox = max(0, 10 - abs(price - z["zone_mid"]) * 1.0)
             raw = max(0, w * 2 + prox)
             z["_raw"] = raw
             if raw > max_raw:

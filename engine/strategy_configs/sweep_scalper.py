@@ -32,6 +32,7 @@ DEFAULTS = {
     "tick_dir_threshold": 0.7,
     "sweep_lookback": 20,
     "sweep_tolerance": 0.25,
+    "allow_asian_session": False,
     "max_trades_session": 5,
     "level_cooldown": 1800,
     # Gate overrides
@@ -61,6 +62,7 @@ CFG_MAP = {
     "tick_dir_threshold": "SCALPER_TICK_DIR_THRESHOLD",
     "sweep_lookback": "SCALPER_SWEEP_LOOKBACK",
     "sweep_tolerance": "SCALPER_SWEEP_TOLERANCE",
+    "allow_asian_session": "SCALPER_ALLOW_ASIAN_SESSION",
     "max_trades_session": "SCALPER_MAX_TRADES_SESSION",
     "level_cooldown": "SCALPER_LEVEL_COOLDOWN",
     "override_post_signal_spread": "POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED",

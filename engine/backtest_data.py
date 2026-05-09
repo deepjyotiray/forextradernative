@@ -342,7 +342,7 @@ class BacktestDataProvider:
                 ticks_path = str(entry.get("ticks_path", ""))
                 if not ticks_path or not os.path.exists(ticks_path):
                     continue
-                ticks = pd.read_pickle(ticks_path)
+                ticks = pd.read_parquet(ticks_path)
                 ticks = ticks.loc[(ticks["datetime"] >= start_utc) & (ticks["datetime"] <= end_utc)].reset_index(drop=True)
                 if ticks.empty:
                     continue
@@ -355,7 +355,7 @@ class BacktestDataProvider:
                         candles[tf] = pd.DataFrame()
                         continue
                     try:
-                        cdf = pd.read_pickle(path)
+                        cdf = pd.read_parquet(path)
                         if cdf.empty or "datetime" not in cdf.columns:
                             candles[tf] = pd.DataFrame()
                             continue
@@ -446,7 +446,7 @@ class BacktestDataProvider:
         if not path or not os.path.exists(path):
             return pd.DataFrame(columns=["bucket_start", "estimated_ticks"])
         try:
-            m1 = pd.read_pickle(path)
+            m1 = pd.read_parquet(path)
         except Exception:
             return pd.DataFrame(columns=["bucket_start", "estimated_ticks"])
         if m1.empty or "datetime" not in m1.columns:
@@ -496,13 +496,13 @@ class BacktestDataProvider:
         cache_dir = os.path.join(self._cache_root, dataset.symbol, cache_id)
         os.makedirs(cache_dir, exist_ok=True)
 
-        ticks_path = os.path.join(cache_dir, "ticks.pkl")
-        dataset.ticks.to_pickle(ticks_path)
+        ticks_path = os.path.join(cache_dir, "ticks.parquet")
+        dataset.ticks.to_parquet(ticks_path, index=False)
 
         candle_paths: Dict[str, str] = {}
         for tf, cdf in dataset.candles.items():
-            path = os.path.join(cache_dir, f"{tf}.pkl")
-            cdf.to_pickle(path)
+            path = os.path.join(cache_dir, f"{tf}.parquet")
+            cdf.to_parquet(path, index=False)
             candle_paths[tf] = path
 
         entry = {

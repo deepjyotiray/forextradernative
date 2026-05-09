@@ -21,17 +21,16 @@ class TickDataStreamer:
     def stream_from_file(self, file_path: str) -> Iterator[pd.DataFrame]:
         """Stream tick data from file in chunks."""
         
-        if file_path.endswith('.pkl'):
-            yield from self._stream_pickle_chunks(file_path)
+        if file_path.endswith('.parquet'):
+            yield from self._stream_parquet_chunks(file_path)
         elif file_path.endswith('.csv'):
             yield from self._stream_csv_chunks(file_path)
         else:
             raise ValueError(f"Unsupported file format: {file_path}")
     
-    def _stream_pickle_chunks(self, file_path: str) -> Iterator[pd.DataFrame]:
-        """Stream pickle file in chunks."""
-        # Load full pickle file (optimize this for very large files)
-        df = pd.read_pickle(file_path)
+    def _stream_parquet_chunks(self, file_path: str) -> Iterator[pd.DataFrame]:
+        """Stream parquet file in chunks."""
+        df = pd.read_parquet(file_path)
         
         for start_idx in range(0, len(df), self.chunk_size):
             end_idx = min(start_idx + self.chunk_size, len(df))
@@ -170,7 +169,7 @@ class StreamingBacktestEngine:
         
         for tf, file_path in candle_files.items():
             if os.path.exists(file_path):
-                candles[tf] = pd.read_pickle(file_path)
+                candles[tf] = pd.read_parquet(file_path)
         
         return candles
     
@@ -274,19 +273,17 @@ class CompressedDataManager:
         """Save DataFrame with compression."""
         
         if self.compression == 'lz4':
-            data.to_pickle(file_path, compression='lz4')
+            data.to_parquet(file_path, compression='snappy', index=False)
         elif self.compression == 'gzip':
-            data.to_pickle(file_path, compression='gzip')
+            data.to_parquet(file_path, compression='gzip', index=False)
         else:
-            data.to_pickle(file_path)
+            data.to_parquet(file_path, index=False)
     
-    def load_compressed(self, file_path: str) -> pd.DataFrame:
-        """Load compressed DataFrame."""
-        return pd.read_pickle(file_path)
+        return pd.read_parquet(file_path)
     
     def convert_to_parquet(self, pickle_file: str, parquet_file: str):
         """Convert pickle to parquet for better performance."""
-        df = pd.read_pickle(pickle_file)
+        df = pd.read_parquet(pickle_file)
         df.to_parquet(parquet_file, compression='snappy', index=False)
     
     def stream_parquet(self, file_path: str, chunk_size: int = 50000) -> Iterator[pd.DataFrame]:
@@ -308,11 +305,11 @@ def create_optimized_backtest_runner(req, use_streaming: bool = True,
         # Best performance for large datasets
         engine = StreamingBacktestEngine(max_memory_mb=2000)
         return engine.run_streaming(
-            tick_file=f"data/{req.symbol}_ticks.pkl",
+            tick_file=f"data/{req.symbol}_ticks.parquet",
             candle_files={
-                'M1': f"data/{req.symbol}_M1.pkl",
-                'M5': f"data/{req.symbol}_M5.pkl",
-                'H1': f"data/{req.symbol}_H1.pkl"
+                'M1': f"data/{req.symbol}_M1.parquet",
+                'M5': f"data/{req.symbol}_M5.parquet",
+                'H1': f"data/{req.symbol}_H1.parquet"
             },
             req=req
         )
@@ -323,10 +320,10 @@ def create_optimized_backtest_runner(req, use_streaming: bool = True,
         
         engine = ParallelVectorizedEngine()
         # Load data (implement data loading here)
-        ticks_df = pd.read_pickle(f"data/{req.symbol}_ticks.pkl")
+        ticks_df = pd.read_parquet(f"data/{req.symbol}_ticks.parquet")
         candles = {
-            'M1': pd.read_pickle(f"data/{req.symbol}_M1.pkl"),
-            'M5': pd.read_pickle(f"data/{req.symbol}_M5.pkl")
+            'M1': pd.read_parquet(f"data/{req.symbol}_M1.parquet"),
+            'M5': pd.read_parquet(f"data/{req.symbol}_M5.parquet")
         }
         
         return engine.run_parallel(req, ticks_df, candles)

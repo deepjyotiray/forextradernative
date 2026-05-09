@@ -138,14 +138,14 @@ class OptimizedBacktestRunner:
         temp_dir = tempfile.mkdtemp(prefix='backtest_streaming_')
         
         # Save tick data
-        tick_file = os.path.join(temp_dir, 'ticks.pkl')
-        dataset.ticks.to_pickle(tick_file)
+        tick_file = os.path.join(temp_dir, 'ticks.parquet')
+        dataset.ticks.to_parquet(tick_file, index=False)
         
         # Save candle data
         candle_files = {}
         for tf, df in dataset.candles.items():
-            candle_file = os.path.join(temp_dir, f'{tf}.pkl')
-            df.to_pickle(candle_file)
+            candle_file = os.path.join(temp_dir, f'{tf}.parquet')
+            df.to_parquet(candle_file, index=False)
             candle_files[tf] = candle_file
         
         return {

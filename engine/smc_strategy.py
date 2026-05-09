@@ -10,9 +10,6 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from .strategies.base_strategy import BaseStrategy
-from .regime import classify_regime
-from .mtf_bias import compute_bias
-from .liquidity import compute_liquidity
 from .indicators import ema, atr, rsi, compute_indicators
 from .tick_processor import TickProcessor, entry_pressure_block_reason
 from .session_filter import get_session
@@ -124,7 +121,7 @@ class SMCStrategy(BaseStrategy):
             return skip(f"Compression: {comp_reason}")
 
         # === 4. Liquidity analysis ===
-        liq = compute_liquidity(m5, m15, h1, None)
+        liq = data.get("liquidity") or {}
 
         # === 5. SETUP-FIRST: detect direction from price action ===
         setup = self._detect_smc_setup(price, zones, liq, m1, m5, ind)
@@ -143,9 +140,9 @@ class SMCStrategy(BaseStrategy):
         if pressure_reason:
             return skip(pressure_reason, setup_direction=direction, compression_ok=True, setup_features=setup)
 
-        # === 6. Compute bias + regime separately ===
-        bias = compute_bias(h4, h1, m15)
-        regime = classify_regime(h4, h1, m15, tick_snap)
+        # === 6. Bias + regime from engine (pre-computed) ===
+        bias = data.get("bias") or {}
+        regime = data.get("regime") or {}
         counter_trend = bias["direction"] != "NEUTRAL" and bias["direction"] != direction
         threshold = self._resolve_threshold(bias, counter_trend, regime)
 

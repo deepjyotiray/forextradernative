@@ -7,10 +7,15 @@ Modes:
   AUTO: all registered strategies are eligible, best signal wins
 """
 from typing import Any, Dict, Iterable, List, Optional
+import time
 from engine.strategies.base_strategy import BaseStrategy
 from engine.master_control import pre_trade_validation, log_trade_decision_comprehensive
 from engine.master_trade_gate import master_trade_gate
 from engine import strategy_configs
+from engine.decision_logger import log_decision
+
+_NO_TRADE_LOG_INTERVAL = 60.0  # seconds between logging same NO_TRADE reason
+_no_trade_log_times: Dict[str, float] = {}
 
 _AUTO = "AUTO"
 _SIGNAL_FAMILY_BY_STRATEGY = {
@@ -19,18 +24,7 @@ _SIGNAL_FAMILY_BY_STRATEGY = {
     "M15_SUPPORT_RESISTANCE_REJECTION_V1": "M15",
     "TREND_CHANNEL": "TREND",
 }
-_GROUP_SELECTIONS = {
-    "SWING": [
-        "SMC_CONFLUENCE",
-        "M15_SUPPORT_RESISTANCE_REJECTION_V1",
-        "TREND_CHANNEL",
-        "SWING_ENGINE",
-    ],
-    "INTRADAY": [
-        "SWEEP_SCALPER",
-        "INTRADAY_ENGINE",
-    ],
-}
+
 
 
 def _normalize_signal(sig, strategy_name: str) -> Dict:
@@ -192,9 +186,6 @@ class StrategyManager:
             return []
         if name in self._strategies:
             return [name]
-        if name in _GROUP_SELECTIONS:
-            expanded = [strategy_name for strategy_name in _GROUP_SELECTIONS[name] if strategy_name in self._strategies]
-            return expanded or None
         return None
 
     def set_active(self, name: str) -> bool:
@@ -285,6 +276,8 @@ class StrategyManager:
         )
 
         enabled = list(strategy_names or self._strategies.keys())
+        tick = data.get("tick") or {}
+        _log_price = _safe_float(tick.get("bid"), 0.0)
         for name in enabled:
             strat = self._strategies[name]
             # Per-strategy enabled check
@@ -307,6 +300,26 @@ class StrategyManager:
                 "reason": str(sig.get("reason", ""))[:120],
                 "price": _safe_float(sig.get("entry"), 0.0) or None,
             }
+            # Log NO_TRADE decisions so all strategies have visibility (throttled)
+            if action == "NO_TRADE":
+                _nt_key = f"{name}:{str(sig.get('reason',''))[:80]}"
+                _nt_now = time.time()
+                if _nt_now - _no_trade_log_times.get(_nt_key, 0.0) >= _NO_TRADE_LOG_INTERVAL:
+                    _no_trade_log_times[_nt_key] = _nt_now
+                    log_decision(
+                        strategy=name,
+                        setup_direction=None,
+                        bias_direction=None,
+                        quality_score=0.0,
+                        threshold=0.0,
+                        spread_mean=0.0,
+                        spread_std=0.0,
+                        compression_ok=True,
+                        ltf_conflict=False,
+                        decision="TRADE_SKIPPED",
+                        reason=str(sig.get("reason", "No signal"))[:200],
+                        price=_log_price,
+                    )
             if action in ("BUY", "SELL"):
                 try:
                     gate_result = master_trade_gate(
@@ -385,7 +398,8 @@ class StrategyManager:
         }
 
     def generate_signal(self, data: Dict) -> Dict:
-        if len(self.enabled_strategies()) != 1:
+        """AUTO mode: pick the single best signal. Non-AUTO: use generate_signals for independent evaluation."""
+        if self._auto:
             evaluation = self.evaluate_all(data, strategy_names=self.enabled_strategies())
             strat_name = str(evaluation.get("strategy") or _AUTO)
             sig = dict(evaluation.get("signal") or {"signal": "NO_TRADE", "reason": "Empty signal"})
@@ -434,6 +448,7 @@ class StrategyManager:
 
             return {"strategy": strat_name, "signal": sig, "trade_id": trade_id}
 
+        # Non-AUTO: return first valid signal; caller should use generate_signals for all.
         results = self.generate_signals(data)
         if results:
             return results[0]
@@ -499,10 +514,9 @@ class StrategyManager:
         return results
 
     def status(self) -> Dict:
-        available = [n for n in ([_AUTO] + list(self._strategies.keys())) if n not in ('SWING', 'INTRADAY')]
         return {
             "active": self.active_name,
-            "available": available,
+            "available": [_AUTO] + list(self._strategies.keys()),
             "is_auto": self.is_auto,
             "selected": self.selected,
             "enabled": self.enabled_strategies(),

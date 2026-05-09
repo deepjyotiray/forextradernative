@@ -41,8 +41,8 @@ MIN_TRADE_COOLDOWN = 120.0
 LOSS_STREAK_PAUSE = 900
 # Trade-count caps are optional guardrails. `0` disables count-based blocking so
 # setup quality, timing, and execution conditions remain the primary filters.
-SESSION_MAX_TRADES = 5
-MAX_TRADES_PER_DAY = 5
+SESSION_MAX_TRADES = 100
+MAX_TRADES_PER_DAY = 100
 
 # Session (UTC)
 ASIAN_START = 0
@@ -270,7 +270,7 @@ SCALPER_ASIAN_MIN_ENTRY_VOLUME_RATIO = 1.1
 SCALPER_ASIAN_QUALITY_THRESHOLD = 0.7
 SCALPER_ASIAN_TICK_DIR_THRESHOLD = 0.72
 SCALPER_ASIAN_REQUIRE_PRESSURE_ALIGNMENT = True
-SMC_MIN_ENTRY_VOLUME_RATIO = 0.65
+SMC_MIN_ENTRY_VOLUME_RATIO = 0.30
 BREAKEVEN_VOLUME_LOOKBACK_CANDLES = 8
 TICK_PRESSURE_WINDOW_SECONDS = 8
 TICK_PRESSURE_MAX_TICKS = 250
@@ -333,6 +333,15 @@ EXIT_PROFILE_M15_TRAIL_LOCK_R = 0.75
 EXIT_PROFILE_M15_VELOCITY_DROP_ENABLED = False
 
 # Swing Engine reversal exit parameters
+INTRADAY_ENGINE_REVERSAL_MIN_PEAK_R = 0.25       # low-conf intraday trades can cut once they show some profit first
+INTRADAY_ENGINE_REVERSAL_CANDLES_REQUIRED = 1    # default intraday behavior stays responsive
+INTRADAY_ENGINE_REVERSAL_BODY_THRESHOLD = 0.60   # base body ratio for a strong counter-candle
+INTRADAY_ENGINE_REVERSAL_HIGH_CONF_MIN = 0.80    # confidence threshold that enables hold-friendly reversal rules
+INTRADAY_ENGINE_REVERSAL_HIGH_CONF_MIN_PEAK_R = 0.50   # high-conf trades need more profit before reversal exits can arm
+INTRADAY_ENGINE_REVERSAL_HIGH_CONF_CANDLES_REQUIRED = 2  # require a second distinct counter-candle for high-conf trades
+INTRADAY_ENGINE_REVERSAL_HIGH_CONF_BODY = 0.85   # high-conf trades only react to very strong counter-candles
+
+# Swing Engine reversal exit parameters
 SWING_ENGINE_REVERSAL_MIN_PEAK_R = 1.5       # must have reached this profit before reversal exit fires
 SWING_ENGINE_REVERSAL_CANDLES_REQUIRED = 3   # consecutive counter-candles needed to confirm reversal
 SWING_ENGINE_REVERSAL_BODY_THRESHOLD = 0.70  # base body ratio to qualify as a strong counter-candle
@@ -382,6 +391,11 @@ TREND_CHANNEL_REQUIRE_H1_ALIGN = True
 HTF_LONG_ENABLED = True
 HTF_LONG_MAX_SPREAD = 0.80
 HTF_LONG_MIN_RR = 1.8
+
+# HTF Short (higher-timeframe bias engine) strategy — SELL only mirror of HTF_LONG
+HTF_SHORT_ENABLED = True
+HTF_SHORT_MAX_SPREAD = 0.80
+HTF_SHORT_MIN_RR = 1.8
 
 
 def get_exit_profile_config(name: str) -> dict:
@@ -465,8 +479,8 @@ def get_exit_profile_config(name: str) -> dict:
         },
         "intraday_engine": {
             "profile_name": "intraday_engine",
-            "be_trigger_r": 0.0,
-            "breakeven_min_hold_seconds": 0,
+            "be_trigger_r": 0.3,
+            "breakeven_min_hold_seconds": 20,
             "breakeven_volume_hold_ratio": 0.0,
             "min_hold_seconds": 0,
             "early_fail_points": 0.0,
@@ -684,7 +698,7 @@ _PERSISTED_KEYS = {
     "M15_SR_SPIKE_RANGE_ATR_MULT", "M15_SR_SPIKE_VOLUME_MULT",
     "M15_SR_MAX_DISTANCE_FROM_ZONE_ATR", "M15_SR_REQUIRE_CANDLE_CONFIRMATION",
     "M15_SR_SPIKE_ZONE_BYPASS",
-    "TREND_CHANNEL_TOUCH_ATR_MULT", "TRADE_SCORE_MIN", "TRADE_SCORE_PREMIUM",
+    "TREND_CHANNEL_TOUCH_ATR_MULT", "TREND_CHANNEL_MIN_RR", "TRADE_SCORE_MIN", "TRADE_SCORE_PREMIUM",
     "TRADE_SCORE_RELAXED_MIN", "TRADE_SCORE_STRICT_AFTER_LOSS",
     "CONFIRMATION_3_OF_4_ENABLED",
     "BLOCK_WEAK_COUNTER_TREND", "COUNTER_TREND_MIN_SCORE",

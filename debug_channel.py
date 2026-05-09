@@ -1,9 +1,10 @@
-import sys, pickle, glob
+import sys, glob
 sys.path.insert(0, '.')
 import numpy as np
+import pandas as pd
 
-files = glob.glob('backtests/data_cache/XAUUSD/*/M15.pkl')
-df = pickle.load(open(files[-1], 'rb')).tail(200).reset_index(drop=True)
+files = glob.glob('backtests/data_cache/XAUUSD/*/M15.parquet')
+df = pd.read_parquet(files[-1]).tail(200).reset_index(drop=True)
 h = df['high'].values.astype(float)
 l = df['low'].values.astype(float)
 c = df['close'].values.astype(float)

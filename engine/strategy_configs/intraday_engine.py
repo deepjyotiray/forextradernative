@@ -7,13 +7,15 @@ DEFAULTS = {
     "fixed_lot": None,
     "max_active_trades": 5,
     "max_trades_day": 5,
-    "spread_max": 0.5,
+    "spread_max": 0.25,
+    "m5_volume_ratio_min": 1.2,
+    "min_confidence_pct": 80,
     "sl_min": 1.5,
-    "sl_max": 3.0,
+    "sl_max": 5.0,
     "tp1_r": 1.5,
     "tp2_r": 2.0,
     "tp3_r": None,          # not applicable — intraday exits at 2R
-    "sessions": ["LONDON", "NEW_YORK"],
+    "sessions": ["ASIAN", "LONDON", "NEW_YORK"],
     "news_block": True,
     "cooldown_seconds": 120,
     "consecutive_loss_limit": 3,
@@ -22,7 +24,6 @@ DEFAULTS = {
 }
 
 LOCKED = {
-    "sessions": "Spec: London and New York only",
     "news_block": "Spec: always block on high-impact news",
 }
 

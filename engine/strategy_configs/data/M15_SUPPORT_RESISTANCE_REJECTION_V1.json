@@ -2,7 +2,7 @@
   "enabled": true,
   "risk_pct": 1,
   "fixed_lot": null,
-  "max_active_trades": 2,
+  "max_active_trades": 100,
   "max_trades_day": 100,
   "spread_max": 0.6,
   "sl_min": 8,

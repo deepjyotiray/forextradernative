@@ -7,8 +7,8 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0e17;--card:#111827;--border:#1e293b;--text:#e2e8f0;--dim:#64748b;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--yellow:#eab308;--cyan:#06b6d4;--purple:#a855f7;--orange:#f97316}
-[data-theme="light"]{--bg:#f1f5f9;--card:#ffffff;--border:#e2e8f0;--text:#1e293b;--dim:#64748b;--green:#16a34a;--red:#dc2626;--blue:#2563eb;--yellow:#ca8a04;--cyan:#0891b2;--purple:#9333ea;--orange:#ea580c}
+:root{--bg:#0a0e17;--card:#111827;--border:#1e293b;--text:#e2e8f0;--dim:#64748b;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--yellow:#eab308;--cyan:#06b6d4;--purple:#a855f7;--orange:#f97316;--chart-bg:#0d1117;--chart-text:#e2e8f0;--chart-grid:#1e293b}
+[data-theme="light"]{--bg:#f1f5f9;--card:#ffffff;--border:#e2e8f0;--text:#1e293b;--dim:#64748b;--green:#16a34a;--red:#dc2626;--blue:#2563eb;--yellow:#ca8a04;--cyan:#0891b2;--purple:#9333ea;--orange:#ea580c;--chart-bg:#ffffff;--chart-text:#1e293b;--chart-grid:#e2e8f0}
 .theme-btn{background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:14px;color:var(--text);transition:all .15s}
 .theme-btn:hover{background:var(--border)}
 body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;padding:8px 10px}
@@ -48,7 +48,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 table{width:100%;border-collapse:collapse;font-size:11px}
 th{text-align:left;color:var(--dim);font-size:9px;text-transform:uppercase;letter-spacing:.5px;padding:3px 5px;border-bottom:1px solid var(--border)}
 td{padding:3px 5px;border-bottom:1px solid var(--border)}
-.log-box{max-height:260px;overflow-y:auto;font-family:'Cascadia Code','Fira Code',monospace;font-size:10.5px;line-height:1.5}
+.log-box{height:260px;overflow-y:auto;font-family:'Cascadia Code','Fira Code',monospace;font-size:10.5px;line-height:1.5}
 .log-entry{padding:1px 0;white-space:normal;word-break:break-word;overflow:visible}
 .log-time{color:var(--dim);margin-right:5px}
 .log-tag{font-weight:600;margin-right:5px;min-width:55px;display:inline-block}
@@ -89,7 +89,7 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   .ind-grid{grid-template-columns:repeat(2,1fr)}
   table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;font-size:10px}
   th,td{padding:4px 3px}
-  .log-box{max-height:200px;font-size:9.5px}
+  .log-box{height:200px;font-size:9.5px}
   .log-entry{white-space:normal;word-break:break-word}
   .cfg-grid{grid-template-columns:1fr 1fr}
   .cfg-item input{padding:8px 6px;font-size:13px;min-height:36px}
@@ -100,6 +100,11 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   .card h3{font-size:9px}
   .row{padding:3px 0;font-size:12px}
   .bias-arrow{font-size:18px}
+  #htfPanel>div:first-child{grid-template-columns:1fr!important;display:grid!important}
+  #htfPanel>div:first-child>div{border-right:none!important;border-bottom:1px solid var(--border)}
+  #htfPanel>div:last-child{flex-direction:column!important;gap:12px}
+  #htfPanel>div:last-child>div{border-right:none!important;padding-right:0!important;margin-right:0!important;border-bottom:1px solid var(--border);padding-bottom:8px}
+  #htfPanel>div:last-child>div:last-child{border-bottom:none;padding-bottom:0}
 }
 @media(max-width:400px){
   .g4,.g3,.g2{gap:6px}
@@ -118,7 +123,7 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 #chartToolbar .tf-btn.active{background:var(--blue);color:#fff;border-color:var(--blue)}
 #chartToolbar .tf-btn:hover:not(.active){background:var(--border);color:var(--text)}
 #chartOverlay{position:relative}
-#chartContainer{width:100%;height:480px;border-radius:6px;overflow:hidden;background:#0d1117}
+#chartContainer{width:100%;height:480px;border-radius:6px;overflow:hidden;background:var(--chart-bg)}
 #chartLegend{position:absolute;top:8px;left:8px;z-index:10;display:flex;flex-wrap:wrap;gap:6px}
 .cl-badge{padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;backdrop-filter:blur(4px)}
 .cl-badge.ind-toggle{cursor:pointer;user-select:none;transition:opacity .15s}
@@ -132,7 +137,7 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 #trendlineList{display:none}
 /* Manual trade panel */
 #manualTradePanel{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
-@media(max-width:768px){#chartContainer{height:320px}}
+@media(max-width:768px){#chartContainer{height:280px}#chartInfoBar{display:none}#manualTradePanel{display:none}.card{contain:content}.log-box{will-change:scroll-position;-webkit-overflow-scrolling:touch}}
 .cfg-item{display:flex;flex-direction:column;gap:2px}
 .cfg-item label{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim)}
 .cfg-item input{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:12px;width:100%}
@@ -226,6 +231,16 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <div class="card"><h3>Correlation (6 Markets)</h3><div id="corrCard">-</div></div>
 </div>
 
+<div class="section-title">Strategy Live Status</div>
+<div class="card" style="padding:0;overflow:hidden">
+  <div id="strategyStatusPanel" style="padding:10px 12px">Loading...</div>
+</div>
+
+<div class="section-title">Calendar &amp; News</div>
+<div class="card" style="padding:0;overflow:hidden">
+  <div id="calendarPanel" style="padding:10px 12px">Loading...</div>
+</div>
+
 <div class="section-title">HTF Bias Engine</div>
 <div id="htfPanel" class="card" style="padding:0;overflow:hidden">
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid var(--border)">
@@ -293,13 +308,16 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
     <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)">Live Log</span>
     <span id="logCount" style="font-size:9px;color:var(--dim)"></span>
     <div id="logTabs" style="display:flex;gap:3px;flex-wrap:wrap"></div>
-    <div id="logCustomFilters" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;margin-left:4px"></div>
+    <span id="logWindowMeta" style="font-size:9px;color:var(--dim)"></span>
+    <button class="btn btn-link" id="logResetBtn" onclick="resetLogWindow()" style="padding:3px 8px;font-size:10px">Last 1h</button>
+    <button class="btn btn-link" id="logLoadMoreBtn" onclick="loadMoreLogs()" style="padding:3px 8px;font-size:10px">Load older 1h</button>
   </div>
   <div class="log-box" id="liveLogBox">-</div>
 </div>
 
 <script>
 const A=location.origin;
+const _isMobile=window.innerWidth<=768||/Mobi|Android/i.test(navigator.userAgent);
 const UI_VERSION='2026-04-27.1';
 const IST_TIME_ZONE='Asia/Kolkata';
 const ANALYTICS_BASE=A;
@@ -320,9 +338,11 @@ let _renderQueued=false;
 let _pendingFullRender=false;
 let _configVersion=0;
 let _configFlight=false;
+let _lastMobileHeavyFetch=0;
 const _htmlCache=new WeakMap();
 function setHTML(el,html){if(!el||hasSelectionIn(el)||_htmlCache.get(el)===html)return;el.innerHTML=html;_htmlCache.set(el,html);}
 function setText(el,text){if(el&&el.textContent!==String(text))el.textContent=text;}
+function humanizeToken(value){return String(value||'').replace(/_/g,' ');}
 function updateTabTitle(d){
   const tk=d.tick||{};
   const fp=d.mt5_floating_pnl||{};
@@ -357,15 +377,26 @@ function connectWS(){
     _wsRetry=0;
     $('pulse').className='pulse pulse-on';$('conn').textContent='WS Connected';
   };
+  let _lastWsRender=0;
+  let _wsSkipCount=0;
   _ws.onmessage=(ev)=>{
     try{
+      // On mobile, skip 4 out of 5 messages entirely (don't even parse JSON)
+      if(_isMobile){
+        _wsSkipCount++;
+        if(_wsSkipCount<5)return;
+        _wsSkipCount=0;
+      }
       const d=JSON.parse(ev.data);
       Object.assign(_state,d||{});
       updateTabTitle(_state);
       if(d.config_version&&d.config_version!==_configVersion)fetchConfig();
-      scheduleRender(d,{realtime:true});
+      const now=Date.now();
+      if(!_isMobile||now-_lastWsRender>1000){
+        _lastWsRender=now;
+        scheduleRender(d,{realtime:true});
+      }
       $('pulse').className='pulse pulse-on';$('conn').textContent='WS Connected';
-      // Fast chart tick — update last candle price in real-time without a full fetch
       if(d.tick)_tickUpdateChart();
     }catch(e){}
   };
@@ -382,16 +413,24 @@ connectWS();
 
 async function fetchFull(){
   try{
-    const [r,rch,rp,rb]=await Promise.all([
-      fetch(A+'/status'),
-      fetch(A+'/status/closed-history'),
-      fetch(A+'/status/performance'),
-      fetch(A+'/status/blockers'),
-    ]);
+    const shouldFetchHeavy=!_isMobile
+      || !_state.closed_history
+      || !_state.performance
+      || !(_state._guidance&&Array.isArray(_state._guidance.strategies))
+      || (Date.now()-_lastMobileHeavyFetch)>120000;
+    const fetches=[fetch(A+'/status'),fetch(A+'/status/blockers')];
+    if(shouldFetchHeavy){
+      fetches.push(fetch(A+'/status/closed-history'));
+      fetches.push(fetch(A+'/status/performance'));
+      fetches.push(fetch(A+'/strategy-guidance'));
+    }
+    const [r,rb,...rest]=await Promise.all(fetches);
     const d=await r.json();
-    for(const pr of [rch,rp,rb]){
+    try{const h=await rb.json();Object.assign(d,h);}catch(e){}
+    for(const pr of rest){
       try{const h=await pr.json();Object.assign(d,h);}catch(e){}
     }
+    if(shouldFetchHeavy)_lastMobileHeavyFetch=Date.now();
     scheduleRender(d,{full:true});
   }catch(e){}
 }
@@ -421,9 +460,10 @@ function strategyLabel(name){
     M15_SUPPORT_RESISTANCE_REJECTION_V1:'M15 SR',
     SWEEP_SCALPER:'SCALPER',
     TREND_CHANNEL:'TREND',
-    HTF_LONG:'HTF Long'
+    HTF_LONG:'HTF Long',
+    HTF_SHORT:'HTF Short'
   };
-  return labels[String(name||'').toUpperCase()]||String(name||'').replaceAll('_',' ');
+  return labels[String(name||'').toUpperCase()]||humanizeToken(name);
 }
 async function setStrategySelection(name){
   const current=(_state.strategies||{});
@@ -439,8 +479,10 @@ async function setStrategySelection(name){
 }
 function num(v,d=0){const n=Number(v);return Number.isFinite(n)?n:d}
 function initAnalyticsLinks(){
-  setText($('analyticsBaseLabel'),ANALYTICS_BASE);
-  setHTML($('analyticsLinks'),ANALYTICS_LINKS.map(link=>
+  const labelEl=$('analyticsBaseLabel');
+  const linksEl=$('analyticsLinks');
+  if(labelEl)setText(labelEl,ANALYTICS_BASE);
+  if(linksEl)setHTML(linksEl,ANALYTICS_LINKS.map(link=>
     `<a class="btn btn-link" href="${link.href}" target="_blank" rel="noopener" title="${esc(link.title)}">${esc(link.label)}</a>`
   ).join(''));
 }
@@ -639,6 +681,27 @@ async function extendTradeTimeout(ticket){
     alert(e.message||'Failed to extend exit time');
   }
 }
+async function modifyTradeSLTP(ticket){
+  const slEl=$(`modSL_${ticket}`),tpEl=$(`modTP_${ticket}`);
+  const sl=parseFloat(slEl&&slEl.value||0);
+  const tp=parseFloat(tpEl&&tpEl.value||0);
+  if(!sl||!tp||sl<=0||tp<=0){alert('Enter valid SL and TP values');return;}
+  try{
+    const r=await fetch(A+`/trades/${ticket}/modify-sltp`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({sl,tp})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data.detail||'Failed to modify trade');
+    // Flash inputs green briefly to confirm
+    if(slEl){slEl.style.borderColor='var(--green)';setTimeout(()=>{slEl.style.borderColor='var(--red)';},1500);}
+    if(tpEl){tpEl.style.borderColor='var(--green)';setTimeout(()=>{tpEl.style.borderColor='var(--green)';},1500);}
+    await fetchFull();
+  }catch(e){
+    alert('Modify failed: '+(e.message||'unknown error'));
+  }
+}
 async function manualExitTrade(ticket){
   try{
     const r=await fetch(A+`/trades/${ticket}/manual-exit`,{
@@ -669,15 +732,14 @@ function render(d,opts={}){
   // Update status strip — dynamic badges for all non-legacy available strategies
   const strats=d.strategies||{};
   const enabled=(strats.enabled||[]);
-  // Always use the canonical 7 — ignore legacy aliases
-  const available=['SMC_CONFLUENCE','M15_SUPPORT_RESISTANCE_REJECTION_V1','SWEEP_SCALPER','TREND_CHANNEL','SWING_ENGINE','INTRADAY_ENGINE','HTF_LONG'];
+  const available=(strats.available||[]).filter(s=>s!=='AUTO');
   const LABELS={'SMC_CONFLUENCE':'SMC','SWEEP_SCALPER':'SCALPER','TREND_CHANNEL':'TREND',
-    'M15_SUPPORT_RESISTANCE_REJECTION_V1':'M15SR','SWING_ENGINE':'SWING','INTRADAY_ENGINE':'INTRADAY','HTF_LONG':'HTF'};
+    'M15_SUPPORT_RESISTANCE_REJECTION_V1':'M15SR','SWING_ENGINE':'SWING','INTRADAY_ENGINE':'INTRADAY','HTF_LONG':'HTF L','HTF_SHORT':'HTF S'};
   const stratBadgesEl=$('stratBadges');
   if(stratBadgesEl&&available.length){
     setHTML(stratBadgesEl,available.map(s=>{
       const on=enabled.includes(s);
-      const label=LABELS[s]||s.replaceAll('_',' ');
+      const label=LABELS[s]||humanizeToken(s);
       return `<span class="badge ${on?'b-on':'b-off'}" style="cursor:pointer" onclick="setStrategySelection('${s}')" title="${s}">${label} ${on?'●':'○'}</span>`;
     }).join(''));
   }
@@ -719,7 +781,8 @@ function render(d,opts={}){
   
   $('btnStart').disabled=en;$('btnStop').disabled=!en;
 
-  // Chart info bar — compact horizontal strip above chart
+  // Chart info bar — skip on mobile (hidden via CSS)
+  if(!_isMobile){
   const regState=rg.state||'?';
   const regCol=regState==='TRENDING'?'green':regState==='RANGING'?'yellow':regState==='EXPANSION'?'cyan':'red';
   const biDir=bi.direction||'NEUTRAL';
@@ -755,6 +818,7 @@ function render(d,opts={}){
     ibItem('Losses', `<span class="${(rk.consecutive_losses||0)>=3?'red':''}">${rk.consecutive_losses||0} streak</span>`, ''),
     ibItem('Cycles', st.cycles||0, 'dim'),
   ].join(''));
+  } // end if(!_isMobile) chartInfoBar
 
   // Current blockers
   const latestByStrategy=blockers.latest_by_strategy||{};
@@ -773,7 +837,88 @@ function render(d,opts={}){
   `:`<div class="row"><span class="label">Status</span><span>No blockers logged yet</span></div>`;
   if(full)setHTML($('blockersCard'),blockerHtml);
 
+  // ── Strategy Live Status panel ──────────────────────────────────────────
   if(full){
+    const g=d._guidance||{};
+    const rows=(g.strategies||[]);
+    const statusColor={ready:'#22c55e',blocked:'#f97316',waiting:'#64748b'};
+    const statusIcon={ready:'●',blocked:'✗',waiting:'○'};
+    let stratHtml='';
+    if(rows.length){
+      stratHtml+=`<div style="display:grid;grid-template-columns:110px 60px 1fr 1fr;gap:0;font-size:10px;color:var(--dim);padding:0 0 4px;border-bottom:1px solid var(--border);margin-bottom:4px">`+
+        `<span>Strategy</span><span>Signal</span><span>Block Reason</span><span>What it needs</span></div>`;
+      rows.forEach(r=>{
+        const col=statusColor[r.status]||'#64748b';
+        const icon=statusIcon[r.status]||'○';
+        const sig=r.signal==='WAIT'?'—':r.signal;
+        const sigCol=r.signal==='BUY'?'#22c55e':r.signal==='SELL'?'#ef4444':'#64748b';
+        stratHtml+=`<div style="display:grid;grid-template-columns:110px 60px 1fr 1fr;gap:0;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);align-items:start">`+
+          `<span style="color:${col};font-weight:600;font-size:11px">${icon} ${r.label}</span>`+
+          `<span style="color:${sigCol};font-weight:700">${sig}</span>`+
+          `<span style="color:var(--fg);font-size:10px;padding-right:8px">${esc(r.reason)}</span>`+
+          `<span style="color:var(--dim);font-size:10px">${esc(r.trigger_hint)}</span>`+
+        `</div>`;
+      });
+      if(g.action_now) stratHtml+=`<div style="margin-top:8px;padding:6px 8px;background:rgba(255,255,255,.04);border-radius:4px;font-size:11px;color:var(--cyan)">${esc(g.action_now)}</div>`;
+      if(g.wait_advice) stratHtml+=`<div style="margin-top:4px;font-size:10px;color:var(--dim)">${esc(g.wait_advice)}</div>`;
+    } else {
+      stratHtml='<div style="color:var(--dim);font-size:11px">No strategy data yet — waiting for first evaluation cycle.</div>';
+    }
+    setHTML($('strategyStatusPanel'),stratHtml);
+  }
+
+  // ── Calendar & News panel ───────────────────────────────────────────────
+  if(full){
+    const cal=d.calendar_detail||d.calendar||{};
+    const events=(cal.events||[]);
+    const blocked=cal.blocked;
+    const blockReason=cal.reason||'';
+    const nextEv=cal.next_event||{};
+    const nextInMin=cal.next_in_min;
+    const blockBefore=cal.block_before_minutes||30;
+    const blockAfter=cal.block_after_minutes||15;
+    let calHtml='';
+    // Status row
+    const calStatusCol=blocked?'#ef4444':'#22c55e';
+    const calStatusText=blocked?`⚠ BLOCKED — ${esc(blockReason)}`:'✓ CLEAR — no active news window';
+    calHtml+=`<div style="font-size:12px;font-weight:700;color:${calStatusCol};margin-bottom:8px">${calStatusText}</div>`;
+    // Blackout window config
+    calHtml+=`<div style="font-size:10px;color:var(--dim);margin-bottom:8px">Blackout window: ${blockBefore}min before → ${blockAfter}min after each critical event</div>`;
+    // Next event
+    if(nextEv.title){
+      const nextCol=nextInMin!=null&&nextInMin<60?'#f97316':'#64748b';
+      calHtml+=`<div style="padding:6px 8px;background:rgba(255,255,255,.04);border-radius:4px;margin-bottom:8px">`+
+        `<div style="font-size:11px;font-weight:600;color:var(--cyan)">Next event: ${esc(nextEv.title)}</div>`+
+        `<div style="display:flex;gap:16px;margin-top:4px;font-size:10px">`+
+        `<span style="color:var(--dim)">Time: <span style="color:var(--fg)">${esc(nextEv.time_utc||'')}</span></span>`+
+        `<span style="color:var(--dim)">Impact: <span style="color:${nextEv.impact==='High'?'#ef4444':'#f97316'}">${esc(nextEv.impact||'')}</span></span>`+
+        `<span style="color:var(--dim)">Critical: <span style="color:${nextEv.critical?'#ef4444':'#64748b'}">${nextEv.critical?'YES':'no'}</span></span>`+
+        (nextInMin!=null?`<span style="color:${nextCol};font-weight:600">In ${nextInMin.toFixed(0)} min</span>`:'')+
+        (nextEv.forecast?`<span style="color:var(--dim)">Forecast: <span style="color:var(--fg)">${esc(nextEv.forecast)}</span></span>`:'')+
+        `</div></div>`;
+    }
+    // All events this week
+    if(events.length){
+      calHtml+=`<div style="font-size:10px;color:var(--dim);margin-bottom:4px">All events loaded (${events.length})</div>`;
+      calHtml+=`<div style="display:grid;grid-template-columns:1fr 80px 60px 60px 1fr;gap:0;font-size:9px;color:var(--dim);padding:0 0 3px;border-bottom:1px solid var(--border)">`+
+        `<span>Event</span><span>Time (UTC)</span><span>Impact</span><span>Critical</span><span>Forecast / Prev</span></div>`;
+      events.forEach(ev=>{
+        const impCol=ev.impact==='High'?'#ef4444':ev.impact==='Medium'?'#f97316':'#64748b';
+        const critCol=ev.critical?'#ef4444':'#64748b';
+        const timeStr=(ev.time_utc||'').replace('T',' ').substring(0,16);
+        calHtml+=`<div style="display:grid;grid-template-columns:1fr 80px 60px 60px 1fr;gap:0;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.03);font-size:10px;align-items:center">`+
+          `<span style="color:var(--fg)">${esc(ev.title)}</span>`+
+          `<span style="color:var(--dim)">${timeStr}</span>`+
+          `<span style="color:${impCol}">${esc(ev.impact||'')}</span>`+
+          `<span style="color:${critCol}">${ev.critical?'YES':'—'}</span>`+
+          `<span style="color:var(--dim)">${ev.forecast?esc(ev.forecast):''} ${ev.previous?'/ '+esc(ev.previous):''}</span>`+
+        `</div>`;
+      });
+    } else {
+      calHtml+=`<div style="color:var(--dim);font-size:11px">No events loaded in calendar cache.</div>`;
+    }
+    setHTML($('calendarPanel'),calHtml);
+  }
     const dxy=co.dxy||{},y10=co.us10y||{},oil=co.oil||{},sp=co.sp500||{},nas=co.nas||{},dow=co.dow||{};
     const conf=((co.confidence||0)*100).toFixed(0);
     const cBias=co.bias||'NEUTRAL';
@@ -799,7 +944,6 @@ function render(d,opts={}){
       </div>
       <div style="font-size:10px;color:var(--dim);margin-top:4px;line-height:1.5">${(co.reasons||[]).map(r=>`<div>${r}</div>`).join('')||'No correlation data'}</div>
     `);
-  }
 
   // Open trades — always re-render on every WS tick so PnL stays live
   const mt5pos=d.mt5_positions||[];
@@ -825,7 +969,7 @@ function render(d,opts={}){
       const timeoutSec=Number(tm.timeout_seconds||0);
       const remainingSec=timeoutSec>0?Math.max(0,timeoutSec-ageSec):0;
       const manualExtSec=Number((((tm.features||{}).manual_timeout_extension_seconds)||0));
-      const setupType=((tm.features||{})._scalper_setup_type||(tm.features||{}).ai_manual_setup_type||tm.reason||'').replaceAll('_',' ');
+      const setupType=humanizeToken((tm.features||{})._scalper_setup_type||(tm.features||{}).ai_manual_setup_type||tm.reason||'');
       const trackedByManager=!!tm.fill_ts;
       const timeoutHtml=!trackedByManager
         ? '<div style="font-size:10px;color:var(--dim)">Tracker unavailable</div>'
@@ -833,8 +977,8 @@ function render(d,opts={}){
         ? `<div style="font-weight:600;color:${remainingSec>0?'var(--cyan)':'var(--red)'}">${fmtDuration(remainingSec)} left</div><div style="font-size:9px;color:var(--dim)">of ${fmtDuration(timeoutSec)}${manualExtSec>0?` · +${fmtDuration(manualExtSec)}`:''}</div>`
         : '<div style="font-size:10px;color:var(--dim)">No timeout</div>';
       const manageHtml=trackedByManager
-        ? `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap"><input id="timeoutExt_${t.ticket}" type="number" min="1" step="1" value="5" style="width:56px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 5px;color:var(--text);font-size:10px"><button class="btn-save" style="padding:4px 8px;font-size:10px" onclick="extendTradeTimeout(${t.ticket})">+ Min</button><button class="btn-danger" style="padding:4px 8px;font-size:10px" onclick="manualExitTrade(${t.ticket})">Exit</button></div>`
-        : `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap"><span style="font-size:10px;color:var(--dim)">No tracker</span><button class="btn-danger" style="padding:4px 8px;font-size:10px" onclick="manualExitTrade(${t.ticket})">Exit</button></div>`;
+        ? `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap"><input id="timeoutExt_${t.ticket}" type="number" min="1" step="1" value="5" style="width:56px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 5px;color:var(--text);font-size:10px"><button class="btn-save" style="padding:4px 8px;font-size:10px" onclick="extendTradeTimeout(${t.ticket})">+ Min</button><button class="btn-danger" style="padding:4px 8px;font-size:10px" onclick="manualExitTrade(${t.ticket})">Exit</button></div><div style="display:flex;gap:3px;align-items:center;flex-wrap:wrap;margin-top:3px"><input id="modSL_${t.ticket}" type="number" step="0.01" placeholder="SL" value="${sl?sl.toFixed(2):''}" style="width:68px;background:var(--bg);border:1px solid var(--red);border-radius:4px;padding:3px 5px;color:var(--red);font-size:10px"><input id="modTP_${t.ticket}" type="number" step="0.01" placeholder="TP" value="${tp?tp.toFixed(2):''}" style="width:68px;background:var(--bg);border:1px solid var(--green);border-radius:4px;padding:3px 5px;color:var(--green);font-size:10px"><button class="btn-save" style="padding:4px 8px;font-size:10px;background:var(--orange)" onclick="modifyTradeSLTP(${t.ticket})">Modify</button></div>`
+        : `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap"><span style="font-size:10px;color:var(--dim)">No tracker</span><button class="btn-danger" style="padding:4px 8px;font-size:10px" onclick="manualExitTrade(${t.ticket})">Exit</button></div><div style="display:flex;gap:3px;align-items:center;flex-wrap:wrap;margin-top:3px"><input id="modSL_${t.ticket}" type="number" step="0.01" placeholder="SL" value="${sl?sl.toFixed(2):''}" style="width:68px;background:var(--bg);border:1px solid var(--red);border-radius:4px;padding:3px 5px;color:var(--red);font-size:10px"><input id="modTP_${t.ticket}" type="number" step="0.01" placeholder="TP" value="${tp?tp.toFixed(2):''}" style="width:68px;background:var(--bg);border:1px solid var(--green);border-radius:4px;padding:3px 5px;color:var(--green);font-size:10px"><button class="btn-save" style="padding:4px 8px;font-size:10px;background:var(--orange)" onclick="modifyTradeSLTP(${t.ticket})">Modify</button></div>`;
       const mt5Raw=(function(s){
         if(!s||!s.includes('T'))return'-';
         try{
@@ -899,17 +1043,18 @@ function render(d,opts={}){
     });
     const days=Object.values(grouped).sort((a,b)=>b.date.localeCompare(a.date));
     if(!window._cc)window._cc={};
-    let h=perfHtml+'<table><th>#</th><th>Dir</th><th>Vol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Setup</th><th>MT5</th><th>IST</th>';
+    let h=perfHtml+'<table><th>#</th><th>Dir</th><th>Vol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>W/L</th><th>Setup</th><th>Close Reason</th><th>MT5</th><th>IST</th>';
     days.forEach(day=>{
       day.trades.sort((a,b)=>(b._dt||0)-(a._dt||0));
       const dp=day.pnl;
       const open=window._cc[day.date]===true;
       const arrow=open?'&#9660;':'&#9654;';
-      h+=`<tr style="background:rgba(255,255,255,.04);cursor:pointer;user-select:none" onclick="toggleDay('${day.date}')"><td colspan="6" style="font-weight:700;font-size:11px;padding:5px">${arrow} ${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="2" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td></tr>`;
+      h+=`<tr style="background:rgba(255,255,255,.04);cursor:pointer;user-select:none" onclick="toggleDay('${day.date}')"><td colspan="6" style="font-weight:700;font-size:11px;padding:5px">${arrow} ${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="4" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td></tr>`;
       if(open)day.trades.forEach(t=>{
         const p=t.pnl||0;
         const dt=t._dt;
-        const setupType=(t.setup_type||'').replaceAll('_',' ');
+        const setupType=humanizeToken(t.setup_type||t.strategy||'');
+        const closeReason=t.close_reason||t.comment||t.close_reason_category||'Reason unavailable';
         const mt5Time=(function(s){
           if(!s)return'-';
           try{
@@ -921,7 +1066,7 @@ function render(d,opts={}){
           }catch(e){return'-';}
         })(t.close_time);
         const istTime=fmtIST(t.close_time);
-        h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.volume||'-'}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):'-'}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px">${setupType?`<span class="badge b-ses">${esc(setupType)}</span>`:'-'}</td><td style="font-size:10px" class="cyan">${mt5Time}</td><td style="font-size:10px" class="orange">${istTime}</td></tr>`;
+        h+=`<tr><td>${t.ticket}</td><td class="${t.direction==='BUY'?'green':'red'}">${t.direction}</td><td>${t.volume||'-'}</td><td>${t.entry_price?Number(t.entry_price).toFixed(2):'-'}</td><td>${t.exit_price?Number(t.exit_price).toFixed(2):'-'}</td><td class="${pc(p)}">${ps(p)}</td><td>${t.won?'<span class="green">W</span>':'<span class="red">L</span>'}</td><td style="font-size:10px">${setupType?`<span class="badge b-ses">${esc(setupType)}</span>`:'-'}</td><td style="font-size:10px;max-width:280px;white-space:normal;line-height:1.35" title="${esc(closeReason)}">${esc(closeReason)}</td><td style="font-size:10px" class="cyan">${mt5Time}</td><td style="font-size:10px" class="orange">${istTime}</td></tr>`;
       });
     });
     h+='</table>';setHTML($('closedT'),h);}
@@ -930,26 +1075,36 @@ function render(d,opts={}){
   // Live log — merge today's history with live WS entries
   _renderLiveLog(d.log||[]);
 
-  // Always sync open trades element
+  // Always sync open trades element — skip re-render while user is typing in any input
   const _otEl=$('openT');
-  if(_otEl){_otEl.style.display=op.length?'block':'none';if(op.length)_otEl.innerHTML=openHtml;}
+  if(_otEl){
+    _otEl.style.display=op.length?'block':'none';
+    if(op.length){
+      const _focused=_otEl.contains(document.activeElement)&&document.activeElement.tagName==='INPUT';
+      if(!_focused)setHTML(_otEl,openHtml);
+    }
+  }
 
   const floatPnl=fp.total||0;
   updateTabTitle(d);
 }
 
-function toggleTheme(){const h=document.documentElement;const t=h.getAttribute('data-theme')==='light'?'dark':'light';h.setAttribute('data-theme',t==='light'?'light':'');localStorage.setItem('theme',t);$('themeToggle').innerHTML=t==='light'?'&#9728;':'&#9790;';}
+function toggleTheme(){const h=document.documentElement;const t=h.getAttribute('data-theme')==='light'?'dark':'light';h.setAttribute('data-theme',t==='light'?'light':'');localStorage.setItem('theme',t);$('themeToggle').innerHTML=t==='light'?'&#9728;':'&#9790;';C=_getChartColors();_applyChartTheme();}
 (function(){const t=localStorage.getItem('theme')||'dark';if(t==='light')document.documentElement.setAttribute('data-theme','light');$('themeToggle').innerHTML=t==='light'?'&#9728;':'&#9790;';})();
 function tickClocks(){const o={hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false};const utc=new Date().toLocaleTimeString('en',{...o,timeZone:'UTC'});const ist=new Date().toLocaleTimeString('en',{...o,timeZone:'Asia/Kolkata'});const ldn=new Date().toLocaleTimeString('en',{...o,timeZone:'Europe/London'});const ny=new Date().toLocaleTimeString('en',{...o,timeZone:'America/New_York'});$('clocks').innerHTML='<span class="cyan">UTC</span> '+utc+' &middot; <span class="orange">IST</span> '+ist+' &middot; <span class="blue">LDN</span> '+ldn+' &middot; <span class="orange">NY</span> '+ny;}
-setInterval(tickClocks,1000);tickClocks();
+setInterval(tickClocks,_isMobile?5000:1000);tickClocks();
 initAnalyticsLinks();
 
 // /config is persistent/control data and is fetched on load or when config_version changes.
 // /status is live/heavy data and stays on a slow poll.
 let _fullFlight=false;
+const _POLL_INTERVAL=_isMobile?30000:15000;
+const _CHART_INTERVAL=_isMobile?30000:15000;
+const _LOG_INTERVAL=_isMobile?120000:60000;
 function toggleDay(d){if(!window._cc)window._cc={};window._cc[d]=!window._cc[d];scheduleRender({},{full:true});}
-async function safeFull(){if(_fullFlight)return;_fullFlight=true;try{await fetchFull();}finally{_fullFlight=false;}}
-setInterval(safeFull,5000);
+async function safeFull(){if(_fullFlight||document.hidden)return;_fullFlight=true;try{await fetchFull();}finally{_fullFlight=false;}}
+setInterval(safeFull,_POLL_INTERVAL);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)safeFull();});
 fetchConfig();
 safeFull();
 
@@ -997,7 +1152,6 @@ let _lwc=null;
 let _chart=null;
 let _candleSeries=null;
 let _chartTF='M5';
-let _chartLimit=800;
 let _chartAutoRefresh=true;
 let _chartFlight=false;
 let _chartTimer=null;
@@ -1005,11 +1159,16 @@ let _chartData=null;
 let _chartUserPanned=false;  // true once user has manually panned away from right edge
 // Default candle limits per timeframe matching config.py CANDLE_LIMITS
 const TF_LIMITS={M1:300,M5:200,M15:800,H1:200,H4:200};
+let _chartLimit=_isMobile?120:(TF_LIMITS[_chartTF]||200);
 
 // Colour palette (matches dashboard CSS vars)
-const C={green:'#22c55e',red:'#ef4444',blue:'#3b82f6',yellow:'#eab308',
-         cyan:'#06b6d4',purple:'#a855f7',orange:'#f97316',dim:'#64748b',
-         bg:'#0d1117',card:'#111827',border:'#1e293b',text:'#e2e8f0'};
+function _getChartColors(){
+  const isLight=document.documentElement.getAttribute('data-theme')==='light';
+  return isLight
+    ?{green:'#16a34a',red:'#dc2626',blue:'#2563eb',yellow:'#ca8a04',cyan:'#0891b2',purple:'#9333ea',orange:'#ea580c',dim:'#64748b',bg:'#ffffff',card:'#ffffff',border:'#e2e8f0',text:'#1e293b'}
+    :{green:'#22c55e',red:'#ef4444',blue:'#3b82f6',yellow:'#eab308',cyan:'#06b6d4',purple:'#a855f7',orange:'#f97316',dim:'#64748b',bg:'#0d1117',card:'#111827',border:'#1e293b',text:'#e2e8f0'};
+}
+let C=_getChartColors();
 
 async function _loadLWC(){
   if(window.LightweightCharts)return window.LightweightCharts;
@@ -1022,10 +1181,22 @@ async function _loadLWC(){
   });
 }
 
+function _applyChartTheme(){
+  if(!_chart)return;
+  _chart.applyOptions({
+    layout:{background:{color:C.bg},textColor:C.text},
+    grid:{vertLines:{color:C.border},horzLines:{color:C.border}},
+    rightPriceScale:{borderColor:C.border},
+    timeScale:{borderColor:C.border},
+  });
+  if(_candleSeries)_candleSeries.applyOptions({upColor:C.green,downColor:C.red,borderUpColor:C.green,borderDownColor:C.red,wickUpColor:C.green,wickDownColor:C.red});
+  if(_chartData)_renderChart(_chartData);
+}
 async function _initChart(){
   if(_chart)return;
   const LWC=await _loadLWC();
   const el=$('chartContainer');
+  C=_getChartColors();
   _chart=LWC.createChart(el,{
     width:el.clientWidth,height:el.clientHeight,
     layout:{background:{color:C.bg},textColor:C.text},
@@ -1061,12 +1232,17 @@ async function _initChart(){
 
 function _clearOverlays(){
   if(!_chart)return;
-  // Remove all series except candles by recreating them
-  // LWC v4: we track extra series in an array and remove them
   if(window._extraSeries){
     window._extraSeries.forEach(s=>{try{_chart.removeSeries(s);}catch(e){}});
   }
   window._extraSeries=[];
+  // Clear price lines from candle series (used on mobile)
+  if(_candleSeries){
+    try{
+      const lines=_candleSeries.priceLines?_candleSeries.priceLines():[];
+      lines.forEach(l=>{try{_candleSeries.removePriceLine(l);}catch(e){}});
+    }catch(e){}
+  }
 }
 
 function _addLineSeries(opts){
@@ -1118,15 +1294,13 @@ function _renderChart(data){
   // 2. Clear old overlays
   _clearOverlays();
 
-  // 2b. Day boundary vertical lines — draw a dashed line at each IST midnight
-  (function(){
+  // 2b. Day boundary vertical lines — skip on mobile (expensive per-candle Date parsing)
+  if(!_isMobile)(function(){
     if(candles.length<2)return;
     let lastDay=null;
     for(let i=1;i<candles.length;i++){
       const day=new Date(candles[i].time*1000).toLocaleDateString('en-CA',{timeZone:IST_TIME_ZONE});
       if(lastDay&&day!==lastDay){
-        // Two-point line at the same price level spanning the full visible range
-        // Use a histogram series trick: draw a thin dashed line from prev candle to this candle
         const s=_addLineSeries({
           color:'rgba(255,255,255,0.12)',lineWidth:1,lineStyle:1,
           priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,
@@ -1164,19 +1338,29 @@ function _renderChart(data){
     }
   });
 
-  // 4. Support/resistance zones as thin area bands
+  // 4. Support/resistance zones — on mobile use price lines instead of full-length series
   const zones=data.zones||{};
   const price=candles[candles.length-1]?.close||0;
-  const zoneTs=candles.map(c=>c.time);
-  function zoneArea(zl,zh,col){
-    const upper=_addLineSeries({color:col+'44',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
-    const lower=_addLineSeries({color:col+'44',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
-    upper.setData(zoneTs.map(t=>({time:t,value:zh})));
-    lower.setData(zoneTs.map(t=>({time:t,value:zl})));
-  }
   if(_indOn('zones')){
-    (zones.resistance||[]).slice(0,4).forEach(z=>zoneArea(z.zone_low,z.zone_high,'#ef4444'));
-    (zones.support||[]).slice(0,4).forEach(z=>zoneArea(z.zone_low,z.zone_high,'#22c55e'));
+    if(_isMobile){
+      // Use createPriceLine on candle series — zero extra series, just horizontal markers
+      (zones.resistance||[]).slice(0,3).forEach(z=>{
+        _candleSeries.createPriceLine({price:z.zone_high,color:'#ef444466',lineWidth:1,lineStyle:2,axisLabelVisible:false});
+      });
+      (zones.support||[]).slice(0,3).forEach(z=>{
+        _candleSeries.createPriceLine({price:z.zone_low,color:'#22c55e66',lineWidth:1,lineStyle:2,axisLabelVisible:false});
+      });
+    } else {
+      const zoneTs=candles.map(c=>c.time);
+      function zoneArea(zl,zh,col){
+        const upper=_addLineSeries({color:col+'44',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+        const lower=_addLineSeries({color:col+'44',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+        upper.setData(zoneTs.map(t=>({time:t,value:zh})));
+        lower.setData(zoneTs.map(t=>({time:t,value:zl})));
+      }
+      (zones.resistance||[]).slice(0,4).forEach(z=>zoneArea(z.zone_low,z.zone_high,'#ef4444'));
+      (zones.support||[]).slice(0,4).forEach(z=>zoneArea(z.zone_low,z.zone_high,'#22c55e'));
+    }
   }
 
   // 5. Swing high/low markers on candle series
@@ -1208,28 +1392,41 @@ function _renderChart(data){
   markers.sort((a,b)=>a.time-b.time);
   _candleSeries.setMarkers(markers);
 
-  // 6. Open trade lines
-  (data.open_trades||[]).forEach(t=>{
-    const entry=t.open_price||t.price_open||0;
-    const sl=t.sl||0;
-    const tp=t.tp||0;
-    const isBuy=(t.type||t.direction||'')===('BUY');
-    if(entry){
-      const es=_addLineSeries({color:isBuy?C.cyan:C.purple,lineWidth:2,
-        priceLineVisible:false,lastValueVisible:true,title:'Entry'});
-      es.setData(zoneTs.map(t=>({time:t,value:entry})));
-    }
-    if(sl){
-      const ss=_addLineSeries({color:C.red,lineWidth:1,lineStyle:2,
-        priceLineVisible:false,lastValueVisible:true,title:'SL'});
-      ss.setData(zoneTs.map(t=>({time:t,value:sl})));
-    }
-    if(tp){
-      const ts=_addLineSeries({color:C.green,lineWidth:1,lineStyle:2,
-        priceLineVisible:false,lastValueVisible:true,title:'TP'});
-      ts.setData(zoneTs.map(t=>({time:t,value:tp})));
-    }
-  });
+  // 6. Open trade lines — on mobile use price lines (no extra series)
+  if(_isMobile){
+    (data.open_trades||[]).forEach(t=>{
+      const entry=t.open_price||t.price_open||0;
+      const sl=t.sl||0;
+      const tp=t.tp||0;
+      const isBuy=(t.type||t.direction||'')===('BUY');
+      if(entry)_candleSeries.createPriceLine({price:entry,color:isBuy?C.cyan:C.purple,lineWidth:2,lineStyle:0,axisLabelVisible:true,title:'Entry'});
+      if(sl)_candleSeries.createPriceLine({price:sl,color:C.red,lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'SL'});
+      if(tp)_candleSeries.createPriceLine({price:tp,color:C.green,lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'TP'});
+    });
+  } else {
+    const zoneTs=candles.map(c=>c.time);
+    (data.open_trades||[]).forEach(t=>{
+      const entry=t.open_price||t.price_open||0;
+      const sl=t.sl||0;
+      const tp=t.tp||0;
+      const isBuy=(t.type||t.direction||'')===('BUY');
+      if(entry){
+        const es=_addLineSeries({color:isBuy?C.cyan:C.purple,lineWidth:2,
+          priceLineVisible:false,lastValueVisible:true,title:'Entry'});
+        es.setData(zoneTs.map(t=>({time:t,value:entry})));
+      }
+      if(sl){
+        const ss=_addLineSeries({color:C.red,lineWidth:1,lineStyle:2,
+          priceLineVisible:false,lastValueVisible:true,title:'SL'});
+        ss.setData(zoneTs.map(t=>({time:t,value:sl})));
+      }
+      if(tp){
+        const ts=_addLineSeries({color:C.green,lineWidth:1,lineStyle:2,
+          priceLineVisible:false,lastValueVisible:true,title:'TP'});
+        ts.setData(zoneTs.map(t=>({time:t,value:tp})));
+      }
+    });
+  }
 
   // 6b. EMA lines — computed client-side from candle closes
   function calcEMA(closes, period){
@@ -1280,7 +1477,7 @@ function _renderChart(data){
     const ema9s=_addLineSeries({color:'#06b6d4',lineWidth:1,priceLineVisible:false,lastValueVisible:true,title:'EMA9'});
     ema9s.setData(candles.slice(8).map((c,i)=>({time:c.time,value:parseFloat(ema9vals[i+8].toFixed(5))})));
   }
-  if(_indOn('ema15')){
+  if(!_isMobile&&_indOn('ema15')){
     const ema15s=_addLineSeries({color:'#8b5cf6',lineWidth:1,priceLineVisible:false,lastValueVisible:true,title:'EMA15'});
     ema15s.setData(candles.slice(14).map((c,i)=>({time:c.time,value:parseFloat(ema15vals[i+14].toFixed(5))})));
   }
@@ -1292,56 +1489,33 @@ function _renderChart(data){
   const stPeriod=10, stMult=3.0;
   if(_indOn('supertrend')&&candles.length>stPeriod){
     const st=calcSupertrend(candles,stPeriod,stMult);
-    // Draw as filled area series: bullish=green fill above line, bearish=red fill below line
-    let upPts=[], dnPts=[];
-    for(let i=stPeriod;i<candles.length;i++){
-      const val=parseFloat(st.line[i].toFixed(5));
-      if(st.dir[i]===1){
-        upPts.push({time:candles[i].time,value:val});
-        if(dnPts.length>=2){
-          const s=_chart.addAreaSeries({
-            topColor:'rgba(239,68,68,0.25)',bottomColor:'rgba(239,68,68,0.02)',
-            lineColor:'#ef4444',lineWidth:2,
-            priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,
-          });
-          window._extraSeries.push(s);
-          s.setData(dnPts);
-          dnPts=[];
-        }
-      } else {
-        dnPts.push({time:candles[i].time,value:val});
-        if(upPts.length>=2){
-          const s=_chart.addAreaSeries({
-            topColor:'rgba(34,197,94,0.02)',bottomColor:'rgba(34,197,94,0.25)',
-            lineColor:'#22c55e',lineWidth:2,
-            priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,
-          });
-          window._extraSeries.push(s);
-          s.setData(upPts);
-          upPts=[];
+    if(_isMobile){
+      // Mobile: single line series colored by last direction (no area fills, no segments)
+      const pts=[];
+      for(let i=stPeriod;i<candles.length;i++)pts.push({time:candles[i].time,value:parseFloat(st.line[i].toFixed(5))});
+      const lastDir=st.dir[candles.length-1];
+      const s=_addLineSeries({color:lastDir===1?C.green:C.red,lineWidth:2,priceLineVisible:false,lastValueVisible:true,title:lastDir===1?'ST▲':'ST▼'});
+      s.setData(pts);
+    } else {
+      let upPts=[], dnPts=[];
+      for(let i=stPeriod;i<candles.length;i++){
+        const val=parseFloat(st.line[i].toFixed(5));
+        if(st.dir[i]===1){
+          upPts.push({time:candles[i].time,value:val});
+          if(dnPts.length>=2){
+            const s=_chart.addAreaSeries({topColor:'rgba(239,68,68,0.25)',bottomColor:'rgba(239,68,68,0.02)',lineColor:'#ef4444',lineWidth:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+            window._extraSeries.push(s);s.setData(dnPts);dnPts=[];
+          }
+        } else {
+          dnPts.push({time:candles[i].time,value:val});
+          if(upPts.length>=2){
+            const s=_chart.addAreaSeries({topColor:'rgba(34,197,94,0.02)',bottomColor:'rgba(34,197,94,0.25)',lineColor:'#22c55e',lineWidth:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+            window._extraSeries.push(s);s.setData(upPts);upPts=[];
+          }
         }
       }
-    }
-    // Flush remaining segments
-    if(upPts.length>=2){
-      const s=_chart.addAreaSeries({
-        topColor:'rgba(34,197,94,0.02)',bottomColor:'rgba(34,197,94,0.25)',
-        lineColor:'#22c55e',lineWidth:2,
-        priceLineVisible:false,lastValueVisible:true,title:'ST▲',
-        crosshairMarkerVisible:false,
-      });
-      window._extraSeries.push(s);
-      s.setData(upPts);
-    }
-    if(dnPts.length>=2){
-      const s=_chart.addAreaSeries({
-        topColor:'rgba(239,68,68,0.25)',bottomColor:'rgba(239,68,68,0.02)',
-        lineColor:'#ef4444',lineWidth:2,
-        priceLineVisible:false,lastValueVisible:true,title:'ST▼',
-        crosshairMarkerVisible:false,
-      });
-      window._extraSeries.push(s);
-      s.setData(dnPts);
+      if(upPts.length>=2){const s=_chart.addAreaSeries({topColor:'rgba(34,197,94,0.02)',bottomColor:'rgba(34,197,94,0.25)',lineColor:'#22c55e',lineWidth:2,priceLineVisible:false,lastValueVisible:true,title:'ST▲',crosshairMarkerVisible:false});window._extraSeries.push(s);s.setData(upPts);}
+      if(dnPts.length>=2){const s=_chart.addAreaSeries({topColor:'rgba(239,68,68,0.25)',bottomColor:'rgba(239,68,68,0.02)',lineColor:'#ef4444',lineWidth:2,priceLineVisible:false,lastValueVisible:true,title:'ST▼',crosshairMarkerVisible:false});window._extraSeries.push(s);s.setData(dnPts);}
     }
   }
 
@@ -1455,6 +1629,7 @@ async function refreshChart(resetPan=false){
 
 // Fast tick update — called from WS message handler, no fetch needed
 // Updates only the last candle's close/high/low using the live bid price
+let _lastTickRender=0;
 function _tickUpdateChart(){
   if(!_chart||!_candleSeries||!_chartData)return;
   const tick=_state.tick||{};
@@ -1470,13 +1645,17 @@ function _tickUpdateChart(){
     low:   Math.min(last.low,  price),
     close: price,
   });
-  // Refresh manual panel on every tick so spread/price/tick-dir stay live
-  _renderManualPanel(_chartData);
+  // Throttle manual panel re-render on mobile
+  const now=Date.now();
+  if(now-_lastTickRender>(_isMobile?2000:500)){
+    _lastTickRender=now;
+    _renderManualPanel(_chartData);
+  }
 }
 
 function setChartTF(tf){
   _chartTF=tf;
-  _chartLimit=800;
+  _chartLimit=_isMobile?120:(TF_LIMITS[tf]||200);
   _syncLimitButtons();
   // Set bar spacing so tick marks align to natural intervals per TF
   if(_chart){
@@ -1511,8 +1690,8 @@ function toggleChartAuto(on){
 function _startChartTimer(){
   _stopChartTimer();
   _chartTimer=setInterval(()=>{
-    if(_chartAutoRefresh&&!_chartFlight)refreshChart();
-  },5000);
+    if(_chartAutoRefresh&&!_chartFlight&&!document.hidden)refreshChart();
+  },_CHART_INTERVAL);
 }
 function _stopChartTimer(){if(_chartTimer){clearInterval(_chartTimer);_chartTimer=null;}}
 
@@ -1707,110 +1886,200 @@ _startHTFTimer();
 
 // ─── LIVE LOG ───────────────────────────────────────────────────────────────
 const LIVE_LOG_TABS=[
-  {id:'ALL',    label:'ALL',     tags:null},
-  {id:'TRADE',  label:'TRADE',   tags:['TRADE','RESULT','REENTRY']},
-  {id:'GATE',   label:'GATE',    tags:['GATE','BLOCKED']},
-  {id:'NO_SIG', label:'NO_SIG',  tags:['NO_SIG']},
-  {id:'ADAPT',  label:'ADAPT',   tags:['ADAPT']},
-  {id:'RISK',   label:'RISK',    tags:['RISK','SEED','RECONCILE']},
-  {id:'STATUS', label:'STATUS',  tags:['STATUS','INIT','ENGINE','WARN']},
-  {id:'AI',     label:'AI/XGB',  tags:['AI','XGB','ARB']},
-  {id:'API',    label:'API',     tags:['API']},
-  {id:'ERR',    label:'ERR',     tags:['ERR']},
-  {id:'CUSTOM', label:'Custom▾', tags:null},
+  {id:'ALL',       label:'ALL',       tags:null},
+  {id:'TRADE',     label:'TRADE',     tags:['TRADE']},
+  {id:'RESULT',    label:'RESULT',    tags:['RESULT']},
+  {id:'REENTRY',   label:'REENTRY',   tags:['REENTRY']},
+  {id:'GATE',      label:'GATE',      tags:['GATE']},
+  {id:'BLOCKED',   label:'BLOCKED',   tags:['BLOCKED']},
+  {id:'NO_SIG',    label:'NO_SIG',    tags:['NO_SIG']},
+  {id:'ADAPT',     label:'ADAPT',     tags:['ADAPT']},
+  {id:'RISK',      label:'RISK',      tags:['RISK']},
+  {id:'SEED',      label:'SEED',      tags:['SEED']},
+  {id:'RECONCILE', label:'RECONCILE', tags:['RECONCILE']},
+  {id:'STATUS',    label:'STATUS',    tags:['STATUS']},
+  {id:'INIT',      label:'INIT',      tags:['INIT']},
+  {id:'ENGINE',    label:'ENGINE',    tags:['ENGINE']},
+  {id:'WARN',      label:'WARN',      tags:['WARN']},
+  {id:'API',       label:'API',       tags:['API']},
+  {id:'AI',        label:'AI',        tags:['AI']},
+  {id:'XGB',       label:'XGB',       tags:['XGB']},
+  {id:'ARB',       label:'ARB',       tags:['ARB']},
+  {id:'ERR',       label:'ERR',       tags:['ERR']},
 ];
 const ALL_KNOWN_TAGS=['TRADE','RESULT','REENTRY','GATE','BLOCKED','NO_SIG','ADAPT','RISK','SEED','RECONCILE','STATUS','INIT','ENGINE','WARN','API','AI','XGB','ARB','ERR'];
-let _liveTab='TRADE';
-let _customTags=(function(){try{const s=localStorage.getItem('logCustomTags');if(s)return JSON.parse(s);}catch(e){}return[...ALL_KNOWN_TAGS];})();
+let _selectedTabs=new Set(['ALL']);
 const _LIVE_TAG_COL={'TRADE':'var(--cyan)','RESULT':'var(--green)','REENTRY':'var(--cyan)','ERR':'var(--red)','API':'var(--purple)','STATUS':'var(--blue)','INIT':'var(--dim)','NO_SIG':'var(--yellow)','GATE':'var(--orange)','BLOCKED':'var(--orange)','ADAPT':'var(--purple)','RISK':'var(--red)','SEED':'var(--dim)','RECONCILE':'var(--dim)','ENGINE':'var(--dim)','WARN':'var(--yellow)','AI':'var(--cyan)','XGB':'var(--cyan)','ARB':'var(--cyan)'};
+const _LOG_WINDOW_MINUTES=60;
+let _recentLogs=[];
+let _recentLogsLoaded=false;
+let _recentLogsExpanded=false;
+let _recentLogsHasMore=false;
+let _recentLogsLoading=false;
+let _recentLogsOldestTs=null;
 
-// Seed from /logs/today on load, then live WS updates merge on top
-let _todayLogs=[];
-let _todayLoaded=false;
+function _todayIST(){return new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});}
+function _logSortKey(log){
+  return log.ts_ist||`${log.ist_date||_todayIST()}T${log.time_ist||log.time||'00:00:00.000'}`;
+}
+function _logIdentity(log){
+  return `${log.ist_date||_todayIST()}|${log.time_ist||log.time||''}|${log.tag||''}|${log.msg||''}`;
+}
+function _mergeLogs(primary,secondary){
+  const seen=new Set();
+  const merged=[];
+  const groups=[primary||[],secondary||[]];
+  for(const group of groups){
+    for(const log of group){
+      const key=_logIdentity(log);
+      if(seen.has(key))continue;
+      seen.add(key);
+      merged.push(log);
+    }
+  }
+  merged.sort((a,b)=>{
+    const ta=_logSortKey(a),tb=_logSortKey(b);
+    return ta<tb?-1:ta>tb?1:0;
+  });
+  return merged;
+}
 
-async function _seedTodayLogs(){
+function _updateLogControls(){
+  const metaEl=$('logWindowMeta');
+  if(metaEl){
+    if(_recentLogs.length){
+      const first=_recentLogs[0],last=_recentLogs[_recentLogs.length-1];
+      const firstDate=first.ist_date||'';
+      const lastDate=last.ist_date||'';
+      metaEl.textContent=`${firstDate} ${first.time_ist||first.time} -> ${lastDate} ${last.time_ist||last.time}`;
+    }else{
+      metaEl.textContent='No loaded log range';
+    }
+  }
+  const resetBtn=$('logResetBtn');
+  if(resetBtn)resetBtn.disabled=_recentLogsLoading;
+  const moreBtn=$('logLoadMoreBtn');
+  if(moreBtn){
+    moreBtn.disabled=_recentLogsLoading||!_recentLogsHasMore;
+    moreBtn.textContent=_recentLogsLoading?'Loading...':(_recentLogsHasMore?'Load older 1h':'No older logs');
+  }
+}
+
+async function _fetchRecentLogs(appendOlder=false){
+  if(_recentLogsLoading)return;
+  _recentLogsLoading=true;
+  _updateLogControls();
   try{
-    const r=await fetch(A+'/logs/today');
-    if(!r.ok)return;
+    let url=A+`/logs/recent?window_minutes=${_LOG_WINDOW_MINUTES}`;
+    if(appendOlder&&_recentLogsOldestTs){
+      url+=`&before=${encodeURIComponent(_recentLogsOldestTs)}`;
+    }
+    const r=await fetch(url);
+    if(!r.ok)throw new Error('Failed to load recent logs');
     const d=await r.json();
-    _todayLogs=d.logs||[];
-    _todayLoaded=true;
-    const countEl=$('logCount');
-    if(countEl)countEl.textContent=`${_todayLogs.length} entries`;
+    const logs=d.logs||[];
+    if(appendOlder){
+      _recentLogs=_mergeLogs(logs,_recentLogs);
+      _recentLogsExpanded=true;
+      _recentLogsHasMore=!!d.has_more_before;
+      if(logs.length)_recentLogsOldestTs=logs[0].ts_ist||_recentLogsOldestTs;
+    }else if(_recentLogsExpanded){
+      _recentLogs=_mergeLogs(_recentLogs,logs);
+    }else{
+      _recentLogs=logs;
+      _recentLogsHasMore=!!d.has_more_before;
+      _recentLogsOldestTs=logs.length?(logs[0].ts_ist||null):null;
+    }
+    if(!_recentLogsExpanded){
+      _recentLogsHasMore=!!d.has_more_before;
+      _recentLogsOldestTs=logs.length?(logs[0].ts_ist||null):null;
+    }else if(_recentLogs.length){
+      _recentLogsOldestTs=_recentLogs[0].ts_ist||_recentLogsOldestTs;
+    }
+    _recentLogsLoaded=true;
     _renderLiveLog(_state.log||[]);
-  }catch(e){}
+  }catch(e){
+  }finally{
+    _recentLogsLoading=false;
+    _updateLogControls();
+  }
+}
+
+async function resetLogWindow(){
+  _recentLogsExpanded=false;
+  _recentLogsHasMore=false;
+  _recentLogsOldestTs=null;
+  _logUserScrolled=false;
+  await _fetchRecentLogs(false);
+}
+
+async function loadMoreLogs(){
+  if(!_recentLogsHasMore||!_recentLogsOldestTs)return;
+  _logUserScrolled=true;
+  await _fetchRecentLogs(true);
 }
 
 function _mergedLogs(liveLogs){
-  if(!_todayLoaded)return liveLogs;
-  const seen=new Set();
-  const out=[];
-  for(const l of _todayLogs){
-    const k=l.time+'|'+l.tag+'|'+l.msg;
-    if(!seen.has(k)){seen.add(k);out.push(l);}
-  }
-  for(const l of liveLogs){
-    const k=l.time+'|'+l.tag+'|'+l.msg;
-    if(!seen.has(k)){seen.add(k);out.push(l);}
-  }
-  out.sort((a,b)=>a.time<b.time?-1:a.time>b.time?1:0);
-  return out;
+  if(!_recentLogsLoaded)return liveLogs||[];
+  return _mergeLogs(_recentLogs,liveLogs||[]);
 }
 
 function _filterLiveLogs(logs){
-  const tab=LIVE_LOG_TABS.find(t=>t.id===_liveTab)||LIVE_LOG_TABS[0];
-  if(tab.id==='ALL')return logs;
-  const allowed=tab.id==='CUSTOM'?new Set(_customTags):new Set(tab.tags||[]);
+  if(_selectedTabs.has('ALL'))return logs;
+  const allowed=new Set();
+  for(const id of _selectedTabs){
+    const tab=LIVE_LOG_TABS.find(t=>t.id===id);
+    if(tab&&tab.tags)tab.tags.forEach(t=>allowed.add(t));
+  }
   return logs.filter(l=>allowed.has(l.tag));
 }
 
+let _logUserScrolled=false;
 function _renderLiveLog(liveLogs){
   const lb=$('liveLogBox');
   if(!lb||hasSelectionIn(lb))return;
-  const atBottom=lb.scrollHeight-lb.scrollTop-lb.clientHeight<30;
   const merged=_mergedLogs(liveLogs);
   const filtered=_filterLiveLogs(merged);
   const countEl=$('logCount');
-  if(countEl)countEl.textContent=`${merged.length} entries`;
-  setHTML(lb,filtered.map(l=>`<div class="log-entry"><span class="log-time"><span class="orange">${l.time_ist||l.time}</span></span> <span class="log-tag tag-${l.tag}" style="color:${_LIVE_TAG_COL[l.tag]||'var(--dim)'}">${l.tag}</span>${esc(l.msg)}</div>`).join(''));
-  if(atBottom)lb.scrollTop=lb.scrollHeight;
+  if(countEl)countEl.textContent=`${filtered.length}/${merged.length} loaded`;
+  const wasAtBottom=lb.scrollTop+lb.clientHeight>=lb.scrollHeight-20;
+  if(!filtered.length){
+    setHTML(lb,'<div style="color:var(--dim);padding:6px 0">No logs for the selected tab(s) in the loaded range.</div>');
+    return;
+  }
+  setHTML(lb,filtered.map(l=>`<div class="log-entry"><span class="log-time"><span class="orange">${l.ist_date||''} ${l.time_ist||l.time}</span></span> <span class="log-tag tag-${l.tag}" style="color:${_LIVE_TAG_COL[l.tag]||'var(--dim)'}">${l.tag}</span>${esc(l.msg)}</div>`).join(''));
+  if(wasAtBottom&&!_logUserScrolled)lb.scrollTop=lb.scrollHeight;
 }
+(function(){const lb=$('liveLogBox');if(lb){lb.addEventListener('scroll',()=>{_logUserScrolled=lb.scrollTop+lb.clientHeight<lb.scrollHeight-30;},{passive:true});}})();
 
 function _renderLiveTabs(){
   const tabsEl=$('logTabs');
   if(!tabsEl)return;
   setHTML(tabsEl,LIVE_LOG_TABS.map(t=>{
-    const active=t.id===_liveTab;
-    return `<button onclick="_setLiveTab('${t.id}')" style="padding:2px 8px;border:1px solid ${active?'var(--blue)':'var(--border)'};border-radius:4px;background:${active?'var(--blue)':'var(--bg)'};color:${active?'#fff':'var(--dim)'};font-size:10px;font-weight:600;cursor:pointer">${t.label}</button>`;
+    const active=_selectedTabs.has(t.id);
+    return `<button onclick="_toggleTab('${t.id}')" style="padding:2px 8px;border:1px solid ${active?'var(--blue)':'var(--border)'};border-radius:4px;background:${active?'var(--blue)':'var(--bg)'};color:${active?'#fff':'var(--dim)'};font-size:10px;font-weight:600;cursor:pointer">${t.label}</button>`;
   }).join(''));
-  const customEl=$('logCustomFilters');
-  if(!customEl)return;
-  if(_liveTab==='CUSTOM'){
-    customEl.style.display='flex';
-    setHTML(customEl,ALL_KNOWN_TAGS.map(tag=>{
-      const on=_customTags.includes(tag);
-      return `<label style="display:flex;align-items:center;gap:3px;cursor:pointer;font-size:10px"><input type="checkbox" ${on?'checked':''} onchange="_toggleLiveTag('${tag}',this.checked)"><span style="color:${_LIVE_TAG_COL[tag]||'var(--dim)'}">${tag}</span></label>`;
-    }).join(''));
-  }else{
-    customEl.style.display='none';
-  }
 }
 
-function _setLiveTab(id){
-  _liveTab=id;
+function _toggleTab(id){
+  if(id==='ALL'){
+    _selectedTabs=new Set(['ALL']);
+  } else if(_selectedTabs.has('ALL')){
+    _selectedTabs=new Set([id]);
+  } else if(_selectedTabs.has(id)){
+    _selectedTabs.delete(id);
+    if(_selectedTabs.size===0)_selectedTabs=new Set(['ALL']);
+  } else {
+    _selectedTabs.add(id);
+  }
+  _logUserScrolled=false;
   _renderLiveTabs();
   _renderLiveLog(_state.log||[]);
 }
 
-function _toggleLiveTag(tag,on){
-  if(on){if(!_customTags.includes(tag))_customTags.push(tag);}
-  else{_customTags=_customTags.filter(t=>t!==tag);}
-  try{localStorage.setItem('logCustomTags',JSON.stringify(_customTags));}catch(e){}
-  _setLiveTab('CUSTOM');
-}
-
 _renderLiveTabs();
-_seedTodayLogs();
+resetLogWindow();
+setInterval(()=>{if(!document.hidden)_fetchRecentLogs(false);},_LOG_INTERVAL);
 // ─── END LIVE LOG ───────────────────────────────────────────────────────────────
 
 </script>

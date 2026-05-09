@@ -43,6 +43,7 @@ from engine.strategies.trend_channel_strategy import TrendChannelStrategy
 from engine.swing_engine_strategy import SwingEngineStrategy
 from engine.intraday_engine_strategy import IntradayEngineStrategy
 from engine.strategies.htf_long_strategy import HTFLongStrategy
+from engine.strategies.htf_short_strategy import HTFShortStrategy
 from engine.calendar import calendar as eco_calendar
 from engine.correlation import correlation as corr_engine
 from engine.order_database import OrderDatabase
@@ -62,6 +63,7 @@ from engine.decision_logger import get_live_blockers
 from engine.master_control import log_trade_decision_comprehensive
 from engine.master_trade_gate import set_gate_log_fn as _set_gate_log_fn
 from engine import adaptive_params
+from engine.market_state import compute_market_state
 from engine.strategy_configs import apply_all_to_cfg as _apply_strategy_configs
 from engine.sl_streak_guard import sl_streak_guard
 
@@ -107,6 +109,7 @@ class AutoTrader:
         self._liquidity: Dict = {}
         self._calendar: Dict = {}
         self._correlation: Dict = {}
+        self._market_state: Dict = {}
 
         self._running = False
         self.enabled = False
@@ -142,13 +145,26 @@ class AutoTrader:
         self.strat_mgr._selected = []
         self.strat_mgr._active = ""
         self.strat_mgr._auto = True
-        self.strat_mgr.register(SMCStrategy())
-        self.strat_mgr.register(M15SupportResistanceStrategy())
-        self.strat_mgr.register(SweepScalper())
-        self.strat_mgr.register(TrendChannelStrategy())
-        self.strat_mgr.register(SwingEngineStrategy())
-        self.strat_mgr.register(IntradayEngineStrategy())
-        self.strat_mgr.register(HTFLongStrategy())
+        _strategy_classes = [
+            ("SMC_CONFLUENCE", SMCStrategy),
+            ("M15_SR", M15SupportResistanceStrategy),
+            ("SWEEP_SCALPER", SweepScalper),
+            ("TREND_CHANNEL", TrendChannelStrategy),
+            ("SWING_ENGINE", SwingEngineStrategy),
+            ("INTRADAY_ENGINE", IntradayEngineStrategy),
+            ("HTF_LONG", HTFLongStrategy),
+            ("HTF_SHORT", HTFShortStrategy),
+        ]
+        for label, cls in _strategy_classes:
+            try:
+                self.strat_mgr.register(cls())
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                try:
+                    self.log("ERR", f"Failed to register strategy {label}: {e}")
+                except Exception:
+                    print(f"[STRATEGY_ERR] Failed to register {label}: {e}")
 
     def _apply_startup_strategy(self):
         default_strategy = getattr(cfg, "DEFAULT_STRATEGY", "AUTO")
@@ -181,6 +197,11 @@ class AutoTrader:
                     shutil.move(log_path, dest)
                 except Exception:
                     pass
+            # Reset performance tracker for the new IST day
+            try:
+                self.perf.reset_for_new_day()
+            except Exception:
+                pass
         self._last_log_date_ist = today
 
     def mark_restart_time(self, started_at_utc=None):
@@ -211,7 +232,7 @@ class AutoTrader:
         price = None
         if isinstance(raw_price, (int, float)):
             price = round(float(raw_price), 2)
-        entry = {"time": utc_str, "time_ist": ist_str, "tag": tag, "msg": msg, "price": price}
+        entry = {"time": ist_str, "time_ist": ist_str, "ist_date": ist_date, "tag": tag, "msg": msg, "price": price}
         self._log.append(entry)
         try:
             with open(os.path.join(_BASE_DIR, "trader.log"), "a") as f:
@@ -572,9 +593,11 @@ class AutoTrader:
         if not self.enabled:
             return
         if not is_market_open():
-            if now - getattr(self, '_last_gate_log', 0) > 60:
+            if now - getattr(self, '_last_gate_log', 0) > 600:
                 self._last_gate_log = now
-                self.log("GATE", "Market closed")
+                h = datetime.now(timezone.utc).hour
+                msg = "Rollover hour (21:00-22:00 UTC)" if h == 21 else "Market closed"
+                self.log("GATE", msg)
             return
 
         strat_data = {
@@ -592,6 +615,7 @@ class AutoTrader:
             "liquidity": self._liquidity,
             "tick_snapshot": self.tick_proc.snapshot() or {},
             "tick_pressure": self._tick_pressure,
+            "market_state": self._market_state,
             "_risk_manager": self.risk,
             "now_utc": datetime.now(timezone.utc),
             "strategy_trade_counts": {
@@ -600,99 +624,108 @@ class AutoTrader:
                 for name in ["SWING_ENGINE", "INTRADAY_ENGINE"]
             },
         }
-        item = self.strat_mgr.generate_signal(strat_data)
-        strat_name = item["strategy"]
-        sig = item["signal"]
-        self._last_strategy_results = dict(item.get("all_results") or {})
-        self._last_signal = {"strategy": strat_name, **dict(sig or {})}
+        if self.strat_mgr.is_auto:
+            item = self.strat_mgr.generate_signal(strat_data)
+            signals_to_execute = [item]
+            self._last_strategy_results = dict(item.get("all_results") or {})
+        else:
+            # Non-AUTO: all enabled strategies evaluated independently
+            signals_to_execute = self.strat_mgr.generate_signals(strat_data)
+            # Build results summary for dashboard
+            self._last_strategy_results = {r["strategy"]: {"signal": r["signal"].get("signal", "NO_TRADE"), "reason": str(r["signal"].get("reason", ""))[:120]} for r in signals_to_execute}
+
+        for item in signals_to_execute:
+            strat_name = item["strategy"]
+            sig = item["signal"]
+            action = sig.get("signal", "NO_TRADE")
+
+            if action not in ("BUY", "SELL"):
+                self._log_strategy_skip(strat_name, str(sig.get("reason") or "No signal")[:120])
+                continue
+
+            if self._strategy_open_count(strat_name) > 0:
+                self._log_strategy_skip(strat_name, "Open trade already exists for this strategy")
+                continue
+
+            self._stats["signals"] += 1
+            sl, tp = sig.get("sl"), sig.get("tp")
+            if not sl or not tp:
+                self._log_strategy_skip(strat_name, "Execution blocked: missing SL/TP")
+                continue
+
+            entry = sig.get("entry", tick["bid"] if action == "SELL" else tick["ask"])
+            sl_distance = sig.get("sl_distance", abs(entry - sl))
+            if sl_distance <= 0:
+                self._log_strategy_skip(strat_name, "Execution blocked: invalid stop distance")
+                continue
+
+            lot = _safe_float(sig.get("lot", sig.get("lot_size")), 0.0)
+            if lot <= 0:
+                lot = self.risk.calculate_lot(
+                    account,
+                    sl_distance,
+                    high_conf=bool(sig.get("_high_conf", False)),
+                    strategy=strat_name,
+                )
+            if lot <= 0:
+                self._log_strategy_skip(strat_name, "Execution blocked: invalid lot")
+                continue
+            lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
+
+            comment = sig.get("_comment") or f"FT_{strat_name[:8]}"
+            result = None
+            for _ in range(3):
+                result = self.bridge.open_trade(action, lot, sl, tp, comment=comment)
+                if result.get("success"):
+                    break
+                time.sleep(0.1)
+
+            if result and result.get("success"):
+                t = result["ticket"]
+                fp = result["price"]
+                live_tick_metrics = self.tick_proc.snapshot() or {}
+                self.trades.register_trade(
+                    t, action, lot, fp, sl, tp, sl_distance,
+                    strategy=strat_name, confidence=sig.get("confidence", 0),
+                    reason=sig.get("reason", ""),
+                    scalp=bool(sig.get("_scalp", False)),
+                    features={
+                        "atr": self._indicators.get("atr", 0),
+                        "atr_ratio": self._indicators.get("atr_ratio", 1),
+                        "rsi": self._indicators.get("rsi", 50),
+                        "ema_slope": self._indicators.get("ema9_slope", 0),
+                        "body_ratio": self._indicators.get("body_ratio", 0),
+                        "spread": (tick or {}).get("spread", 0),
+                        "signal_confidence": sig.get("confidence", 0),
+                        "entry_tick_velocity": live_tick_metrics.get("velocity", 0),
+                        "entry_tick_count": live_tick_metrics.get("tick_count", 0),
+                        "entry_tick_pressure_score": self._tick_pressure.get("pressure_score"),
+                        "entry_tick_pressure_bias": self._tick_pressure.get("directional_bias"),
+                        "entry_tick_burst_rate": self._tick_pressure.get("burst_rate"),
+                        "regime": self._regime.get("state", ""),
+                        "bias_conf": self._bias.get("confidence", 0),
+                        "session": get_session(),
+                        "profile_name": sig.get("_exit_profile"),
+                        "tp_levels": sig.get("tp_levels") or sig.get("_tp_levels") or [],
+                        "macro_bias": sig.get("_macro_bias"),
+                        "news": sig.get("_news"),
+                        "entry_volume_ratio": sig.get("_entry_volume_ratio"),
+                    },
+                )
+                record_trade_taken()
+                record_pacing_trade()
+                record_session_trade()
+                self.risk.record_trade_opened()
+                self._confirm_strategy_execution(strat_name, sig)
+                self._stats["trades"] += 1
+                self.log("TRADE", f"[{strat_name}] {action} {lot:.2f} lot @ {fp} | "
+                          f"SL:{sl} TP:{tp} | {sig.get('reason','')[:80]}")
+            elif result:
+                self.log("TRADE", f"[{strat_name}] FAILED: {result.get('error')}")
+
+        self._last_signal = {"strategy": signals_to_execute[0]["strategy"] if signals_to_execute else "AUTO", **(signals_to_execute[0]["signal"] if signals_to_execute else {})}
         if self._last_strategy_results:
             self._last_signal["_strategy_results"] = dict(self._last_strategy_results)
-        action = sig.get("signal", "NO_TRADE")
-
-        if action not in ("BUY", "SELL"):
-            self._log_strategy_skip(strat_name, str(sig.get("reason") or "No signal")[:120])
-            return
-
-        if self._strategy_open_count(strat_name) > 0:
-            self._log_strategy_skip(strat_name, "Open trade already exists for this strategy")
-            return
-
-        self._stats["signals"] += 1
-        sl, tp = sig.get("sl"), sig.get("tp")
-        if not sl or not tp:
-            self._log_strategy_skip(strat_name, "Execution blocked: missing SL/TP")
-            return
-
-        entry = sig.get("entry", tick["bid"] if action == "SELL" else tick["ask"])
-        sl_distance = sig.get("sl_distance", abs(entry - sl))
-        if sl_distance <= 0:
-            self._log_strategy_skip(strat_name, "Execution blocked: invalid stop distance")
-            return
-
-        lot = _safe_float(sig.get("lot", sig.get("lot_size")), 0.0)
-        if lot <= 0:
-            lot = self.risk.calculate_lot(
-                account,
-                sl_distance,
-                high_conf=bool(sig.get("_high_conf", False)),
-                strategy=strat_name,
-            )
-        if lot <= 0:
-            self._log_strategy_skip(strat_name, "Execution blocked: invalid lot")
-            return
-        lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
-
-        comment = sig.get("_comment") or f"FT_{strat_name[:8]}"
-        result = None
-        for _ in range(3):
-            result = self.bridge.open_trade(action, lot, sl, tp, comment=comment)
-            if result.get("success"):
-                break
-            time.sleep(0.1)
-
-        if result and result.get("success"):
-            t = result["ticket"]
-            fp = result["price"]
-            live_tick_metrics = self.tick_proc.snapshot() or {}
-            self.trades.register_trade(
-                t, action, lot, fp, sl, tp, sl_distance,
-                strategy=strat_name, confidence=sig.get("confidence", 0),
-                reason=sig.get("reason", ""),
-                scalp=bool(sig.get("_scalp", False)),
-                features={
-                    "atr": self._indicators.get("atr", 0),
-                    "atr_ratio": self._indicators.get("atr_ratio", 1),
-                    "rsi": self._indicators.get("rsi", 50),
-                    "ema_slope": self._indicators.get("ema9_slope", 0),
-                    "body_ratio": self._indicators.get("body_ratio", 0),
-                    "spread": (tick or {}).get("spread", 0),
-                    "signal_confidence": sig.get("confidence", 0),
-                    "entry_tick_velocity": live_tick_metrics.get("velocity", 0),
-                    "entry_tick_count": live_tick_metrics.get("tick_count", 0),
-                    "entry_tick_pressure_score": self._tick_pressure.get("pressure_score"),
-                    "entry_tick_pressure_bias": self._tick_pressure.get("directional_bias"),
-                    "entry_tick_burst_rate": self._tick_pressure.get("burst_rate"),
-                    "regime": self._regime.get("state", ""),
-                    "bias_conf": self._bias.get("confidence", 0),
-                    "session": get_session(),
-                    "profile_name": sig.get("_exit_profile"),
-                    "tp_levels": sig.get("tp_levels") or sig.get("_tp_levels") or [],
-                    "macro_bias": sig.get("_macro_bias"),
-                    "news": sig.get("_news"),
-                    "entry_volume_ratio": sig.get("_entry_volume_ratio"),
-                },
-            )
-            record_trade_taken()
-            record_pacing_trade()
-            record_session_trade()
-            self.risk.record_trade_opened()
-            self._confirm_strategy_execution(strat_name, sig)
-            self._stats["trades"] += 1
-            self.log("TRADE", f"[{strat_name}] {action} {lot:.2f} lot @ {fp} | "
-                      f"SL:{sl} TP:{tp} | {sig.get('reason','')[:80]}")
-        elif result:
-            self.log("TRADE", f"[{strat_name}] FAILED: {result.get('error')}")
-
 
 
     def _try_reentry(self, strategy_name: str, tick: Dict, account: Dict, positions: list):
@@ -714,6 +747,7 @@ class AutoTrader:
             "bias": self._bias, "regime": self._regime, "liquidity": self._liquidity,
             "tick_snapshot": self.tick_proc.snapshot() or {},
             "tick_pressure": self._tick_pressure,
+            "market_state": self._market_state,
             "_risk_manager": self.risk,
             "now_utc": datetime.now(timezone.utc),
             "strategy_trade_counts": {
@@ -784,6 +818,7 @@ class AutoTrader:
         if m5 is not None and len(m5) >= 50:
             self._zones = self.zone_detector.detect(m5)
         self._recompute_regime_bias()
+        self._market_state = _safe_dict(compute_market_state(self._candles, datetime.now(timezone.utc)))
 
     def _refresh_timeframe_context(self):
         self._tf_context = compute_timeframe_context(
@@ -886,7 +921,6 @@ class AutoTrader:
 
     def _recompute_regime_bias(self):
         ts = self.tick_proc.snapshot()
-        # Ensure ts is not None before passing to classify_regime
         if ts is None:
             ts = {"ready": False}
         self._regime = _safe_dict(classify_regime(self._candles.get("H4"), self._candles.get("H1"), self._candles.get("M15"), ts))
@@ -897,6 +931,7 @@ class AutoTrader:
             self._candles.get("H1"),
             self._candles.get("D1"),
         ))
+        self._market_state = _safe_dict(compute_market_state(self._candles, datetime.now(timezone.utc)))
 
     def _log_status(self, tick):
         s, p = get_session(), (tick or {}).get("bid", 0)
@@ -1043,6 +1078,8 @@ class AutoTrader:
                     'won': (o['final_pnl'] or 0) > 0,
                     'open_time': o['open_time'],
                     'close_time': close_time,
+                    'close_reason': o.get('close_reason') or o.get('mt5_close_reason') or o.get('strategy', ''),
+                    'close_reason_category': o.get('close_reason_category') or '',
                     'comment': o.get('close_reason') or o.get('strategy', ''),
                     'strategy': o.get('strategy', ''),
                     'setup_type': features.get('_scalper_setup_type') or features.get('ai_manual_setup_type') or '',
@@ -1061,6 +1098,8 @@ class AutoTrader:
                         'won': t.get('pnl', 0) > 0,
                         'open_time': t.get('open_time', ''),
                         'close_time': t.get('close_time', ''),
+                        'close_reason': t.get('comment', 'MT5'),
+                        'close_reason_category': '',
                         'comment': t.get('comment', 'MT5'),
                     })
             closed_for_dash.sort(key=lambda x: x.get('close_time') or '', reverse=True)
@@ -1127,6 +1166,7 @@ class AutoTrader:
             "calendar": calendar_state,
             "correlation": correlation,
             "candles": {tf: len(df) for tf, df in self._candles.items()},
+            "market_state": self._market_state,
             **self._restart_status(),
             "risk": self.risk.daily_status,
             "daily_target": cfg.DAILY_TARGET_DOLLARS,
@@ -1258,63 +1298,21 @@ class AutoTrader:
                             _m = pattern.match(_line.strip())
                             if not _m: continue
                             _ut, _it, _tag, _pr, _msg = _m.groups()
-                            entries.append({"time": _ut, "time_ist": _it, "tag": _tag, "msg": _msg, "price": float(_pr) if _pr else None})
+                            entries.append({"time": _it, "time_ist": _it, "tag": _tag, "msg": _msg, "price": float(_pr) if _pr else None})
                     except Exception as _e:
                         entries = []
                     s._j({"logs": entries, "count": len(entries)})
                 elif p == "/trades": s._j(trader.trades.status if trader.trades else {})
                 elif p == "/performance": s._j(trader.perf.get_stats())
                 elif p == "/health": s._j({"status":"healthy","service":"auto_trader","app_version":cfg.APP_VERSION})
-                elif p == "/config": s._j({"app_version":cfg.APP_VERSION,"symbol":cfg.SYMBOL,"strategy":trader.strat_mgr.active_name,
-                    "strategies":trader.strat_mgr.status(),"risk_pct":cfg.MAX_RISK_PCT,
-                    "daily_target":cfg.DAILY_TARGET_DOLLARS,
-                    "tier1_enabled":cfg.TIER1_ENABLED,
-                    "session_override_enabled":cfg.SESSION_OVERRIDE_ENABLED,
-                    "gate_config":{
-                        "ALL_GATES_OVERRIDE_ENABLED":cfg.ALL_GATES_OVERRIDE_ENABLED,
-                        "SPREAD_GATE_OVERRIDE_ENABLED":cfg.SPREAD_GATE_OVERRIDE_ENABLED,
-                        "COMPRESSION_GATE_OVERRIDE_ENABLED":cfg.COMPRESSION_GATE_OVERRIDE_ENABLED,
-                        "EXECUTION_GATE_OVERRIDE_ENABLED":cfg.EXECUTION_GATE_OVERRIDE_ENABLED,
-                        "TIME_GATE_OVERRIDE_ENABLED":cfg.TIME_GATE_OVERRIDE_ENABLED,
-                        "SPREAD_MEAN_GATE_OVERRIDE_ENABLED":cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED,
-                        "SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED":cfg.SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED,
-                        "SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED":cfg.SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED,
-                        "SPREAD_DELTA_GATE_OVERRIDE_ENABLED":cfg.SPREAD_DELTA_GATE_OVERRIDE_ENABLED,
-                        "COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED":cfg.COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED,
-                        "ATR_RISING_GATE_OVERRIDE_ENABLED":cfg.ATR_RISING_GATE_OVERRIDE_ENABLED,
-                        "EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED":cfg.EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED,
-                        "TICK_DIRECTION_GATE_OVERRIDE_ENABLED":cfg.TICK_DIRECTION_GATE_OVERRIDE_ENABLED,
-                        "POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED":cfg.POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED,
-                        "SMC_SPREAD_MEAN_MAX":cfg.SMC_SPREAD_MEAN_MAX,
-                        "SMC_SPREAD_STD_MAX":cfg.SMC_SPREAD_STD_MAX,
-                        "SMC_SPREAD_PERCENTILE_MAX":cfg.SMC_SPREAD_PERCENTILE_MAX,
-                        "SMC_CURRENT_SPREAD_DELTA_MAX":cfg.SMC_CURRENT_SPREAD_DELTA_MAX,
-                        "SCALPER_SPREAD_MEAN_MAX":cfg.SCALPER_SPREAD_MEAN_MAX,
-                        "SCALPER_SPREAD_STD_MAX":cfg.SCALPER_SPREAD_STD_MAX,
-                        "SCALPER_SPREAD_PERCENTILE_MAX":cfg.SCALPER_SPREAD_PERCENTILE_MAX,
-                        "SCALPER_CURRENT_SPREAD_DELTA_MAX":cfg.SCALPER_CURRENT_SPREAD_DELTA_MAX,
-                        "COMPRESSION_RANGE_LOOKBACK":cfg.COMPRESSION_RANGE_LOOKBACK,
-                        "COMPRESSION_ATR_MULTIPLIER":cfg.COMPRESSION_ATR_MULTIPLIER,
-                        "SMC_THRESHOLD_WITH_TREND":cfg.SMC_THRESHOLD_WITH_TREND,
-                        "SMC_THRESHOLD_COUNTER":cfg.SMC_THRESHOLD_COUNTER,
-                        "SMC_THRESHOLD_COUNTER_MAX":cfg.SMC_THRESHOLD_COUNTER_MAX,
-                        "SMC_MIN_RR":cfg.SMC_MIN_RR,
-                        "SMC_TIMEFRAME_EMA_SLOPE_MIN":cfg.SMC_TIMEFRAME_EMA_SLOPE_MIN,
-                        "SMC_LTF_TICK_CONFLICT_LONG_MAX":cfg.SMC_LTF_TICK_CONFLICT_LONG_MAX,
-                        "SMC_LTF_TICK_CONFLICT_SHORT_MIN":cfg.SMC_LTF_TICK_CONFLICT_SHORT_MIN,
-                        "SCALPER_QUALITY_THRESHOLD":cfg.SCALPER_QUALITY_THRESHOLD,
-                        "SCALPER_ATR_MIN":cfg.SCALPER_ATR_MIN,
-                        "SCALPER_ATR_MAX":cfg.SCALPER_ATR_MAX,
-                        "SCALPER_EMA20_SLOPE_MIN":cfg.SCALPER_EMA20_SLOPE_MIN,
-                        "SCALPER_BODY_RATIO_MIN":cfg.SCALPER_BODY_RATIO_MIN,
-                        "SCALPER_TICK_DIR_THRESHOLD":cfg.SCALPER_TICK_DIR_THRESHOLD,
-                        "SCALPER_SWEEP_LOOKBACK":cfg.SCALPER_SWEEP_LOOKBACK,
-                        "SCALPER_SWEEP_TOLERANCE":cfg.SCALPER_SWEEP_TOLERANCE,
-                        "SCALPER_MAX_TRADES_SESSION":cfg.SCALPER_MAX_TRADES_SESSION,
-                        "SCALPER_LEVEL_COOLDOWN":cfg.SCALPER_LEVEL_COOLDOWN,
-                        "MARKET_TICK_POLL_INTERVAL":cfg.MARKET_TICK_POLL_INTERVAL,
-                        "DASHBOARD_WS_PUSH_INTERVAL":cfg.DASHBOARD_WS_PUSH_INTERVAL,
-                    }})
+                elif p == "/config":
+                    from engine import strategy_configs as _scfg
+                    _all_cfg = {k: getattr(cfg, k) for k in cfg._PERSISTED_KEYS if hasattr(cfg, k) and isinstance(getattr(cfg, k), (bool, int, float, str, list))}
+                    s._j({"app_version":cfg.APP_VERSION,"symbol":cfg.SYMBOL,"strategy":trader.strat_mgr.active_name,
+                        "strategies":trader.strat_mgr.status(),
+                        "config": _all_cfg,
+                        "strategy_configs": _scfg.get_all(),
+                    })
                 elif p == "/analytics":
                     days = int((q.get("days") or ["30"])[0])
                     refresh = int((q.get("refresh") or ["0"])[0])
@@ -1449,76 +1447,33 @@ class AutoTrader:
                     import json as _json
                     length = int(s.headers.get('Content-Length', 0))
                     body = _json.loads(s.rfile.read(length)) if length else {}
-                    _RISK_KEYS = {'MAX_POSITIONS':int,'MAX_RISK_PCT':float,'MAX_DRAWDOWN_PCT':float,
-                        'MAX_LOT':float,'MIN_LOT':float,'DAILY_TARGET_DOLLARS':float,
-                        'DAILY_LOSS_LIMIT_PCT':float,'MAX_CONSECUTIVE_LOSSES':int,
-                        'MIN_TRADE_COOLDOWN':float,'LOSS_STREAK_PAUSE':int,
-                        'SESSION_MAX_TRADES':int}
-                    _GATE_FLOAT_KEYS = {'SMC_SPREAD_MEAN_MAX','SMC_SPREAD_STD_MAX','SMC_SPREAD_PERCENTILE_MAX',
-                        'SMC_CURRENT_SPREAD_DELTA_MAX','SCALPER_SPREAD_MEAN_MAX','SCALPER_SPREAD_STD_MAX',
-                        'SCALPER_SPREAD_PERCENTILE_MAX','SCALPER_CURRENT_SPREAD_DELTA_MAX',
-                        'COMPRESSION_ATR_MULTIPLIER','SMC_THRESHOLD_WITH_TREND','SMC_THRESHOLD_COUNTER',
-                        'SMC_THRESHOLD_COUNTER_MAX','SMC_MIN_RR','SMC_TIMEFRAME_EMA_SLOPE_MIN',
-                        'SMC_LTF_TICK_CONFLICT_LONG_MAX','SMC_LTF_TICK_CONFLICT_SHORT_MIN',
-                        'SCALPER_QUALITY_THRESHOLD','SCALPER_ATR_MIN','SCALPER_ATR_MAX',
-                        'SCALPER_EMA20_SLOPE_MIN','SCALPER_BODY_RATIO_MIN',
-                        'SCALPER_TICK_DIR_THRESHOLD','SCALPER_SWEEP_TOLERANCE',
-                        'MARKET_TICK_POLL_INTERVAL','DASHBOARD_WS_PUSH_INTERVAL',
-                        'SMC_RANGING_THRESHOLD_OFFSET','SMC_TRENDING_THRESHOLD_OFFSET',
-                        'SMC_EARLY_FAIL_POINTS','SMC_EARLY_FAIL_RANGING','SMC_EARLY_FAIL_TRENDING',
-                        'SMC_HIGH_CONF_THRESHOLD','SMC_HIGH_CONF_RR_MULTIPLIER','SMC_HIGH_CONF_RISK_MULTIPLIER',
-                        'ADAPT_THRESHOLD_WTR_MIN','ADAPT_THRESHOLD_WTR_MAX',
-                        'ADAPT_THRESHOLD_CTR_MIN','ADAPT_THRESHOLD_CTR_MAX',
-                        'ADAPT_MIN_RR_MIN','ADAPT_MIN_RR_MAX',
-                        'SMC_EARLY_FAIL_CONF_HIGH_MULT','SMC_EARLY_FAIL_CONF_LOW_MULT',
-                        'SMC_TIER1_SPREAD_DELTA_MAX'}
-                    _GATE_INT_KEYS = {'COMPRESSION_RANGE_LOOKBACK','SCALPER_SWEEP_LOOKBACK',
-                        'SCALPER_MAX_TRADES_SESSION','SCALPER_LEVEL_COOLDOWN',
-                        'ADAPT_SESSION_TRADES_MIN','ADAPT_SESSION_TRADES_MAX',
-                        'ADAPT_COOLDOWN_MIN','ADAPT_COOLDOWN_MAX',
-                        'SMC_TIER1_MIN_TICKS','SMC_TIER1_MAX_TICKS'}
-                    _GATE_BOOL_KEYS = {'ALL_GATES_OVERRIDE_ENABLED','SPREAD_GATE_OVERRIDE_ENABLED',
-                        'COMPRESSION_GATE_OVERRIDE_ENABLED','EXECUTION_GATE_OVERRIDE_ENABLED',
-                        'TIME_GATE_OVERRIDE_ENABLED','SPREAD_MEAN_GATE_OVERRIDE_ENABLED',
-                        'SPREAD_VOLATILITY_GATE_OVERRIDE_ENABLED','SPREAD_PERCENTILE_GATE_OVERRIDE_ENABLED',
-                        'SPREAD_DELTA_GATE_OVERRIDE_ENABLED','COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED',
-                        'ATR_RISING_GATE_OVERRIDE_ENABLED','EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED',
-                        'TICK_DIRECTION_GATE_OVERRIDE_ENABLED','POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED'}
                     updated = {}
-                    for k,v in body.items():
-                        if k in _RISK_KEYS:
-                            val = _RISK_KEYS[k](v)
-                            setattr(cfg, k, val)
-                            updated[k] = val
-                        elif k in _GATE_FLOAT_KEYS:
-                            val = max(0.0, float(v))
-                            if k.endswith('_PERCENTILE_MAX'):
-                                val = min(1.0, val)
-                            setattr(cfg, k, val)
-                            updated[k] = val
-                        elif k in _GATE_INT_KEYS:
-                            val = max(1, int(v))
-                            setattr(cfg, k, val)
-                            updated[k] = val
-                        elif k in _GATE_BOOL_KEYS:
-                            val = bool(v)
-                            setattr(cfg, k, val)
-                            updated[k] = val
-                    if 'TIER1_ENABLED' in body:
-                        cfg.TIER1_ENABLED = bool(body['TIER1_ENABLED'])
-                        updated['TIER1_ENABLED'] = cfg.TIER1_ENABLED
-                    if 'SESSION_OVERRIDE_ENABLED' in body:
-                        cfg.SESSION_OVERRIDE_ENABLED = bool(body['SESSION_OVERRIDE_ENABLED'])
-                        updated['SESSION_OVERRIDE_ENABLED'] = cfg.SESSION_OVERRIDE_ENABLED
-                    if 'DAILY_TARGET_ENABLED' in body:
-                        cfg.DAILY_TARGET_ENABLED = bool(body['DAILY_TARGET_ENABLED'])
-                        updated['DAILY_TARGET_ENABLED'] = cfg.DAILY_TARGET_ENABLED
+                    for k, v in body.items():
+                        if not hasattr(cfg, k):
+                            continue
+                        cur = getattr(cfg, k)
+                        try:
+                            if isinstance(cur, bool) or k.endswith('_ENABLED'):
+                                val = bool(v)
+                            elif isinstance(cur, int):
+                                val = int(v)
+                            elif isinstance(cur, float):
+                                val = float(v)
+                            elif isinstance(cur, list):
+                                val = list(v) if isinstance(v, list) else [v]
+                            elif isinstance(cur, str):
+                                val = str(v)
+                            else:
+                                val = v
+                        except (TypeError, ValueError):
+                            continue
+                        setattr(cfg, k, val)
+                        updated[k] = val
                     if updated:
                         try:
                             cfg.save_runtime_config()
                         except Exception as e:
                             trader.log("API", f"Config persistence failed: {e}")
-                        # Refresh adaptive engine baseline so new saved values become the base
                         try:
                             adaptive_params._capture_base()
                         except Exception:
@@ -1527,7 +1482,7 @@ class AutoTrader:
                             trader.risk._loss_streak_pause_until = 0.0
                             trader.risk._consecutive_losses = 0
                         trader.log("API", f"Config updated: {updated}")
-                    s._j({"updated":updated})
+                    s._j({"updated":updated, "config_version": getattr(cfg, '_config_version', 0)})
                 elif p == "/shutdown":
                     trader.enabled = False; trader._running = False
                     if trader.trades: trader.trades.close_all()

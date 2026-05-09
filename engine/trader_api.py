@@ -6,11 +6,13 @@ from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSock
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.responses import Response as _RawResponse
 from typing import Dict, Any, Set
+from bisect import bisect_left
 import json
 import os
 import time
 import asyncio
 import uuid
+import re
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -324,6 +326,7 @@ _STRATEGY_LABELS = {
     "SWING_ENGINE": "Swing Engine",
     "INTRADAY_ENGINE": "Intraday Engine",
     "HTF_LONG": "HTF Long",
+    "HTF_SHORT": "HTF Short",
 }
 
 _STRATEGY_TRIGGER_HINTS = {
@@ -334,6 +337,7 @@ _STRATEGY_TRIGGER_HINTS = {
     "SWING_ENGINE": "Needs D1 and H4 to align, price to be near a key swing level, and an H4 rejection or strong directional candle.",
     "INTRADAY_ENGINE": "Needs H1 and M15 alignment, a valid session, a sweep at a known intraday level, and strong M5 confirmation.",
     "HTF_LONG": "Needs DXY and US10Y both trending down (macro bullish), weekly bias STRONG_BULLISH or EARLY_BULLISH, pullback 20-50% into the weekly range, and H1 structure UP.",
+    "HTF_SHORT": "Needs DXY and US10Y both trending up (macro bearish), weekly bias STRONG_BEARISH or EARLY_BEARISH, pullback 20-50% into the weekly range, and H1 structure DOWN.",
 }
 
 _STRATEGY_RECHECK_SECONDS = {
@@ -344,6 +348,7 @@ _STRATEGY_RECHECK_SECONDS = {
     "SWING_ENGINE": 3600,
     "INTRADAY_ENGINE": 300,
     "HTF_LONG": 14400,
+    "HTF_SHORT": 14400,
 }
 
 
@@ -425,6 +430,14 @@ def _clean_reason(reason: Any) -> str:
     if not text:
         return "No active trigger yet."
     return text.replace("AUTO_GATE_ERR:", "Gate error:").strip()
+
+
+def _clean_close_reason(primary: Any, *fallbacks: Any) -> str:
+    for value in (primary, *fallbacks):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return "Reason unavailable"
 
 
 def _reason_to_trigger_text(strategy_name: str, reason: Any) -> str:
@@ -825,6 +838,12 @@ def _get_cached_closed_history(trader, days: int = 30) -> list:
         close_time = order.get("close_time") or mt5_trade.get("close_time") or ""
         pnl = order.get("final_pnl") or 0
         features = order.get("features") or {}
+        close_reason = _clean_close_reason(
+            order.get("close_reason"),
+            order.get("mt5_close_reason"),
+            mt5_trade.get("comment"),
+            order.get("strategy"),
+        )
         closed_for_dash.append({
             "ticket": ticket,
             "direction": order.get("direction"),
@@ -836,6 +855,8 @@ def _get_cached_closed_history(trader, days: int = 30) -> list:
             "close_time": close_time,
             "strategy": order.get("strategy", ""),
             "setup_type": features.get("_scalper_setup_type") or features.get("ai_manual_setup_type") or "",
+            "close_reason": close_reason,
+            "close_reason_category": order.get("close_reason_category") or "",
         })
         db_tickets.add(ticket)
 
@@ -853,6 +874,8 @@ def _get_cached_closed_history(trader, days: int = 30) -> list:
             "pnl": pnl,
             "won": pnl > 0,
             "close_time": trade.get("close_time", ""),
+            "close_reason": _clean_close_reason(trade.get("comment"), "MT5 history"),
+            "close_reason_category": "",
         })
 
     closed_for_dash.sort(key=lambda item: item.get("close_time") or "", reverse=True)
@@ -1088,6 +1111,19 @@ def _get_live_config_baseline() -> dict:
     return baseline
 
 
+def _build_calendar_detail() -> dict:
+    """Return full calendar state including all loaded events and blackout config."""
+    from engine.calendar import calendar as _cal
+    import config as _cfg
+    state = _cal.check()
+    return {
+        **state,
+        "events": _cal.get_events(),
+        "block_before_minutes": int(getattr(_cfg, "CALENDAR_BLOCK_BEFORE_MINUTES", 30) or 30),
+        "block_after_minutes": int(getattr(_cfg, "CALENDAR_BLOCK_AFTER_MINUTES", 15) or 15),
+    }
+
+
 def _build_tick_data(trader) -> dict:
     """Build the tick payload dict from trader state. Pure memory reads."""
     import config as cfg
@@ -1099,8 +1135,6 @@ def _build_tick_data(trader) -> dict:
         "app_version": cfg.APP_VERSION,
         "enabled": trader.enabled,
         "mt5_connected": trader._mt5_connected,
-        "last_restart_utc": last_restart_utc,
-        "last_restart_ist": last_restart_ist,
         "tick": trader._last_tick,
         "account": trader._last_account,
         "session": get_session(),
@@ -1112,10 +1146,6 @@ def _build_tick_data(trader) -> dict:
         "mt5_today_pnl": getattr(trader, '_mt5_today_pnl', None) or {},
         "risk": _build_risk_dict(trader),
         "indicators": trader._indicators or {},
-        "tick_pressure": getattr(trader, "_tick_pressure", None) or {"ready": False},
-        "ai_trade_advisor": _build_ai_trade_advisor_status(),
-        "sl_streak_guard": _build_sl_streak_guard_status(),
-        "log": list(trader._log)[-50:],
         "stats": trader._stats,
         "config_version": _config_version,
     }
@@ -1167,7 +1197,7 @@ async def ws_tick(ws: WebSocket):
                     last_tick_seq = tick_seq
                     last_positions_version = pos_ver
                     last_pnl_cents = pnl_cents
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(max(0.02, float(getattr(cfg, 'DASHBOARD_WS_PUSH_INTERVAL', 0.03) or 0.03)))
     except (WebSocketDisconnect, Exception):
         pass
     finally:
@@ -1201,10 +1231,7 @@ def _build_status_sync() -> dict:
     })
     # Strip legacy group aliases from available list
     if "strategies" in status and "available" in status["strategies"]:
-        status["strategies"]["available"] = [
-            s for s in status["strategies"]["available"]
-            if s not in ("SWING", "INTRADAY")
-        ]
+        pass  # no groups to strip anymore
     for persistent_key in (
         "tier1_enabled", "session_override_enabled", "daily_target_enabled",
         "daily_target", "available_symbols", "strategies", "risk_config", "gate_config"
@@ -1346,7 +1373,7 @@ async def get_strategy_guidance():
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Strategy guidance request timed out")
-    return convert_numpy_types(result)
+    return {"_guidance": convert_numpy_types(result)}
 
 
 @router.post("/market-question")
@@ -1415,6 +1442,14 @@ async def get_status_heavy():
     _heavy_status_cache_time = time.monotonic()
     return result
 
+@router.get("/calendar")
+async def get_calendar():
+    """Full calendar state: blocked status, all events, blackout window config."""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _build_calendar_detail)
+    return convert_numpy_types(result)
+
+
 @router.get("/logs")
 async def get_logs():
     """Get recent trading logs."""
@@ -1422,98 +1457,160 @@ async def get_logs():
     return {"logs": list(trader._log)[-200:]}
 
 
-# Cache for /logs/today — only re-parse when file grows
-_logs_today_cache: list = []
-_logs_today_file_size: int = 0
+_LOG_LINE_PATTERN = re.compile(
+    r'^\[(\d{2}:\d{2}:\d{2}\.\d{3}) UTC \| (\d{2}:\d{2}:\d{2}\.\d{3}) IST(?: \| (\d{4}-\d{2}-\d{2}))?\]'
+    r'\[([A-Z_]+)\](?:\[([\d.]+)\])? (.*)$'
+)
 
-@router.get("/logs/today")
-async def get_logs_today():
-    """Return all log entries for today IST date, all tags. Cached by file size."""
-    global _logs_today_cache, _logs_today_file_size
-    import re as _re
-    from pathlib import Path
-    _IST = timezone(timedelta(hours=5, minutes=30))
-    log_path = Path(__file__).resolve().parent.parent / "trader.log"
+# Shared cache for parsed trader.log entries.
+_parsed_logs_cache: list = []
+_parsed_logs_times: list = []
+_parsed_logs_file_size: int = 0
+_parsed_logs_file_mtime: float = 0.0
+
+
+def _trader_log_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "trader.log"
+
+
+def _coerce_log_datetime(ist_date: str, ist_time: str):
+    date_part = str(ist_date or "").strip()
+    time_part = str(ist_time or "").strip()
+    if not date_part or not time_part:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(f"{date_part} {time_part}", fmt).replace(tzinfo=_IST)
+        except Exception:
+            continue
+    return None
+
+
+def _read_parsed_logs():
+    global _parsed_logs_cache, _parsed_logs_times
+    global _parsed_logs_file_size, _parsed_logs_file_mtime
+    log_path = _trader_log_path()
     if not log_path.exists():
-        return {"logs": [], "count": 0}
+        _parsed_logs_cache = []
+        _parsed_logs_times = []
+        _parsed_logs_file_size = 0
+        _parsed_logs_file_mtime = 0.0
+        return [], []
 
-    current_size = log_path.stat().st_size
-    if _logs_today_cache and current_size == _logs_today_file_size:
-        return {"logs": _logs_today_cache, "count": len(_logs_today_cache)}
-
-    today_ist_date = datetime.now(_IST).strftime("%Y-%m-%d")
-
-    pat_new = _re.compile(
-        r'^\[(\d{2}:\d{2}:\d{2}\.\d{3}) UTC \| (\d{2}:\d{2}:\d{2}\.\d{3}) IST \| (\d{4}-\d{2}-\d{2})\]'
-        r'\[([A-Z_]+)\](?:\[([\d.]+)\])? (.*)$'
-    )
-    pat_old = _re.compile(
-        r'^\[(\d{2}:\d{2}:\d{2}\.\d{3}) UTC \| (\d{2}:\d{2}:\d{2}\.\d{3}) IST\]'
-        r'\[([A-Z_]+)\](?:\[([\d.]+)\])? (.*)$'
-    )
+    stat = log_path.stat()
+    if (
+        _parsed_logs_cache
+        and stat.st_size == _parsed_logs_file_size
+        and stat.st_mtime == _parsed_logs_file_mtime
+    ):
+        return _parsed_logs_cache, _parsed_logs_times
 
     entries = []
+    times = []
+    raw = log_path.read_bytes().decode("utf-8", errors="ignore")
+    for line in raw.splitlines():
+        match = _LOG_LINE_PATTERN.match(line.strip())
+        if not match:
+            continue
+        utc_t, ist_t, ist_date, tag, pr, msg = match.groups()
+        dt_ist = _coerce_log_datetime(ist_date, ist_t)
+        if dt_ist is None:
+            continue
+        entry = {
+            "time": ist_t,
+            "time_ist": ist_t,
+            "ist_date": ist_date,
+            "tag": tag,
+            "msg": msg,
+            "price": float(pr) if pr else None,
+            "ts_ist": dt_ist.isoformat(timespec="milliseconds"),
+        }
+        entries.append(entry)
+        times.append(dt_ist)
+
+    _parsed_logs_cache = entries
+    _parsed_logs_times = times
+    _parsed_logs_file_size = stat.st_size
+    _parsed_logs_file_mtime = stat.st_mtime
+    return _parsed_logs_cache, _parsed_logs_times
+
+
+def _parse_log_cursor(value: str | None):
+    text = str(value or "").strip()
+    if not text:
+        return None
     try:
-        raw = log_path.read_bytes().decode("utf-8", errors="ignore")
-        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_IST)
+        return dt.astimezone(_IST)
+    except Exception:
+        return None
 
-        # Find the index of the first line that is dated today
-        today_start_idx = None
-        for i, line in enumerate(lines):
-            m = pat_new.match(line)
-            if m and m.group(3) == today_ist_date:
-                today_start_idx = i
-                break
 
-        if today_start_idx is None:
-            # No new-format lines for today yet — nothing to show
-            _logs_today_cache = []
-            _logs_today_file_size = current_size
-            return {"logs": [], "count": 0}
+@router.get("/logs/recent")
+async def get_recent_logs(
+    window_minutes: int = Query(60, ge=1, le=24 * 60),
+    before: str | None = Query(None),
+):
+    """Return the latest available hour of logs, or older one-hour windows when paginating backward."""
+    try:
+        entries, times = _read_parsed_logs()
+    except Exception as exc:
+        return {"logs": [], "count": 0, "total_count": 0, "has_more_before": False, "error": str(exc)}
 
-        # Walk backwards from today_start_idx to pick up old-format TRADE/RESULT
-        # lines that belong to today (written just before the format changed).
-        # Stop when IST time goes backwards (crosses a day boundary) or hits a dated line.
-        pre_entries = []
-        last_ist_mins = None
-        for line in reversed(lines[:today_start_idx]):
-            m = pat_new.match(line)
-            if m:
-                # Hit a dated line from a previous day — stop
-                break
-            m = pat_old.match(line)
-            if not m:
-                continue
-            utc_t, ist_t, tag, pr, msg = m.groups()
-            try:
-                ih, im = int(ist_t[:2]), int(ist_t[3:5])
-                ist_mins = ih * 60 + im
-            except Exception:
-                continue
-            # If time jumps forward by >4h walking backwards, we've crossed a day boundary — stop
-            if last_ist_mins is not None and ist_mins > last_ist_mins + 240:
-                break
-            last_ist_mins = ist_mins
-            if tag in ('TRADE', 'RESULT'):
-                pre_entries.append({"time": utc_t, "time_ist": ist_t, "tag": tag,
-                                    "msg": msg, "price": float(pr) if pr else None})
-        entries.extend(reversed(pre_entries))
+    total_count = len(entries)
+    if total_count == 0:
+        return {"logs": [], "count": 0, "total_count": 0, "has_more_before": False}
 
-        # Now collect all lines from today_start_idx onwards
-        for line in lines[today_start_idx:]:
-            m = pat_new.match(line)
-            if m:
-                utc_t, ist_t, ist_date, tag, pr, msg = m.groups()
-                if ist_date == today_ist_date:
-                    entries.append({"time": utc_t, "time_ist": ist_t, "tag": tag,
-                                    "msg": msg, "price": float(pr) if pr else None})
+    end_idx = total_count
+    cursor_dt = _parse_log_cursor(before)
+    if before:
+        if cursor_dt is None:
+            raise HTTPException(status_code=400, detail="Invalid 'before' cursor")
+        end_idx = bisect_left(times, cursor_dt)
 
-    except Exception as e:
-        return {"logs": [], "count": 0, "error": str(e)}
+    if end_idx <= 0:
+        latest_ts = entries[-1]["ts_ist"]
+        return {
+            "logs": [],
+            "count": 0,
+            "total_count": total_count,
+            "has_more_before": False,
+            "latest_ts_ist": latest_ts,
+            "oldest_ts_ist": None,
+            "newest_ts_ist": None,
+        }
 
-    _logs_today_cache = entries
-    _logs_today_file_size = current_size
-    return {"logs": entries, "count": len(entries)}
+    anchor_dt = times[end_idx - 1]
+    start_dt = anchor_dt - timedelta(minutes=int(window_minutes))
+    start_idx = bisect_left(times, start_dt)
+    payload = entries[start_idx:end_idx]
+
+    return {
+        "logs": payload,
+        "count": len(payload),
+        "total_count": total_count,
+        "has_more_before": start_idx > 0,
+        "latest_ts_ist": entries[-1]["ts_ist"],
+        "oldest_ts_ist": payload[0]["ts_ist"] if payload else None,
+        "newest_ts_ist": payload[-1]["ts_ist"] if payload else None,
+        "window_minutes": int(window_minutes),
+    }
+
+
+@router.get("/logs/today")
+async def get_logs_today(limit: int = Query(0, ge=0, le=1000)):
+    """Return today's IST log entries with optional tail limit."""
+    try:
+        entries, _times = _read_parsed_logs()
+    except Exception as exc:
+        return {"logs": [], "count": 0, "error": str(exc)}
+
+    today_ist_date = datetime.now(_IST).strftime("%Y-%m-%d")
+    today_entries = [entry for entry in entries if entry.get("ist_date") == today_ist_date]
+    payload = today_entries[-limit:] if limit else today_entries
+    return {"logs": payload, "count": len(today_entries)}
 
 @router.get("/trades")
 async def get_trades():
@@ -1601,6 +1698,42 @@ async def manual_exit_trade(ticket: int, request: Request):
         "tracked": False,
         **result,
     })
+
+
+@router.post("/trades/{ticket}/modify-sltp")
+async def modify_trade_sltp(ticket: int, request: Request):
+    """Modify SL and/or TP of an open trade from the dashboard."""
+    trader = get_auto_trader()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    bridge = getattr(trader, "bridge", None)
+    if not bridge:
+        raise HTTPException(status_code=503, detail="Trade execution bridge unavailable")
+
+    sl_raw = body.get("sl")
+    tp_raw = body.get("tp")
+    if sl_raw is None or tp_raw is None:
+        raise HTTPException(status_code=400, detail="Both sl and tp are required")
+
+    try:
+        new_sl = round(float(sl_raw), 2)
+        new_tp = round(float(tp_raw), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="sl and tp must be numeric")
+
+    if new_sl <= 0 or new_tp <= 0:
+        raise HTTPException(status_code=400, detail="sl and tp must be positive")
+
+    result = bridge.modify_trade(ticket, new_sl, new_tp)
+    if not result.get("success"):
+        raise HTTPException(status_code=502, detail=result.get("error") or f"Failed to modify trade #{ticket}")
+
+    trader.log("API", f"Trade #{ticket} modified: SL={new_sl:.2f} TP={new_tp:.2f}")
+    _invalidate_status_cache()
+    return convert_numpy_types({"success": True, "ticket": ticket, "sl": new_sl, "tp": new_tp})
 
 
 @router.post("/ai/manual-idea")
@@ -1924,7 +2057,6 @@ async def get_config():
         return getattr(cfg, key)
 
     strats = trader.strat_mgr.status()
-    strats["available"] = [s for s in strats["available"] if s not in ("SWING", "INTRADAY")]
     return {
         "app_version": cfg.APP_VERSION,
         "symbol": trader.bridge.current_symbol if trader.bridge else cfg.SYMBOL,
@@ -2069,7 +2201,7 @@ async def set_strategies_selection(request: Request):
     if not trader.strat_mgr.set_selection(selected):
         raise HTTPException(
             status_code=400,
-            detail={"error": f"Unknown strategy in selection: {selected}", "available": [s for s in trader.strat_mgr.available if s not in ("SWING","INTRADAY")]},
+            detail={"error": f"Unknown strategy in selection: {selected}", "available": trader.strat_mgr.available},
         )
     cfg.DEFAULT_STRATEGY = "AUTO" if trader.strat_mgr.is_auto else trader.strat_mgr.enabled_strategies()
     try:
@@ -2080,7 +2212,6 @@ async def set_strategies_selection(request: Request):
     _bump_config_version()
     _invalidate_status_cache()
     result = trader.strat_mgr.status()
-    result["available"] = [s for s in result["available"] if s not in ("SWING", "INTRADAY")]
     return result
 
 @router.post("/symbol/{symbol}")
@@ -2493,71 +2624,25 @@ async def get_htf_status():
     calendar.poll()
     cal = calendar.check()
 
-    # Build HTF data snapshot from live trader candles
     def _run():
-        import numpy as np
-
-        def _structure(df):
-            if df is None or len(df) < 20:
-                return "RANGE"
-            c = df["close"].values.astype(float)
-            k = 2.0 / 21
-            ema_vals = []
-            ema = c[0]
-            for v in c[1:]:
-                ema = v * k + ema * (1 - k)
-                ema_vals.append(ema)
-            lookback = min(10, len(ema_vals) - 1)
-            slope_pct = (ema_vals[-1] - ema_vals[-1 - lookback]) / ema_vals[-1] if ema_vals[-1] else 0.0
-            price_above = c[-1] > ema_vals[-1]
-            price_below = c[-1] < ema_vals[-1]
-            if slope_pct > 0.0005 and price_above:
-                return "UP"
-            if slope_pct < -0.0005 and price_below:
-                return "DOWN"
-            return "RANGE"
-
-        def _body_ratio(df, n=3):
-            if df is None or len(df) < n:
-                return 0.0
-            sub = df.tail(n)
-            bodies = (sub["close"] - sub["open"]).abs()
-            ranges = (sub["high"] - sub["low"]).replace(0, np.nan)
-            ratio = (bodies / ranges).dropna()
-            return float(ratio.mean()) if len(ratio) else 0.0
-
-        candles = getattr(trader, "_candles", {}) if trader else {}
-        h1_df = candles.get("H1")
-        h4_df = candles.get("H4")
-        d1_df = candles.get("D1")
-        tick  = getattr(trader, "_last_tick", {}) or {}
+        # Read directly from the engine's cached market_state — same object strategies use
+        ms = dict(getattr(trader, "_market_state", {}) or {})
+        tick = getattr(trader, "_last_tick", {}) or {}
         price = float(tick.get("bid", 0.0))
 
-        # Weekly range from last 5 D1 candles
-        weekly = {"high_7d": 0.0, "low_7d": 0.0, "mid_7d": 0.0}
-        if d1_df is not None and len(d1_df) >= 5:
-            src = d1_df.tail(5)
-            h7 = float(src["high"].max())
-            l7 = float(src["low"].min())
-            weekly = {"high_7d": h7, "low_7d": l7, "mid_7d": round((h7 + l7) / 2, 2)}
-
-        pullback_pct = 0.0
-        rng = weekly["high_7d"] - weekly["low_7d"]
-        if rng > 0 and price > 0:
-            pullback_pct = round(max(0.0, (weekly["high_7d"] - price) / rng), 4)
+        structure = dict(ms.get("structure") or {})
+        weekly = dict(ms.get("weekly_range") or {})
+        pullback_pct = float(ms.get("pullback_depth") or 0.0)
+        body_ratio = dict(ms.get("body_ratio") or {})
 
         htf_data = {
             "price": price,
-            "ohlc": {},
+            "ohlc": dict(ms.get("ohlc") or {}),
             "weekly_range": weekly,
-            "structure": {
-                "H1": _structure(h1_df),
-                "H4": _structure(h4_df),
-                "D1": _structure(d1_df),
-            },
+            "structure": structure,
             "momentum": {
-                "D1_body_ratio": _body_ratio(d1_df, 3),
-                "H4_body_ratio": _body_ratio(h4_df, 3),
+                "D1_body_ratio": body_ratio.get("D1", 0.0),
+                "H4_body_ratio": body_ratio.get("H4", 0.0),
             },
             "macro": {
                 "dxy_trend":   macro_state["dxy_trend"],
@@ -2577,31 +2662,31 @@ async def get_htf_status():
 
         return {
             "macro": {
-                "dxy_trend":        macro_state["dxy_trend"],
-                "us10y_trend":      macro_state["us10y_trend"],
-                "macro_bias":       macro,
-                "source":           macro_state.get("source", "unknown"),
-                "fetched_at":       macro_state.get("fetched_at_iso", ""),
+                "dxy_trend":   macro_state["dxy_trend"],
+                "us10y_trend": macro_state["us10y_trend"],
+                "macro_bias":  macro,
+                "source":      macro_state.get("source", "unknown"),
+                "fetched_at":  macro_state.get("fetched_at_iso", ""),
             },
             "weekly": {
-                "bias":             w_bias,
-                "high_7d":          weekly["high_7d"],
-                "low_7d":           weekly["low_7d"],
-                "mid_7d":           weekly["mid_7d"],
-                "pullback_pct":     round(pullback_pct * 100, 1),
+                "bias":        w_bias,
+                "high_7d":     weekly.get("high_7d", 0.0),
+                "low_7d":      weekly.get("low_7d", 0.0),
+                "mid_7d":      weekly.get("mid_7d", 0.0),
+                "pullback_pct": round(pullback_pct * 100, 1),
             },
-            "structure": htf_data["structure"],
+            "structure": structure,
             "momentum": htf_data["momentum"],
             "news_blocked": bool(cal.get("blocked")),
             "news_reason":  str(cal.get("reason") or ""),
             "signal": {
-                "decision":     result["decision"],
-                "strategy":     result["strategy"],
-                "confidence":   result["confidence"],
-                "entry_zone":   result["entry_zone"],
-                "sl":           result["sl"],
-                "tp":           result["tp"],
-                "reason":       result["reason"],
+                "decision":   result["decision"],
+                "strategy":   result["strategy"],
+                "confidence": result["confidence"],
+                "entry_zone": result["entry_zone"],
+                "sl":         result["sl"],
+                "tp":         result["tp"],
+                "reason":     result["reason"],
             },
         }
 

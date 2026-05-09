@@ -1,4 +1,4 @@
-"""
+﻿"""
 Order Database - Complete local storage for all trade data.
 Stores comprehensive order information with session tracking.
 Uses MT5 only for live PnL updates.
@@ -221,6 +221,8 @@ class OrderDatabase:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ticket ON orders(ticket)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON orders(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_open_time ON orders(open_time)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_close_time ON orders(close_time)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_close_time_ist ON orders(close_time_ist)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy ON orders(strategy)")
     
     def store_order(self, ticket: int, direction: str, volume: float, entry_price: float,
@@ -473,12 +475,29 @@ class OrderDatabase:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
-                SELECT ticket, direction, volume, entry_price, exit_price, final_pnl, close_time
+                SELECT
+                    ticket,
+                    direction,
+                    volume,
+                    entry_price,
+                    exit_price,
+                    final_pnl,
+                    close_time,
+                    strategy,
+                    close_reason,
+                    close_reason_category,
+                    mt5_close_reason,
+                    features
                 FROM orders
                 WHERE status = 'CLOSED' AND close_time >= ?
                 ORDER BY close_time DESC
             """, (cutoff.isoformat(),))
-            return [dict(row) for row in cursor.fetchall()]
+            orders = []
+            for row in cursor.fetchall():
+                o = dict(row)
+                o['features'] = json.loads(o.get('features') or '{}')
+                orders.append(o)
+            return orders
 
     def get_closed_orders(self, days: int = 30) -> List[Dict]:
         """Get closed orders from last N days."""
@@ -525,7 +544,10 @@ class OrderDatabase:
     def get_today_stats(self) -> Dict:
         """Get today's trading statistics using IST date from close_time_ist."""
         ist_now = datetime.now(timezone.utc).astimezone(_IST)
-        today_ist = ist_now.strftime('%Y-%m-%d')
+        today_start = ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow_start = today_start + timedelta(days=1)
+        today_ist = today_start.isoformat()
+        tomorrow_ist = tomorrow_start.isoformat()
         
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -538,8 +560,8 @@ class OrderDatabase:
                        MAX(final_pnl) as best_trade,
                        MIN(final_pnl) as worst_trade
                 FROM orders 
-                WHERE status = 'CLOSED' AND substr(close_time_ist, 1, 10) = ?
-            """, (today_ist,))
+                WHERE status = 'CLOSED' AND close_time_ist >= ? AND close_time_ist < ?
+            """, (today_ist, tomorrow_ist))
             
             row = cursor.fetchone()
             if row:
@@ -584,7 +606,12 @@ class OrderDatabase:
                 ORDER BY ist_date DESC
                 LIMIT ?
             """, (days,))
-            return [dict(row) for row in cursor.fetchall()]
+            orders = []
+            for row in cursor.fetchall():
+                o = dict(row)
+                o['features'] = json.loads(o.get('features') or '{}')
+                orders.append(o)
+            return orders
     
     def get_strategy_performance(self, days: int = 30) -> List[Dict]:
         """Get performance breakdown by strategy."""

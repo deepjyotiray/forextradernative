@@ -494,6 +494,89 @@ class TradeManagerTests(unittest.TestCase):
         manager._close_early.assert_called_once()
         self.assertIn("hard profit floor", manager._close_early.call_args[0][1].lower())
 
+    def test_intraday_engine_high_conf_reversal_waits_for_meaningful_peak(self):
+        manager = self._build_manager()
+        manager._close_early = Mock()
+        trade = TradeRecord(
+            8522930667, "BUY", 0.01, 4704.39, 4699.17, 4714.17, 5.0,
+            strategy="INTRADAY_ENGINE", scalp=True,
+            features={"profile_name": "intraday_engine", "signal_confidence": 0.80},
+        )
+        trade.live_pnl = -1.15
+        trade.peak_pnl = 1.32  # 0.264R peak, matching the reported failure
+        manager._current_market_context = {
+            "m15_df": pd.DataFrame(
+                {
+                    "open": [4704.1, 4704.3, 4704.2],
+                    "high": [4704.8, 4704.9, 4704.7],
+                    "low": [4703.6, 4703.8, 4703.7],
+                    "close": [4704.5, 4704.4, 4704.1],
+                }
+            ),
+            "m5_df": pd.DataFrame(
+                {
+                    "open": [4704.55],
+                    "high": [4704.55],
+                    "low": [4703.10],
+                    "close": [4703.10],
+                },
+                index=pd.to_datetime(["2026-05-07T05:35:00Z"]),
+            ),
+        }
+
+        manager._manage_intraday_engine(trade)
+
+        manager._close_early.assert_not_called()
+
+    def test_intraday_engine_high_conf_reversal_requires_distinct_second_candle(self):
+        manager = self._build_manager()
+        manager._close_early = Mock()
+        trade = TradeRecord(
+            200125, "BUY", 0.01, 4704.39, 4699.17, 4714.17, 5.0,
+            strategy="INTRADAY_ENGINE", scalp=True,
+            features={"profile_name": "intraday_engine", "signal_confidence": 0.80},
+        )
+        trade.live_pnl = 1.8
+        trade.peak_pnl = 3.0  # 0.60R peak, enough to arm high-confidence reversal logic
+
+        manager._current_market_context = {
+            "m15_df": pd.DataFrame(
+                {
+                    "open": [4704.1, 4704.4, 4704.5],
+                    "high": [4705.0, 4705.2, 4705.1],
+                    "low": [4703.9, 4704.0, 4704.1],
+                    "close": [4704.6, 4704.8, 4704.7],
+                }
+            ),
+            "m5_df": pd.DataFrame(
+                {
+                    "open": [4705.00],
+                    "high": [4705.00],
+                    "low": [4704.00],
+                    "close": [4704.00],
+                },
+                index=pd.to_datetime(["2026-05-07T05:35:00Z"]),
+            ),
+        }
+
+        manager._manage_intraday_engine(trade)
+        manager._manage_intraday_engine(trade)
+        manager._close_early.assert_not_called()
+
+        manager._current_market_context["m5_df"] = pd.DataFrame(
+            {
+                "open": [4704.90],
+                "high": [4704.90],
+                "low": [4703.85],
+                "close": [4703.85],
+            },
+            index=pd.to_datetime(["2026-05-07T05:40:00Z"]),
+        )
+        manager._manage_intraday_engine(trade)
+
+        manager._close_early.assert_called_once()
+        self.assertIn("2 consecutive strong bearish candles", manager._close_early.call_args[0][1])
+
     def test_intraday_engine_runner_mode_trails_to_m15_structure(self):
         manager = self._build_manager()
         trade = TradeRecord(

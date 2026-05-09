@@ -56,6 +56,24 @@ def _macro_bias(data: Dict) -> str:
     return "NEUTRAL_OR_SELL"
 
 
+def _long_macro_block_reason(data: Dict, macro: str) -> Optional[str]:
+    if macro != "NEUTRAL_OR_SELL":
+        return None
+
+    macro_data = data.get("macro", {})
+    dxy = str(macro_data.get("dxy_trend", "RANGE")).upper()
+    us10y = str(macro_data.get("us10y_trend", "RANGE")).upper()
+    neutral_values = {"RANGE", "NEUTRAL", ""}
+
+    if dxy in neutral_values and us10y in neutral_values:
+        return "Macro not supportive for long (neutral: neither DXY nor US10Y is trending down)"
+
+    if dxy == "UP" and us10y == "UP":
+        return "Macro not supportive for long (bearish: DXY and US10Y are both trending up)"
+
+    return "Macro not supportive for long (mixed: DXY and US10Y are not aligned for buys)"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 2 — Weekly sentiment
 # ─────────────────────────────────────────────────────────────────────────────
@@ -191,8 +209,9 @@ def _hard_filter(data: Dict, macro: str) -> Optional[str]:
     if high_7d > 0 and price >= high_7d * 0.998:
         return "Price at extreme weekly high — overextended"
 
-    if macro == "NEUTRAL_OR_SELL":
-        return "Macro strongly bearish — no long bias"
+    macro_block = _long_macro_block_reason(data, macro)
+    if macro_block:
+        return macro_block
 
     return None
 
