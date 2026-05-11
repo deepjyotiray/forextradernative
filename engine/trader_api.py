@@ -200,7 +200,11 @@ def _get_deployment_status(trader) -> dict:
     if _deployment_cache is not None and (now - _deployment_cache_time) < _DEPLOYMENT_CACHE_TTL:
         return _deployment_cache
     base_dir = Path(__file__).resolve().parent.parent
-    runtime_snapshot = getattr(trader, "_deployment_snapshot", None) or capture_code_snapshot(base_dir)
+    runtime_snapshot = getattr(trader, "_deployment_snapshot", None) or capture_code_snapshot(
+        base_dir,
+        as_runtime=True,
+        record_reason="status_recovered_runtime_snapshot",
+    )
     current_snapshot = capture_code_snapshot(base_dir)
     _deployment_cache = compare_snapshots(runtime_snapshot, current_snapshot)
     _deployment_cache_time = now

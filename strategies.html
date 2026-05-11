@@ -1874,17 +1874,19 @@ function renderDeployment(status) {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
   };
-  set('deployRuntimeVersion', runtimeGit.version || runtimeGit.commit_short || '-');
-  set('deployRuntimeMeta', [runtimeGit.branch, runtimeGit.committed_at_ist].filter(Boolean).join(' | ') || 'Running process snapshot');
-  set('deployCurrentVersion', currentGit.version || currentGit.commit_short || runtimeGit.version || '-');
-  set('deployCurrentMeta', [currentGit.branch, currentGit.committed_at_ist].filter(Boolean).join(' | ') || 'Current files on disk');
-  set('deployUiChanged', ui.last_modified_ist || ui.committed_at_ist || '-');
-  set('deployUiMeta', [ui.version ? `Ref ${ui.version}` : '', ui.latest_file ? `File ${ui.latest_file}` : ''].filter(Boolean).join(' | ') || '-');
-  set('deployStrategiesChanged', strategies.last_modified_ist || strategies.committed_at_ist || '-');
-  set('deployStrategiesMeta', [strategies.version ? `Ref ${strategies.version}` : '', strategies.latest_file ? `File ${strategies.latest_file}` : ''].filter(Boolean).join(' | ') || '-');
+  set('deployRuntimeVersion', runtime.app_version_label || runtimeGit.display_version || '-');
+  set('deployRuntimeMeta', [runtimeGit.commit_short ? `Commit ${runtimeGit.commit_short}` : '', runtimeGit.branch].filter(Boolean).join(' | ') || 'Running process snapshot');
+  set('deployCurrentVersion', current.app_version_label || currentGit.display_version || runtime.app_version_label || '-');
+  set('deployCurrentMeta', [currentGit.commit_short ? `Commit ${currentGit.commit_short}` : '', currentGit.branch].filter(Boolean).join(' | ') || 'Current files on disk');
+  set('deployUiChanged', ui.display_version || ui.last_modified_ist || ui.committed_at_ist || '-');
+  set('deployUiMeta', [ui.latest_file ? `File ${ui.latest_file}` : '', ui.dirty ? 'Local changes detected' : ''].filter(Boolean).join(' | ') || '-');
+  set('deployStrategiesChanged', strategies.display_version || strategies.last_modified_ist || strategies.committed_at_ist || '-');
+  set('deployStrategiesMeta', [strategies.latest_file ? `File ${strategies.latest_file}` : '', strategies.dirty ? 'Local changes detected' : ''].filter(Boolean).join(' | ') || '-');
   set('deployRestart', status.last_restart_ist || '-');
   set('deployRestartMeta', status.uptime_seconds != null ? `Uptime ${fmtDuration(status.uptime_seconds)}` : '-');
-  set('deployMessage', dep.message || 'Deployment metadata unavailable.');
+  const historyPath = (((dep.record_paths || {}).history) || '').split(/[\\\\/]/).pop();
+  const message = (dep.message || 'Deployment metadata unavailable.') + (historyPath ? ` Record: ${historyPath}` : '');
+  set('deployMessage', message);
   const badge = document.getElementById('deployStatus');
   if (badge) {
     badge.textContent = sync ? 'Deployed' : 'Restart Needed';

@@ -164,7 +164,7 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <h1 id="appTitle">&#9889; XAUUSD Auto Trader</h1>
   <div class="meta">
     <button class="theme-btn" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">&#9790;</button>
-    <span id="appVersion" class="version-pill">v2026-04-27.1</span>
+    <span id="appVersion" class="version-pill">2026-05-11 11:46:31 IST</span>
     <span id="pulse" class="pulse pulse-off"></span>
     <span id="conn">Connecting...</span> | <span id="clocks" style="font-size:10px;letter-spacing:.5px"></span>
     <span style="font-size:10px;color:var(--dim);margin-left:4px">(Daily resets at IST midnight)</span>
@@ -361,7 +361,7 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 <script>
 const A=location.origin;
 const _isMobile=window.innerWidth<=768||/Mobi|Android/i.test(navigator.userAgent);
-const UI_VERSION='2026-04-27.1';
+const UI_VERSION='2026-05-11 11:46:31 IST';
 const IST_TIME_ZONE='Asia/Kolkata';
 const ANALYTICS_BASE=A;
 const ANALYTICS_LINKS=[
@@ -713,25 +713,26 @@ function renderDeployment(d){
   const ui=current.ui||runtime.ui||{};
   const strategies=current.strategies||runtime.strategies||{};
   const sync=dep.in_sync!==false;
-  const runtimeVersion=runtimeGit.version||runtimeGit.commit_short||`v${d.app_version||UI_VERSION}`;
-  const currentVersion=currentGit.version||currentGit.commit_short||runtimeVersion;
-  const runtimeMeta=[runtimeGit.branch,runtimeGit.committed_at_ist].filter(Boolean).join(' | ')||'Running process snapshot';
-  const currentMeta=[currentGit.branch,currentGit.committed_at_ist].filter(Boolean).join(' | ')||'Current files on disk';
-  const uiMeta=[ui.version?`Ref ${ui.version}`:'',ui.latest_file?`File ${ui.latest_file}`:''].filter(Boolean).join(' | ')||'-';
-  const strategyMeta=[strategies.version?`Ref ${strategies.version}`:'',strategies.latest_file?`File ${strategies.latest_file}`:''].filter(Boolean).join(' | ')||'-';
-  const appVersionLabel=runtimeGit.commit_short?`v${d.app_version||UI_VERSION} · ${runtimeGit.commit_short}`:`v${d.app_version||UI_VERSION}`;
-  setText($('appVersion'),appVersionLabel);
+  const runtimeVersion=runtime.app_version_label||runtimeGit.display_version||d.app_version||UI_VERSION;
+  const currentVersion=current.app_version_label||currentGit.display_version||runtimeVersion;
+  const runtimeMeta=[runtimeGit.commit_short?`Commit ${runtimeGit.commit_short}`:'',runtimeGit.branch].filter(Boolean).join(' | ')||'Running process snapshot';
+  const currentMeta=[currentGit.commit_short?`Commit ${currentGit.commit_short}`:'',currentGit.branch].filter(Boolean).join(' | ')||'Current files on disk';
+  const uiMeta=[ui.latest_file?`File ${ui.latest_file}`:'',ui.dirty?'Local changes detected':''].filter(Boolean).join(' | ')||'-';
+  const strategyMeta=[strategies.latest_file?`File ${strategies.latest_file}`:'',strategies.dirty?'Local changes detected':''].filter(Boolean).join(' | ')||'-';
+  setText($('appVersion'),runtimeVersion);
   setText($('deployRuntimeVersion'),runtimeVersion);
   setText($('deployRuntimeMeta'),runtimeMeta);
   setText($('deployCurrentVersion'),currentVersion);
   setText($('deployCurrentMeta'),currentMeta);
-  setText($('deployUiChanged'),ui.last_modified_ist||ui.committed_at_ist||'-');
+  setText($('deployUiChanged'),ui.display_version||ui.last_modified_ist||ui.committed_at_ist||'-');
   setText($('deployUiMeta'),uiMeta);
-  setText($('deployStrategiesChanged'),strategies.last_modified_ist||strategies.committed_at_ist||'-');
+  setText($('deployStrategiesChanged'),strategies.display_version||strategies.last_modified_ist||strategies.committed_at_ist||'-');
   setText($('deployStrategiesMeta'),strategyMeta);
   setText($('deployRestart'),d.last_restart_ist||'-');
   setText($('deployRestartMeta'),d.uptime_seconds!=null?`Uptime ${fmtDuration(d.uptime_seconds)}`:'-');
-  setText($('deployMessage'),dep.message||'Deployment metadata unavailable.');
+  const historyPath=((dep.record_paths||{}).history||'').split(/[\\\\/]/).pop();
+  const message=(dep.message||'Deployment metadata unavailable.')+(historyPath?` Record: ${historyPath}`:'');
+  setText($('deployMessage'),message);
   const statusEl=$('deployStatus');
   if(statusEl){
     statusEl.textContent=sync?'Deployed':'Restart Needed';

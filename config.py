@@ -3,7 +3,15 @@ Shared configuration.
 """
 import copy
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _build_app_version() -> str:
+    return datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
+
 
 # MT5 connection
 MT5_PATH = None
@@ -12,7 +20,7 @@ MT5_PASSWORD = None
 MT5_SERVER = None
 
 # Trading
-APP_VERSION = "2026-04-27"
+APP_VERSION = _build_app_version()
 SYMBOL = "XAUUSD"
 AVAILABLE_SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "BTCUSD", "ETHUSD"]
 MAGIC_NUMBER = 234000

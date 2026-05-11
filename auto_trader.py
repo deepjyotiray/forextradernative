@@ -88,7 +88,7 @@ def _safe_float(value, default=0.0):
 class AutoTrader:
     def __init__(self):
         self._started_at_utc = datetime.now(timezone.utc)
-        self._deployment_snapshot = capture_code_snapshot(Path(_BASE_DIR))
+        self._deployment_snapshot = capture_code_snapshot(Path(_BASE_DIR), as_runtime=True, record_reason="service_start")
         self.bridge = MT5Bridge()
         self.zone_detector = ZoneDetector()
         self.risk = RiskManager()

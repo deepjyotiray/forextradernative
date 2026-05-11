@@ -66,7 +66,10 @@ def test_capture_code_snapshot_falls_back_to_filesystem_when_git_is_unavailable(
     snapshot = dm.capture_code_snapshot(tmp_path)
 
     assert snapshot["git"]["commit"] is None
+    assert snapshot["app_version_label"] == "1970-01-01 06:05:00 IST"
+    assert snapshot["git"]["display_version"] == "1970-01-01 06:05:00 IST"
     assert snapshot["ui"]["version"] == "19700101-000500"
+    assert snapshot["ui"]["display_version"] == "1970-01-01 05:35:00 IST"
     assert snapshot["ui"]["latest_file"] == "_dashboard_script.js"
     assert snapshot["strategies"]["latest_file"] == "engine/strategy_configs/htf_long.py"
     assert snapshot["strategies"]["last_modified_utc"] == datetime.fromtimestamp(2100, tz=timezone.utc).isoformat()
@@ -135,6 +138,54 @@ def test_capture_code_snapshot_marks_dirty_scope_and_uses_file_mtime(tmp_path, m
     snapshot = dm.capture_code_snapshot(tmp_path)
 
     assert snapshot["git"]["version"] == "head999 + local"
+    assert snapshot["git"]["display_version"] == "2026-05-09 05:30:00 IST"
     assert snapshot["ui"]["dirty"] is True
     assert snapshot["ui"]["version"] == "abc1234 + local"
+    assert snapshot["ui"]["display_version"] == "1970-01-01 06:53:20 IST"
     assert snapshot["ui"]["last_modified_utc"] == datetime.fromtimestamp(5000, tz=timezone.utc).isoformat()
+
+
+def test_runtime_snapshot_persists_record_files(tmp_path, monkeypatch):
+    (tmp_path / "dashboard.html").write_text("x", encoding="utf-8")
+    (tmp_path / "strategies.html").write_text("x", encoding="utf-8")
+    (tmp_path / "_dashboard_script.js").write_text("x", encoding="utf-8")
+    (tmp_path / "auto_trader.py").write_text("x", encoding="utf-8")
+    engine_dir = tmp_path / "engine"
+    (engine_dir / "strategies").mkdir(parents=True)
+    (engine_dir / "strategy_configs").mkdir(parents=True)
+    for rel in [
+        "strategy_manager.py",
+        "smc_strategy.py",
+        "sweep_scalper.py",
+        "m15_sr_strategy.py",
+        "swing_engine_strategy.py",
+        "intraday_engine_strategy.py",
+        "strategies/base_strategy.py",
+        "strategy_configs/__init__.py",
+        "strategy_configs/base.py",
+        "strategy_configs/trend_channel.py",
+        "strategy_configs/swing_engine.py",
+        "strategy_configs/sweep_scalper.py",
+        "strategy_configs/smc_confluence.py",
+        "strategy_configs/m15_sr.py",
+        "strategy_configs/intraday_engine.py",
+        "strategy_configs/htf_short.py",
+        "strategy_configs/htf_long.py",
+    ]:
+        target = engine_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(dm, "_run_git", lambda *_args, **_kwargs: None)
+
+    snapshot = dm.capture_code_snapshot(tmp_path, as_runtime=True, record_reason="test")
+
+    current_record = tmp_path / "deployment_version_record.json"
+    history_record = tmp_path / "deployment_version_history.jsonl"
+    assert current_record.exists()
+    assert history_record.exists()
+    current_payload = current_record.read_text(encoding="utf-8")
+    history_payload = history_record.read_text(encoding="utf-8")
+    assert snapshot["app_version_label"] in current_payload
+    assert '"reason": "test"' in current_payload
+    assert snapshot["app_version_label"] in history_payload
