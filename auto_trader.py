@@ -15,6 +15,7 @@ import json
 import os
 import mimetypes
 from collections import deque
+from pathlib import Path
 from typing import Dict
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -66,6 +67,7 @@ from engine import adaptive_params
 from engine.market_state import compute_market_state
 from engine.strategy_configs import apply_all_to_cfg as _apply_strategy_configs
 from engine.sl_streak_guard import sl_streak_guard
+from engine.deployment_metadata import capture_code_snapshot
 
 _TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120, "D1": 720}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -86,6 +88,7 @@ def _safe_float(value, default=0.0):
 class AutoTrader:
     def __init__(self):
         self._started_at_utc = datetime.now(timezone.utc)
+        self._deployment_snapshot = capture_code_snapshot(Path(_BASE_DIR))
         self.bridge = MT5Bridge()
         self.zone_detector = ZoneDetector()
         self.risk = RiskManager()

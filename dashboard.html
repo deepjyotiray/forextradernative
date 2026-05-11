@@ -66,6 +66,13 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 .header h1{font-size:16px;font-weight:700}
 .header .meta{font-size:10px;color:var(--dim)}
 .version-pill{display:inline-block;padding:2px 6px;border:1px solid var(--border);border-radius:4px;color:var(--cyan);font-size:10px;font-weight:600;background:rgba(6,182,212,.08)}
+.deployment-card{margin-bottom:8px}
+.deployment-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:8px}
+.deployment-cell{padding:8px;border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,.02);min-width:0}
+.deployment-label{font-size:9px;text-transform:uppercase;letter-spacing:.7px;color:var(--dim);margin-bottom:4px}
+.deployment-value{font-size:12px;font-weight:700;line-height:1.35;word-break:break-word}
+.deployment-meta{font-size:10px;color:var(--dim);margin-top:4px;line-height:1.35;word-break:break-word}
+.deployment-note{margin-top:8px;font-size:11px;color:var(--dim);line-height:1.45}
 .pulse{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .pulse-on{background:var(--green)}.pulse-off{background:var(--red)}
@@ -105,6 +112,7 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   #htfPanel>div:last-child{flex-direction:column!important;gap:12px}
   #htfPanel>div:last-child>div{border-right:none!important;padding-right:0!important;margin-right:0!important;border-bottom:1px solid var(--border);padding-bottom:8px}
   #htfPanel>div:last-child>div:last-child{border-bottom:none;padding-bottom:0}
+  .deployment-grid{grid-template-columns:1fr}
 }
 @media(max-width:400px){
   .g4,.g3,.g2{gap:6px}
@@ -173,6 +181,41 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <button class="btn" style="background:#0e7490;color:#fff" onclick="copyMarketData()" title="Copy live market context + prompt to clipboard">&#128203; Copy Market Data</button>
   <div style="flex:1"></div>
   <div id="tradingStatus" style="font-size:14px;font-weight:700"></div>
+</div>
+
+<div class="card deployment-card">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+    <h3 style="margin:0">Deployment</h3>
+    <span id="deployStatus" class="badge b-warn">Loading...</span>
+  </div>
+  <div class="deployment-grid">
+    <div class="deployment-cell">
+      <div class="deployment-label">Running Build</div>
+      <div class="deployment-value" id="deployRuntimeVersion">-</div>
+      <div class="deployment-meta" id="deployRuntimeMeta">-</div>
+    </div>
+    <div class="deployment-cell">
+      <div class="deployment-label">Latest On Disk</div>
+      <div class="deployment-value" id="deployCurrentVersion">-</div>
+      <div class="deployment-meta" id="deployCurrentMeta">-</div>
+    </div>
+    <div class="deployment-cell">
+      <div class="deployment-label">UI Last Changed</div>
+      <div class="deployment-value" id="deployUiChanged">-</div>
+      <div class="deployment-meta" id="deployUiMeta">-</div>
+    </div>
+    <div class="deployment-cell">
+      <div class="deployment-label">Strategies Last Changed</div>
+      <div class="deployment-value" id="deployStrategiesChanged">-</div>
+      <div class="deployment-meta" id="deployStrategiesMeta">-</div>
+    </div>
+    <div class="deployment-cell">
+      <div class="deployment-label">Last Restart</div>
+      <div class="deployment-value" id="deployRestart">-</div>
+      <div class="deployment-meta" id="deployRestartMeta">-</div>
+    </div>
+  </div>
+  <div class="deployment-note" id="deployMessage">Loading deployment metadata...</div>
 </div>
 
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:8px;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:11px">
@@ -661,6 +704,40 @@ function fmtDuration(sec){
   if(m>0)return `${m}m ${String(s).padStart(2,'0')}s`;
   return `${s}s`;
 }
+function renderDeployment(d){
+  const dep=d.deployment||{};
+  const runtime=dep.runtime||{};
+  const current=dep.current||{};
+  const runtimeGit=runtime.git||{};
+  const currentGit=current.git||{};
+  const ui=current.ui||runtime.ui||{};
+  const strategies=current.strategies||runtime.strategies||{};
+  const sync=dep.in_sync!==false;
+  const runtimeVersion=runtimeGit.version||runtimeGit.commit_short||`v${d.app_version||UI_VERSION}`;
+  const currentVersion=currentGit.version||currentGit.commit_short||runtimeVersion;
+  const runtimeMeta=[runtimeGit.branch,runtimeGit.committed_at_ist].filter(Boolean).join(' | ')||'Running process snapshot';
+  const currentMeta=[currentGit.branch,currentGit.committed_at_ist].filter(Boolean).join(' | ')||'Current files on disk';
+  const uiMeta=[ui.version?`Ref ${ui.version}`:'',ui.latest_file?`File ${ui.latest_file}`:''].filter(Boolean).join(' | ')||'-';
+  const strategyMeta=[strategies.version?`Ref ${strategies.version}`:'',strategies.latest_file?`File ${strategies.latest_file}`:''].filter(Boolean).join(' | ')||'-';
+  const appVersionLabel=runtimeGit.commit_short?`v${d.app_version||UI_VERSION} · ${runtimeGit.commit_short}`:`v${d.app_version||UI_VERSION}`;
+  setText($('appVersion'),appVersionLabel);
+  setText($('deployRuntimeVersion'),runtimeVersion);
+  setText($('deployRuntimeMeta'),runtimeMeta);
+  setText($('deployCurrentVersion'),currentVersion);
+  setText($('deployCurrentMeta'),currentMeta);
+  setText($('deployUiChanged'),ui.last_modified_ist||ui.committed_at_ist||'-');
+  setText($('deployUiMeta'),uiMeta);
+  setText($('deployStrategiesChanged'),strategies.last_modified_ist||strategies.committed_at_ist||'-');
+  setText($('deployStrategiesMeta'),strategyMeta);
+  setText($('deployRestart'),d.last_restart_ist||'-');
+  setText($('deployRestartMeta'),d.uptime_seconds!=null?`Uptime ${fmtDuration(d.uptime_seconds)}`:'-');
+  setText($('deployMessage'),dep.message||'Deployment metadata unavailable.');
+  const statusEl=$('deployStatus');
+  if(statusEl){
+    statusEl.textContent=sync?'Deployed':'Restart Needed';
+    statusEl.className=`badge ${sync?'b-on':'b-warn'}`;
+  }
+}
 async function extendTradeTimeout(ticket){
   const input=$(`timeoutExt_${ticket}`);
   const minutes=Number(input&&input.value||0);
@@ -722,7 +799,7 @@ function render(d,opts={}){
   const en=d.enabled,tk=d.tick||{},a=d.account||{},rk=d.risk||{},rg=d.regime||{},bi=d.bias||{},co=d.correlation||{},ca=d.calendar||{},ind=d.indicators||{},z=d.zones||{},tr=d.trades||{},st=d.stats||{};
   const blockers=d.live_blockers||{};
   const price=tk.bid||0;
-  setText($('appVersion'),`v${d.app_version||UI_VERSION}`);
+  renderDeployment(d);
 
   // Trading status + symbol & strategy buttons
   const mt5=d.mt5_connected!==false;

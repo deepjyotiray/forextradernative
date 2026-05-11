@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import config as cfg
 from engine import strategy_configs as _scfg_store
+from engine.deployment_metadata import capture_code_snapshot, compare_snapshots
 from engine.market_context_qa import market_context_qa_service
 
 _IST = timezone(timedelta(hours=5, minutes=30))
@@ -69,6 +70,9 @@ _CLOSED_HISTORY_CACHE_TTL = 15.0
 _heavy_status_cache = None
 _heavy_status_cache_time = 0.0
 _HEAVY_STATUS_CACHE_TTL = 15.0
+_deployment_cache = None
+_deployment_cache_time = 0.0
+_DEPLOYMENT_CACHE_TTL = 5.0
 _ai_reviews_cache = None
 _ai_reviews_cache_time = 0.0
 _AI_REVIEWS_CACHE_TTL = 10.0
@@ -83,7 +87,8 @@ def _invalidate_status_cache(include_slow: bool = False):
     global _status_cache, _status_cache_time, _ws_latest_cycle
     global _blockers_cache, _blockers_cache_time, _xgb_cache, _xgb_cache_time
     global _perf_cache, _perf_cache_time, _closed_history_cache, _closed_history_cache_time
-    global _heavy_status_cache, _heavy_status_cache_time, _ai_reviews_cache, _ai_reviews_cache_time
+    global _heavy_status_cache, _heavy_status_cache_time, _deployment_cache, _deployment_cache_time
+    global _ai_reviews_cache, _ai_reviews_cache_time
     _status_cache = None
     _status_cache_time = 0.0
     _ws_latest_cycle = -1
@@ -98,6 +103,8 @@ def _invalidate_status_cache(include_slow: bool = False):
         _closed_history_cache_time = 0.0
         _heavy_status_cache = None
         _heavy_status_cache_time = 0.0
+        _deployment_cache = None
+        _deployment_cache_time = 0.0
         _ai_reviews_cache = None
         _ai_reviews_cache_time = 0.0
 
@@ -185,6 +192,19 @@ def _get_cached_blockers() -> dict:
         _blockers_cache = {"latest_by_strategy": {}, "top_reasons": [], "recent_skipped_count": 0}
     _blockers_cache_time = now
     return _blockers_cache
+
+
+def _get_deployment_status(trader) -> dict:
+    global _deployment_cache, _deployment_cache_time
+    now = time.monotonic()
+    if _deployment_cache is not None and (now - _deployment_cache_time) < _DEPLOYMENT_CACHE_TTL:
+        return _deployment_cache
+    base_dir = Path(__file__).resolve().parent.parent
+    runtime_snapshot = getattr(trader, "_deployment_snapshot", None) or capture_code_snapshot(base_dir)
+    current_snapshot = capture_code_snapshot(base_dir)
+    _deployment_cache = compare_snapshots(runtime_snapshot, current_snapshot)
+    _deployment_cache_time = now
+    return _deployment_cache
 
 
 def _get_live_strategy_blockers(trader) -> dict:
@@ -1251,6 +1271,7 @@ def _build_status_sync() -> dict:
     status["risk"] = _build_risk_dict(trader)
     status["tick_pressure"] = getattr(trader, "_tick_pressure", None) or {"ready": False}
     status["ai_trade_advisor"] = _build_ai_trade_advisor_status()
+    status["deployment"] = _get_deployment_status(trader)
     return convert_numpy_types(status)
 
 
