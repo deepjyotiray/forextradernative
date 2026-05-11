@@ -28,6 +28,38 @@ class M15SupportResistanceStrategyTests(unittest.TestCase):
     def setUp(self):
         self.strategy = M15SupportResistanceStrategy()
 
+    def _context(
+        self,
+        *,
+        h1="RANGE",
+        m15="DOWN",
+        bias="SHORT",
+        session="ASIAN",
+        score=0.0,
+        tick_bias="NEUTRAL",
+        macro_long=False,
+        macro_short=True,
+        regime="RANGING",
+        ema20=4704.0,
+        vwap=4702.0,
+        range_mid=4705.0,
+    ):
+        return {
+            "h1_direction": h1,
+            "m15_direction": m15,
+            "status_bias": bias,
+            "session": session,
+            "regime": regime,
+            "tick_pressure": {"pressure_score": score, "directional_bias": tick_bias},
+            "macro_long_supportive": macro_long,
+            "macro_short_supportive": macro_short,
+            "macro_support_status": "OPPOSING" if macro_long is False else "SUPPORTIVE",
+            "ema20": ema20,
+            "vwap": vwap,
+            "range_mid": range_mid,
+            "bias": {"m15_structure": {"pattern": "BEARISH", "bos_direction": "SHORT"}},
+        }
+
     def test_zone_detection_clusters_multiple_support_touches(self):
         df = _frame(
             [
@@ -337,6 +369,175 @@ class M15SupportResistanceStrategyTests(unittest.TestCase):
         # First 2 closes straddle the zone, but last 3 are all cleanly above
         closes = [99.80, 101.50, 100.60, 100.65, 100.70]
         self.assertFalse(M15SupportResistanceStrategy._has_random_closes(closes, 100.00, 100.20, "support"))
+
+    def test_trade_8563247461_style_setup_is_blocked(self):
+        candle = pd.Series(
+            {
+                "datetime": datetime(2026, 5, 11, 2, 0, tzinfo=timezone.utc),
+                "open": 4685.69,
+                "high": 4693.07,
+                "low": 4678.40,
+                "close": 4685.94,
+                "volume": 5783,
+            }
+        )
+        zone = {
+            "zone_id": "SUPPORT_6H_4676.89",
+            "type": "support",
+            "zone_low": 4675.19,
+            "zone_high": 4678.59,
+            "zone_mid": 4676.89,
+            "touches": 2,
+        }
+        outcome = self.strategy.evaluate_rejection_setup(
+            direction="BUY",
+            zone=zone,
+            candle=candle,
+            tick={"bid": 4686.00, "ask": 4686.21, "spread": 0.21},
+            atr_m15=13.5678,
+            market_context=self._context(score=0.037, tick_bias="LONG"),
+            opposite_zones=[{"zone_id": "RES_1", "zone_mid": 4709.87}],
+            now_utc=datetime(2026, 5, 11, 2, 15, tzinfo=timezone.utc),
+        )
+        self.assertEqual(outcome["signal"], "NO_TRADE")
+        self.assertIn("COUNTER_BIAS_BUY_NEEDS_STRONG_LONG_TICK_PRESSURE", outcome["reason"])
+        self.assertIn("COUNTER_BIAS_BUY_CANDLE_NOT_A_PLUS", outcome["reason"])
+
+        stale_signal = {
+            "signal": "BUY",
+            "_strategy_name": self.strategy.name,
+            "_signal_id": "sig-8563247461",
+            "_zone_id": zone["zone_id"],
+            "_decision_time": "2026-05-11T02:15:04+00:00",
+            "_ttl_seconds": 10,
+            "_atr14": 13.5678,
+            "_min_rr_required": 0.8,
+            "_max_spread": 0.45,
+            "_max_entry_drift_atr": 0.10,
+            "_context_hash": "x",
+            "_context_classification": "MEAN_REVERSION_BOUNCE_ONLY",
+            "_status_bias": "SHORT",
+            "entry": 4686.21,
+            "sl": 4670.44,
+            "tp": 4700.00,
+            "confidence": 0.62,
+            "_signal_family": self.strategy.FAMILY_BOUNCE,
+        }
+        pre_send = self.strategy.pre_send_revalidate(
+            stale_signal,
+            {
+                "now_utc": datetime(2026, 5, 11, 2, 17, 51, tzinfo=timezone.utc),
+                "tick": {"bid": 4685.00, "ask": 4685.21, "spread": 0.21},
+                "tick_pressure": {"pressure_score": 0.037, "directional_bias": "LONG"},
+                "bias": {"direction": "SHORT"},
+                "regime": {"state": "RANGING"},
+                "market_state": {"trend": {"H1": "RANGE", "M15": "DOWN"}, "structure": {"H1": "RANGE", "H4": "DOWN", "D1": "DOWN"}},
+            },
+        )
+        self.assertFalse(pre_send["allowed"])
+        self.assertEqual(pre_send["reason"], "STALE_SIGNAL")
+
+    def test_trade_8563943603_style_setup_is_bounce_only(self):
+        candle = pd.Series(
+            {
+                "datetime": datetime(2026, 5, 11, 3, 0, tzinfo=timezone.utc),
+                "open": 4681.69,
+                "high": 4689.70,
+                "low": 4675.09,
+                "close": 4687.15,
+                "volume": 4682,
+            }
+        )
+        zone = {
+            "zone_id": "SUPPORT_6H_4677.39",
+            "type": "support",
+            "zone_low": 4675.73,
+            "zone_high": 4679.06,
+            "zone_mid": 4677.39,
+            "touches": 3,
+        }
+        outcome = self.strategy.evaluate_rejection_setup(
+            direction="BUY",
+            zone=zone,
+            candle=candle,
+            tick={"bid": 4687.21, "ask": 4687.42, "spread": 0.21},
+            atr_m15=13.3321,
+            market_context=self._context(score=0.375, tick_bias="LONG"),
+            opposite_zones=[{"zone_id": "RES_1", "zone_mid": 4705.00}],
+            now_utc=datetime(2026, 5, 11, 3, 15, tzinfo=timezone.utc),
+        )
+        self.assertEqual(outcome["signal"], "BUY")
+        self.assertEqual(outcome["_signal_family"], self.strategy.FAMILY_BOUNCE)
+        self.assertEqual(outcome["_exit_profile"], "m15_mean_reversion_fast")
+        self.assertNotEqual(outcome["_exit_profile"], "swing_structured")
+
+    def test_trade_8564640195_style_setup_is_blocked(self):
+        candle = pd.Series(
+            {
+                "datetime": datetime(2026, 5, 11, 4, 0, tzinfo=timezone.utc),
+                "open": 4678.71,
+                "high": 4679.91,
+                "low": 4673.47,
+                "close": 4677.55,
+                "volume": 3555,
+            }
+        )
+        zone = {
+            "zone_id": "SUPPORT_6H_4675.42",
+            "type": "support",
+            "zone_low": 4674.04,
+            "zone_high": 4676.80,
+            "zone_mid": 4675.42,
+            "touches": 2,
+        }
+        outcome = self.strategy.evaluate_rejection_setup(
+            direction="BUY",
+            zone=zone,
+            candle=candle,
+            tick={"bid": 4677.58, "ask": 4677.79, "spread": 0.21},
+            atr_m15=11.0103,
+            market_context=self._context(score=-0.167, tick_bias="SHORT"),
+            opposite_zones=[{"zone_id": "RES_1", "zone_mid": 4690.05}],
+            now_utc=datetime(2026, 5, 11, 4, 15, tzinfo=timezone.utc),
+        )
+        self.assertEqual(outcome["signal"], "NO_TRADE")
+        self.assertIn("COUNTER_BIAS_BUY_TICK_NEGATIVE", outcome["reason"])
+        self.assertIn("COUNTER_BIAS_BUY_TICK_BIAS_SHORT", outcome["reason"])
+        self.assertIn("COUNTER_BIAS_BUY_CANDLE_NOT_A_PLUS", outcome["reason"])
+
+    def test_counter_bias_sell_requires_strong_short_pressure(self):
+        candle = pd.Series(
+            {
+                "datetime": datetime(2026, 5, 11, 5, 0, tzinfo=timezone.utc),
+                "open": 4712.10,
+                "high": 4716.40,
+                "low": 4708.80,
+                "close": 4710.30,
+                "volume": 4100,
+            }
+        )
+        zone = {
+            "zone_id": "RESISTANCE_6H_4714.20",
+            "type": "resistance",
+            "zone_low": 4712.80,
+            "zone_high": 4715.60,
+            "zone_mid": 4714.20,
+            "touches": 2,
+        }
+        outcome = self.strategy.evaluate_rejection_setup(
+            direction="SELL",
+            zone=zone,
+            candle=candle,
+            tick={"bid": 4710.20, "ask": 4710.41, "spread": 0.21},
+            atr_m15=10.50,
+            market_context=self._context(h1="RANGE", m15="UP", bias="LONG", score=0.12, tick_bias="LONG", macro_long=True, macro_short=False),
+            opposite_zones=[{"zone_id": "SUP_1", "zone_mid": 4698.0}],
+            now_utc=datetime(2026, 5, 11, 5, 15, tzinfo=timezone.utc),
+        )
+        self.assertEqual(outcome["signal"], "NO_TRADE")
+        self.assertIn("COUNTER_BIAS_RESISTANCE_NOT_STRONG_ENOUGH", outcome["reason"])
+        self.assertIn("COUNTER_BIAS_SELL_TICK_POSITIVE", outcome["reason"])
+        self.assertIn("COUNTER_BIAS_SELL_TICK_BIAS_LONG", outcome["reason"])
 
 
 if __name__ == "__main__":

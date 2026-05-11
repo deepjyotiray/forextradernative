@@ -63,6 +63,7 @@ def master_trade_gate(
     bias_dir = _resolve_bias_direction(signal, market_state)
     counter_trend = bias_dir not in ("", "NEUTRAL", trade_dir) and trade_dir in ("LONG", "SHORT")
     signal_family = str(signal.get("_signal_family") or "").upper()
+    signal_family_bucket = _family_bucket(signal_family)
     tick_snap = signal.get("_tick_snapshot") or market_state.get("tick_snapshot") or {}
     current_rr = float(signal.get("rr", 0.0) or 0.0)
 
@@ -166,7 +167,7 @@ def master_trade_gate(
         "support_zone": None,
         "resistance_zone": None,
     }
-    skip_m15_context = signal_family in {"SWEEP", "M15", "TREND", "SWING", "INTRADAY"}
+    skip_m15_context = signal_family_bucket in {"SWEEP", "M15", "TREND", "SWING", "INTRADAY"}
     provider_context = None
     if m15_context_provider and hasattr(m15_context_provider, "evaluate_trade_context"):
         provider_context = m15_context_provider.evaluate_trade_context(market_state, direction, signal)
@@ -368,7 +369,7 @@ def _resolve_bias_direction(signal: Dict[str, Any], market_state: Dict[str, Any]
 
 
 def _resolve_spread_limit(signal: Dict[str, Any], cfg_module=cfg) -> float:
-    family = str(signal.get("_signal_family") or "").upper()
+    family = _family_bucket(str(signal.get("_signal_family") or "").upper())
     if family == "SWEEP":
         return float(getattr(cfg_module, "SCALPER_SPREAD_MEAN_MAX", cfg_module.M15_SR_MAX_SPREAD))
     if family == "SMC":
@@ -425,7 +426,7 @@ def _opposing_zone_entry_check(
 
 
 def _signal_is_confirmed(signal_family: str, sweep_confirmed: bool, candle_confirmed: bool) -> bool:
-    family = str(signal_family or "").upper()
+    family = _family_bucket(str(signal_family or "").upper())
     if family == "SMC":
         return True
     if family == "SWEEP":
@@ -436,7 +437,7 @@ def _signal_is_confirmed(signal_family: str, sweep_confirmed: bool, candle_confi
 
 
 def _counter_trend_confirmation_passes(signal_family: str, sweep_confirmed: bool, candle_confirmed: bool) -> bool:
-    family = str(signal_family or "").upper()
+    family = _family_bucket(str(signal_family or "").upper())
     if family == "SWEEP":
         return sweep_confirmed
     if family in {"M15", "TREND"}:
@@ -462,3 +463,10 @@ def _atr_is_healthy(indicators: Dict[str, Any], spike_context: Dict[str, Any]) -
     atr_ratio = float(indicators.get("atr_ratio", 1.0) or 1.0)
     atr_value = float(indicators.get("atr14", indicators.get("atr", 0.0)) or 0.0)
     return atr_value > 0 and 0.6 <= atr_ratio <= 1.8
+
+
+def _family_bucket(signal_family: str) -> str:
+    family = str(signal_family or "").upper()
+    if family.startswith("M15_SR_"):
+        return "M15"
+    return family

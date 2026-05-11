@@ -3,16 +3,19 @@ Conservative M15 support/resistance rejection strategy for XAUUSD.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 import config as cfg
 from .decision_logger import log_decision
-from .indicators import atr
+from .indicators import atr, ema
+from .session_filter import get_session_at
 from .strategies.base_strategy import BaseStrategy
-from .tick_processor import TickProcessor, entry_pressure_block_reason
+from .tick_processor import TickProcessor
 from .time_utils import date_str_ist
 
 
@@ -20,12 +23,19 @@ class M15SupportResistanceStrategy(BaseStrategy):
     name = "M15_SUPPORT_RESISTANCE_REJECTION_V1"
     _POSITION_TAG = "M15SR"
 
+    FAMILY_TREND = "M15_SR_TREND_ALIGNED_REJECTION"
+    FAMILY_BOUNCE = "M15_SR_MEAN_REVERSION_BOUNCE"
+    FAMILY_TRUE_REVERSAL = "M15_SR_TRUE_REVERSAL"
+
     def __init__(self):
         self.tick_proc = TickProcessor(buffer_size=400)
         self._daily_trade_counts: Dict[str, int] = {}
         self._last_trade_candle_by_direction: Dict[str, datetime] = {}
         self._spike_block_until: Optional[datetime] = None
         self._spike_anchor_time: Optional[datetime] = None
+        self._asian_counter_bias_counts: Dict[str, int] = {}
+        self._pending_signals: Dict[str, Dict] = {}
+        self._pending_by_zone_side: Dict[Tuple[str, str], str] = {}
 
     def generate_signal(self, data: Dict) -> Dict:
         if not bool(getattr(cfg, "M15_SR_ENABLED", True)):
@@ -68,12 +78,15 @@ class M15SupportResistanceStrategy(BaseStrategy):
         )
         nearest_support = self._nearest_zone(support_zones, current_price)
         nearest_resistance = self._nearest_zone(resistance_zones, current_price)
+        market_ctx = self._build_market_context(data, closed, now_utc)
+        candle_metrics = self.candle_metrics(last_closed)
 
         filter_results = {
             "spread": {"passed": True, "reason": "OK", "current": round(float(tick.get("spread", 0.0) or 0.0), 4)},
             "manipulation": {"passed": True, "reason": "OK"},
             "tick_pressure": {"passed": True, "reason": "OK"},
             "zone_quality": {"passed": True, "reason": "OK"},
+            "context": {"passed": True, "reason": "OK"},
         }
 
         spread_ok, spread_reason = self._check_spread_filter(tick, tick_snap)
@@ -90,6 +103,8 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 now_utc=now_utc,
                 block_category="spread",
                 lookback_used=lookback_used,
+                market_context=market_ctx,
+                candle_metrics=candle_metrics,
             )
 
         spike_ok, spike_reason = self._check_spike_block(closed, atr_m15, now_utc)
@@ -106,6 +121,8 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 now_utc=now_utc,
                 block_category="manipulation",
                 lookback_used=lookback_used,
+                market_context=market_ctx,
+                candle_metrics=candle_metrics,
             )
 
         if int(getattr(cfg, "M15_SR_MAX_TRADES_PER_DAY", 0) or 0) > 0 and self._daily_trade_count(now_utc) >= int(cfg.M15_SR_MAX_TRADES_PER_DAY):
@@ -120,6 +137,8 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 now_utc=now_utc,
                 block_category="risk",
                 lookback_used=lookback_used,
+                market_context=market_ctx,
+                candle_metrics=candle_metrics,
             )
 
         positions = data.get("positions") or []
@@ -140,6 +159,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 nearest_support=nearest_support,
                 nearest_resistance=nearest_resistance,
                 tick_pressure=tick_pressure,
+                market_context=market_ctx,
             )
             if outcome.get("signal") == "BUY":
                 candidate_signals.append(outcome)
@@ -161,6 +181,7 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 nearest_support=nearest_support,
                 nearest_resistance=nearest_resistance,
                 tick_pressure=tick_pressure,
+                market_context=market_ctx,
             )
             if outcome.get("signal") == "SELL":
                 candidate_signals.append(outcome)
@@ -181,10 +202,20 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 now_utc=now_utc,
                 block_category="setup",
                 lookback_used=lookback_used,
+                market_context=market_ctx,
+                candle_metrics=candle_metrics,
             )
 
-        candidate_signals.sort(key=lambda item: (float(item.get("confidence", 0.0)), float(item.get("rr", 0.0))), reverse=True)
+        candidate_signals.sort(
+            key=lambda item: (
+                float(item.get("confidence", 0.0)),
+                float(item.get("rr", 0.0)),
+                1.0 if item.get("_signal_family") == self.FAMILY_TREND else 0.0,
+            ),
+            reverse=True,
+        )
         signal = candidate_signals[0]
+        self._register_pending_signal(signal)
         self._log_decision(
             decision="TRADE_TAKEN",
             reason=signal.get("reason", "M15 SR setup"),
@@ -200,6 +231,8 @@ class M15SupportResistanceStrategy(BaseStrategy):
             now_utc=now_utc,
             signal_data=signal,
             lookback_used=lookback_used,
+            market_context=market_ctx,
+            candle_metrics=candle_metrics,
         )
         return signal
 
@@ -293,13 +326,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
 
         max_distance = float(getattr(cfg, "M15_SR_MAX_DISTANCE_FROM_ZONE_ATR", 0.25))
         if relevant_zone is None and not breakout_confirmation:
-            context["reason"] = "M15_CONTEXT_BLOCK: direction not aligned"
             return context
         if relevant_zone and distance_atr is not None and distance_atr > max_distance and not breakout_confirmation:
             context["reason"] = "M15_CONTEXT_BLOCK: price too far from zone"
             return context
         if not (candle_confirmation or breakout_confirmation):
-            context["reason"] = "M15_CONTEXT_BLOCK: direction not aligned"
             return context
 
         context["allowed"] = True
@@ -313,6 +344,319 @@ class M15SupportResistanceStrategy(BaseStrategy):
             self._last_trade_candle_by_direction[direction] = candle_time
             day_key = date_str_ist(candle_time)
             self._daily_trade_counts[day_key] = self._daily_trade_counts.get(day_key, 0) + 1
+        signal_id = str(signal.get("_signal_id") or "")
+        if signal_id:
+            pending = self._pending_signals.pop(signal_id, None)
+            if pending:
+                zone_id = str(pending.get("zone_id") or "")
+                side = str(pending.get("side") or "")
+                self._pending_by_zone_side.pop((zone_id, side), None)
+        if str(signal.get("_signal_family") or "") == self.FAMILY_BOUNCE and str(signal.get("_session") or "") == "ASIAN":
+            session_key = self._session_key(candle_time or datetime.now(timezone.utc), "ASIAN")
+            self._asian_counter_bias_counts[session_key] = self._asian_counter_bias_counts.get(session_key, 0) + 1
+
+    def pre_send_revalidate(self, signal: Dict, data: Dict) -> Dict:
+        if str(signal.get("_strategy_name") or self.name) != self.name:
+            return {"allowed": True, "reason": "PRE_SEND_PASS"}
+
+        tick = data.get("tick") or {}
+        m15 = data.get("m15_df")
+        closed = self._closed_frame(m15.copy().reset_index(drop=True)) if m15 is not None and len(m15) >= 2 else None
+        now_utc = self._resolve_now(data, tick, closed or pd.DataFrame([{"datetime": signal.get("_decision_time")}]))
+        live_ctx = self._build_market_context(data, closed, now_utc) if closed is not None and len(closed) else self._build_market_context(data, pd.DataFrame(), now_utc)
+        decision_time = self._coerce_dt(signal.get("_decision_time")) or now_utc
+        age_seconds = max(0.0, (now_utc - decision_time).total_seconds())
+        ttl_seconds = int(signal.get("_ttl_seconds", getattr(cfg, "M15_SR_SIGNAL_TTL_SECONDS", 20)) or 20)
+        spread = float(tick.get("spread", 0.0) or 0.0)
+        planned_entry = float(signal.get("entry", 0.0) or 0.0)
+        planned_sl = float(signal.get("sl", 0.0) or 0.0)
+        planned_tp = float(signal.get("tp", 0.0) or 0.0)
+        atr_m15 = float(signal.get("_atr14", signal.get("indicators", {}).get("atr14_m15", 0.0)) or 0.0)
+        max_spread = float(signal.get("_max_spread", getattr(cfg, "M15_SR_MAX_SPREAD", 0.45)) or 0.45)
+        current_price = self._mid_price(tick)
+        drift_abs = abs(current_price - planned_entry)
+        drift_atr = drift_abs / max(atr_m15, 0.0001)
+        recalculated_rr = self._calculate_rr(
+            side=str(signal.get("signal") or ""),
+            entry=current_price,
+            sl=planned_sl,
+            tp=planned_tp,
+        )
+        side = str(signal.get("signal") or "").upper()
+        pressure_score = float((data.get("tick_pressure") or {}).get("pressure_score", 0.0) or 0.0)
+        pressure_bias = str((data.get("tick_pressure") or {}).get("directional_bias", "NEUTRAL") or "NEUTRAL").upper()
+        context_hash = str(signal.get("_context_hash") or "")
+        reason = ""
+
+        if age_seconds > ttl_seconds:
+            reason = "STALE_SIGNAL"
+        elif spread > max_spread:
+            reason = "SPREAD_TOO_HIGH_AT_SEND"
+        elif drift_atr > float(signal.get("_max_entry_drift_atr", getattr(cfg, "M15_SR_MAX_ENTRY_DRIFT_ATR", 0.10)) or 0.10):
+            reason = "ENTRY_PRICE_DRIFT_TOO_LARGE"
+        elif recalculated_rr < float(signal.get("_min_rr_required", 0.0) or 0.0):
+            reason = "RR_DEGRADED_BEFORE_SEND"
+        elif self._tick_pressure_flipped_against(side, pressure_score, pressure_bias):
+            reason = "TICK_PRESSURE_FLIPPED_BEFORE_SEND"
+        elif self.context_worsened(side, context_hash, live_ctx, signal=signal):
+            reason = "CONTEXT_WORSENED_BEFORE_SEND"
+        elif self.newer_no_signal_invalidated(self.name, str(signal.get("_zone_id") or ""), side, signal_id=str(signal.get("_signal_id") or "")):
+            reason = "SIGNAL_SUPERSEDED_BY_NEWER_NO_SIGNAL"
+
+        if reason:
+            self._log_pre_send_rejection(
+                signal=signal,
+                age_seconds=age_seconds,
+                current_price=current_price,
+                planned_entry=planned_entry,
+                drift_atr=drift_atr,
+                spread=spread,
+                recalculated_rr=recalculated_rr,
+                pressure_score=pressure_score,
+                pressure_bias=pressure_bias,
+                live_ctx=live_ctx,
+                reason=reason,
+                now_utc=now_utc,
+            )
+            return {"allowed": False, "reason": reason}
+        return {"allowed": True, "reason": "PRE_SEND_PASS"}
+
+    def newer_no_signal_invalidated(self, strategy_name: str, zone_id: str, side: str, signal_id: str = "") -> bool:
+        if strategy_name != self.name or not zone_id or not side:
+            return False
+        latest_id = self._pending_by_zone_side.get((zone_id, side))
+        if signal_id and latest_id and latest_id != signal_id:
+            latest = self._pending_signals.get(latest_id) or {}
+            return bool(latest.get("invalidated"))
+        pending = self._pending_signals.get(signal_id) if signal_id else None
+        return bool(pending and pending.get("invalidated"))
+
+    def context_worsened(self, side: str, context_hash: str, live_ctx: Dict, signal: Optional[Dict] = None) -> bool:
+        if not signal:
+            return False
+        old_class = str(signal.get("_context_classification") or "")
+        new_class = self.classify_buy_context(live_ctx) if side == "BUY" else self.classify_sell_context(live_ctx)
+        old_rank = self._classification_rank(old_class)
+        new_rank = self._classification_rank(new_class)
+        if new_rank > old_rank:
+            return True
+        old_bias = str(signal.get("_status_bias") or "")
+        new_bias = str(live_ctx.get("status_bias") or "")
+        if side == "BUY" and old_bias != "SHORT" and new_bias == "SHORT" and str(live_ctx.get("h1_direction") or "") != "UP":
+            return True
+        if side == "SELL" and old_bias != "LONG" and new_bias == "LONG" and str(live_ctx.get("h1_direction") or "") != "DOWN":
+            return True
+        new_hash = self._context_hash(live_ctx)
+        return bool(context_hash and new_hash != context_hash and new_rank >= old_rank and str(live_ctx.get("regime") or "") == "RANGING")
+
+    def evaluate_rejection_setup(
+        self,
+        direction: str,
+        zone: Dict,
+        candle: pd.Series,
+        tick: Dict,
+        atr_m15: float,
+        market_context: Dict,
+        opposite_zones: List[Dict],
+        closed: Optional[pd.DataFrame] = None,
+        sweep_context: Optional[Dict] = None,
+        now_utc: Optional[datetime] = None,
+    ) -> Dict:
+        direction = str(direction or "").upper()
+        now_utc = now_utc or datetime.now(timezone.utc)
+        tick_pressure = market_context.get("tick_pressure") or {}
+        tick_score = float(tick_pressure.get("pressure_score", 0.0) or 0.0)
+        tick_bias = str(tick_pressure.get("directional_bias", "NEUTRAL") or "NEUTRAL").upper()
+        session = str(market_context.get("session") or "UNKNOWN").upper()
+        candidate_class = self.classify_buy_context(market_context) if direction == "BUY" else self.classify_sell_context(market_context)
+        signal_family_candidate = self._signal_family_for_classification(candidate_class)
+        rejection_reasons: List[str] = []
+
+        if candidate_class == "BLOCK":
+            rejection_reasons.append(f"HTF_CONTEXT_BLOCKED_{direction}")
+            return self._no(" | ".join(rejection_reasons))
+
+        if candidate_class == "TREND_ALIGNED":
+            if direction == "BUY":
+                if not self.buy_candle_quality_normal(candle, zone, atr_m15):
+                    rejection_reasons.append("WEAK_BUY_REJECTION_CANDLE")
+                if tick_score < float(getattr(cfg, "M15_SR_TICK_MIN_TREND_ALIGNED", -0.10)):
+                    rejection_reasons.append("TICK_PRESSURE_AGAINST_BUY")
+            else:
+                if not self.sell_candle_quality_normal(candle, zone, atr_m15):
+                    rejection_reasons.append("WEAK_SELL_REJECTION_CANDLE")
+                if tick_score > 0.10:
+                    rejection_reasons.append("TICK_PRESSURE_AGAINST_SELL")
+
+        elif candidate_class == "MEAN_REVERSION_BOUNCE_ONLY":
+            min_touches = int(getattr(cfg, "M15_SR_ASIAN_COUNTER_BIAS_MIN_TOUCHES", 3) if session == "ASIAN" else 3)
+            min_tick = float(
+                getattr(cfg, "M15_SR_TICK_MIN_ASIAN_COUNTER_BIAS_BOUNCE", 0.35)
+                if session == "ASIAN"
+                else getattr(cfg, "M15_SR_TICK_MIN_COUNTER_BIAS_BOUNCE", 0.30)
+            )
+            if int(zone.get("touches", 0) or 0) < min_touches:
+                rejection_reasons.append(
+                    "COUNTER_BIAS_SUPPORT_NOT_STRONG_ENOUGH" if direction == "BUY" else "COUNTER_BIAS_RESISTANCE_NOT_STRONG_ENOUGH"
+                )
+            if direction == "BUY":
+                if bool(getattr(cfg, "M15_SR_BLOCK_COUNTER_BIAS_BUY_IF_TICK_NEGATIVE", True)) and tick_score < 0:
+                    rejection_reasons.append("COUNTER_BIAS_BUY_TICK_NEGATIVE")
+                if tick_bias == "SHORT":
+                    rejection_reasons.append("COUNTER_BIAS_BUY_TICK_BIAS_SHORT")
+                if tick_score < min_tick or tick_bias != "LONG":
+                    rejection_reasons.append("COUNTER_BIAS_BUY_NEEDS_STRONG_LONG_TICK_PRESSURE")
+                if not self.buy_candle_quality_counter_bias(candle, zone, atr_m15):
+                    rejection_reasons.append("COUNTER_BIAS_BUY_CANDLE_NOT_A_PLUS")
+                if session == "ASIAN" and self._asian_counter_bias_trade_count(now_utc) >= int(getattr(cfg, "M15_SR_ASIAN_COUNTER_BIAS_MAX_TRADES_PER_SESSION", 1)):
+                    rejection_reasons.append("ASIAN_COUNTER_BIAS_TRADE_LIMIT_REACHED")
+            else:
+                if bool(getattr(cfg, "M15_SR_BLOCK_COUNTER_BIAS_SELL_IF_TICK_POSITIVE", True)) and tick_score > 0:
+                    rejection_reasons.append("COUNTER_BIAS_SELL_TICK_POSITIVE")
+                if tick_bias == "LONG":
+                    rejection_reasons.append("COUNTER_BIAS_SELL_TICK_BIAS_LONG")
+                if tick_score > -min_tick or tick_bias != "SHORT":
+                    rejection_reasons.append("COUNTER_BIAS_SELL_NEEDS_STRONG_SHORT_TICK_PRESSURE")
+                if not self.sell_candle_quality_counter_bias(candle, zone, atr_m15):
+                    rejection_reasons.append("COUNTER_BIAS_SELL_CANDLE_NOT_A_PLUS")
+                if session == "ASIAN" and self._asian_counter_bias_trade_count(now_utc) >= int(getattr(cfg, "M15_SR_ASIAN_COUNTER_BIAS_MAX_TRADES_PER_SESSION", 1)):
+                    rejection_reasons.append("ASIAN_COUNTER_BIAS_TRADE_LIMIT_REACHED")
+
+        elif candidate_class == "TRUE_REVERSAL_REQUIRED":
+            if direction == "BUY":
+                if str(market_context.get("h1_direction") or "") == "DOWN" and bool(getattr(cfg, "M15_SR_REQUIRE_TRUE_REVERSAL_FOR_H1_OPPOSITE", True)):
+                    rejection_reasons.append("TRUE_REVERSAL_H1_STILL_BEARISH")
+                if not self.bullish_m15_structure_shift_confirmed(market_context):
+                    rejection_reasons.append("NO_BULLISH_STRUCTURE_SHIFT")
+                if tick_score < float(getattr(cfg, "M15_SR_TICK_MIN_TRUE_REVERSAL", 0.40)) or tick_bias != "LONG":
+                    rejection_reasons.append("TRUE_REVERSAL_NEEDS_STRONG_LONG_TICK_PRESSURE")
+                if not self.buy_candle_quality_true_reversal(candle, zone, atr_m15):
+                    rejection_reasons.append("TRUE_REVERSAL_BUY_CANDLE_NOT_STRONG_ENOUGH")
+                if not self.price_reclaimed_ema20_or_vwap(direction, candle, market_context):
+                    rejection_reasons.append("NO_EMA20_OR_VWAP_RECLAIM")
+                if not self.higher_low_confirmed(closed):
+                    rejection_reasons.append("NO_HIGHER_LOW_CONFIRMED")
+            else:
+                if str(market_context.get("h1_direction") or "") == "UP" and bool(getattr(cfg, "M15_SR_REQUIRE_TRUE_REVERSAL_FOR_H1_OPPOSITE", True)):
+                    rejection_reasons.append("TRUE_REVERSAL_H1_STILL_BULLISH")
+                if not self.bearish_m15_structure_shift_confirmed(market_context):
+                    rejection_reasons.append("NO_BEARISH_STRUCTURE_SHIFT")
+                if tick_score > -float(getattr(cfg, "M15_SR_TICK_MIN_TRUE_REVERSAL", 0.40)) or tick_bias != "SHORT":
+                    rejection_reasons.append("TRUE_REVERSAL_NEEDS_STRONG_SHORT_TICK_PRESSURE")
+                if not self.sell_candle_quality_true_reversal(candle, zone, atr_m15):
+                    rejection_reasons.append("TRUE_REVERSAL_SELL_CANDLE_NOT_STRONG_ENOUGH")
+                if not self.price_reclaimed_ema20_or_vwap(direction, candle, market_context):
+                    rejection_reasons.append("NO_EMA20_OR_VWAP_LOSS")
+                if not self.lower_high_confirmed(closed):
+                    rejection_reasons.append("NO_LOWER_HIGH_CONFIRMED")
+
+        if rejection_reasons:
+            return self._rejected_setup_payload(
+                direction=direction,
+                zone=zone,
+                candle=candle,
+                atr_m15=atr_m15,
+                market_context=market_context,
+                reason=" | ".join(rejection_reasons),
+                signal_family_candidate=signal_family_candidate,
+                rejection_reasons=rejection_reasons,
+                intended_execution_time=now_utc,
+            )
+
+        plan = self._build_trade_plan(
+            direction=direction,
+            zone=zone,
+            opposite_zones=opposite_zones,
+            tick=tick,
+            atr_m15=atr_m15,
+            sweep_context=sweep_context,
+            signal_family=signal_family_candidate,
+            market_context=market_context,
+            closed=closed,
+        )
+        if plan is None:
+            return self._rejected_setup_payload(
+                direction=direction,
+                zone=zone,
+                candle=candle,
+                atr_m15=atr_m15,
+                market_context=market_context,
+                reason="Poor RR: no valid M15 SR trade plan",
+                signal_family_candidate=signal_family_candidate,
+                rejection_reasons=["NO_VALID_M15_SR_TRADE_PLAN"],
+                intended_execution_time=now_utc,
+            )
+
+        confidence = self._confidence_score(zone, candle, plan, signal_family_candidate)
+        signal_id = self._make_signal_id(direction, zone, now_utc)
+        context_hash = self._context_hash(market_context)
+        ttl_seconds = int(
+            getattr(cfg, "M15_SR_COUNTER_BIAS_SIGNAL_TTL_SECONDS", 10)
+            if signal_family_candidate == self.FAMILY_BOUNCE
+            else getattr(cfg, "M15_SR_SIGNAL_TTL_SECONDS", 20)
+        )
+        signal = {
+            "signal": direction,
+            "entry": plan["entry"],
+            "sl": plan["sl"],
+            "tp": plan["tp"],
+            "sl_distance": plan["sl_distance"],
+            "rr": plan["rr"],
+            "confidence": confidence,
+            "reason": f"{direction} rejection from {zone['zone_id']} | touches {zone['touches']} | RR {plan['rr']:.2f}",
+            "indicators": {
+                "atr14_m15": round(atr_m15, 4),
+                "spread": round(float(tick.get("spread", 0.0) or 0.0), 4),
+            },
+            "_active_zone": zone,
+            "_signal_candle_time": candle["datetime"].isoformat(),
+            "_comment": f"FT_{self._POSITION_TAG}_{zone['zone_id'][:8]}",
+            "_setup_direction": "LONG" if direction == "BUY" else "SHORT",
+            "_quality_score": confidence,
+            "_threshold": 0.55,
+            "_signal_family": signal_family_candidate,
+            "_m15_signal_class": signal_family_candidate,
+            "_sweep_confirmed": bool(plan.get("_sweep_reclaim")),
+            "_candle_confirmation": True,
+            "_exit_profile": self.select_exit_profile_for_signal_family(signal_family_candidate, market_context),
+            "_entry_spread": float(tick.get("spread", 0.0) or 0.0),
+            "_entry_tick_pressure_score": float((market_context.get("tick_pressure") or {}).get("pressure_score", 0.0) or 0.0),
+            "_entry_tick_pressure_bias": str((market_context.get("tick_pressure") or {}).get("directional_bias", "NEUTRAL") or "NEUTRAL"),
+            "_be_trigger": 0.30,
+            "_be_trigger_r": self._breakeven_trigger_r(signal_family_candidate),
+            "_timeout": self._timeout_seconds(signal_family_candidate),
+            "_timeout_min_progress_r": self._timeout_min_progress(signal_family_candidate),
+            "_min_hold_seconds": self._min_hold_seconds(signal_family_candidate),
+            "_early_fail": max(0.12, round(atr_m15 * (0.15 if signal_family_candidate == self.FAMILY_BOUNCE else 0.20), 3)),
+            "_tier1_min_ticks": cfg.SMC_TIER1_MIN_TICKS,
+            "_tier1_max_ticks": cfg.SMC_TIER1_MAX_TICKS,
+            "_reversal_arm_r": self._reversal_arm_r(signal_family_candidate),
+            "_reversal_drawdown_pct": self._reversal_drawdown_pct(signal_family_candidate),
+            "_reversal_floor_r": self._reversal_floor_r(signal_family_candidate),
+            "_trail_activate_r": self._trail_activate_r(signal_family_candidate),
+            "_trail_lock_r": self._trail_lock_r(signal_family_candidate),
+            "_velocity_drop_enabled": self._velocity_drop_enabled(signal_family_candidate),
+            "_signal_id": signal_id,
+            "_zone_id": zone["zone_id"],
+            "_decision_time": now_utc.isoformat(),
+            "_decision_bar_time": candle["datetime"].isoformat(),
+            "_planned_entry": plan["entry"],
+            "_planned_sl": plan["sl"],
+            "_planned_tp": plan["tp"],
+            "_atr14": round(atr_m15, 4),
+            "_context_hash": context_hash,
+            "_ttl_seconds": ttl_seconds,
+            "_max_entry_drift_atr": float(getattr(cfg, "M15_SR_MAX_ENTRY_DRIFT_ATR", 0.10) or 0.10),
+            "_min_rr_required": float(plan.get("_min_rr_required", 0.0) or 0.0),
+            "_max_spread": float(getattr(cfg, "M15_SR_MAX_SPREAD", 0.45) or 0.45),
+            "_context_classification": candidate_class,
+            "_status_bias": market_context.get("status_bias"),
+            "_session": session,
+            "_regime": market_context.get("regime"),
+            "_htf_macro_support": market_context.get("macro_support_status", "UNKNOWN"),
+        }
+        signal.update(plan)
+        return signal
 
     def _evaluate_directional_setup(
         self,
@@ -329,9 +673,13 @@ class M15SupportResistanceStrategy(BaseStrategy):
         nearest_support: Optional[Dict],
         nearest_resistance: Optional[Dict],
         tick_pressure: Optional[Dict] = None,
+        market_context: Optional[Dict] = None,
     ) -> Dict:
         confirmation_candle = closed.iloc[-1]
         confirmation = self._candle_snapshot(confirmation_candle)
+        candle_metrics = self.candle_metrics(confirmation_candle)
+        market_context = dict(market_context or {})
+        market_context["tick_pressure"] = tick_pressure or {}
         block_reason = self._zone_quality_issue(active_zone)
         if block_reason:
             filter_results["zone_quality"] = {"passed": False, "reason": block_reason}
@@ -350,6 +698,14 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 block_category="manipulation",
                 lookback_used=active_zone.get("lookback_hours"),
                 terminal=True,
+                market_context=market_context,
+                candle_metrics=candle_metrics,
+                signal_family_candidate=self._signal_family_for_classification(
+                    self.classify_buy_context(market_context) if direction == "BUY" else self.classify_sell_context(market_context)
+                ),
+                zone_id=str(active_zone.get("zone_id") or ""),
+                side=direction,
+                invalidate_pending=True,
             )
 
         if self._has_open_direction_position(positions, direction):
@@ -368,6 +724,8 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 block_category="risk",
                 lookback_used=active_zone.get("lookback_hours"),
                 terminal=True,
+                market_context=market_context,
+                candle_metrics=candle_metrics,
             )
 
         if self._has_open_zone_position(positions, active_zone):
@@ -386,6 +744,8 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 block_category="risk",
                 lookback_used=active_zone.get("lookback_hours"),
                 terminal=True,
+                market_context=market_context,
+                candle_metrics=candle_metrics,
             )
 
         cooldown_reason = self._cooldown_reason(direction, confirmation_candle["datetime"])
@@ -405,6 +765,8 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 block_category="cooldown",
                 lookback_used=active_zone.get("lookback_hours"),
                 terminal=True,
+                market_context=market_context,
+                candle_metrics=candle_metrics,
             )
 
         if self._is_choppy_market(closed, nearest_support, nearest_resistance):
@@ -427,15 +789,60 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 block_category="manipulation",
                 lookback_used=active_zone.get("lookback_hours"),
                 terminal=True,
+                market_context=market_context,
+                candle_metrics=candle_metrics,
+                zone_id=str(active_zone.get("zone_id") or ""),
+                side=direction,
+                invalidate_pending=True,
             )
 
         sweep_context = self._recent_sweep_context(closed, active_zone, atr_m15, direction)
 
         if direction == "BUY":
             if not self._price_near_zone(current_price, active_zone):
-                return self._no("Support zone not near price")
+                return self._skip(
+                    reason="Support zone not near price",
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="setup",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
             if self._recent_close_break(active_zone, closed, atr_m15, below=True):
-                return self._no("Support recently broken")
+                return self._skip(
+                    reason="Support recently broken",
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="setup",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
             if self._strong_momentum_against_trade(closed, "BUY"):
                 return self._skip(
                     reason="Momentum against BUY: last 2 M15 closes strongly bearish near lows",
@@ -452,6 +859,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
                     block_category="manipulation",
                     lookback_used=active_zone.get("lookback_hours"),
                     terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
                 )
             if self._is_fake_breakout_candle(confirmation_candle, active_zone, atr_m15, "BUY"):
                 return self._skip(
@@ -469,40 +881,124 @@ class M15SupportResistanceStrategy(BaseStrategy):
                     block_category="manipulation",
                     lookback_used=active_zone.get("lookback_hours"),
                     terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
                 )
             if sweep_context and not sweep_context.get("valid_overshoot", False):
-                return self._no("Support sweep was too deep to treat as a clean reclaim")
+                return self._skip(
+                    reason="Support sweep was too deep to treat as a clean reclaim",
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="manipulation",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
             if sweep_context and not sweep_context.get("reclaimed", False):
-                return self._no("Support sweep did not reclaim the zone")
+                return self._skip(
+                    reason="Support sweep did not reclaim the zone",
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="manipulation",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
             if sweep_context and not self._is_buy_rejection(confirmation_candle, active_zone):
-                if int(sweep_context.get("bars_ago", 0)) == 0:
-                    return self._skip(
-                        reason="Awaiting strong bullish reclaim after support sweep",
-                        price=current_price,
-                        atr_m15=atr_m15,
-                        support_zones=[nearest_support] if nearest_support else [],
-                        resistance_zones=[nearest_resistance] if nearest_resistance else [],
-                        active_zone=self._zone_payload(active_zone),
-                        zone_touch_count=active_zone.get("touches"),
-                        entry_direction=direction,
-                        confirmation=confirmation,
-                        filter_results={**filter_results, "manipulation": {"passed": False, "reason": "Weak reclaim after support sweep"}},
-                        now_utc=now_utc,
-                        block_category="manipulation",
-                        lookback_used=active_zone.get("lookback_hours"),
-                        terminal=True,
-                    )
-                return self._no("Post-sweep candle did not confirm BUY")
-            if cfg.M15_SR_REQUIRE_CANDLE_CONFIRMATION and not sweep_context and not self._is_buy_rejection(confirmation_candle, active_zone):
-                return self._no("No bullish rejection at support")
-            if cfg.M15_SR_REQUIRE_CANDLE_CONFIRMATION and self._prior_candle_was_fake_breakout(closed, active_zone, atr_m15, "BUY"):
-                if not self._is_buy_rejection(confirmation_candle, active_zone):
-                    return self._no("Post-sweep candle did not confirm BUY")
+                sweep_reason = "Awaiting strong bullish reclaim after support sweep" if int(sweep_context.get("bars_ago", 0)) == 0 else "Post-sweep candle did not confirm BUY"
+                return self._skip(
+                    reason=sweep_reason,
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="manipulation",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
         else:
             if not self._price_near_zone(current_price, active_zone):
-                return self._no("Resistance zone not near price")
+                return self._skip(
+                    reason="Resistance zone not near price",
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="setup",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
             if self._recent_close_break(active_zone, closed, atr_m15, below=False):
-                return self._no("Resistance recently broken")
+                return self._skip(
+                    reason="Resistance recently broken",
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="setup",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
             if self._strong_momentum_against_trade(closed, "SELL"):
                 return self._skip(
                     reason="Momentum against SELL: last 2 M15 closes strongly bullish near highs",
@@ -519,6 +1015,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
                     block_category="manipulation",
                     lookback_used=active_zone.get("lookback_hours"),
                     terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
                 )
             if self._is_fake_breakout_candle(confirmation_candle, active_zone, atr_m15, "SELL"):
                 return self._skip(
@@ -536,131 +1037,118 @@ class M15SupportResistanceStrategy(BaseStrategy):
                     block_category="manipulation",
                     lookback_used=active_zone.get("lookback_hours"),
                     terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
                 )
             if sweep_context and not sweep_context.get("valid_overshoot", False):
-                return self._no("Resistance sweep was too deep to treat as a clean reclaim")
+                return self._skip(
+                    reason="Resistance sweep was too deep to treat as a clean reclaim",
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="manipulation",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
             if sweep_context and not sweep_context.get("reclaimed", False):
-                return self._no("Resistance sweep did not reclaim the zone")
+                return self._skip(
+                    reason="Resistance sweep did not reclaim the zone",
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="manipulation",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
             if sweep_context and not self._is_sell_rejection(confirmation_candle, active_zone):
-                if int(sweep_context.get("bars_ago", 0)) == 0:
-                    return self._skip(
-                        reason="Awaiting strong bearish reclaim after resistance sweep",
-                        price=current_price,
-                        atr_m15=atr_m15,
-                        support_zones=[nearest_support] if nearest_support else [],
-                        resistance_zones=[nearest_resistance] if nearest_resistance else [],
-                        active_zone=self._zone_payload(active_zone),
-                        zone_touch_count=active_zone.get("touches"),
-                        entry_direction=direction,
-                        confirmation=confirmation,
-                        filter_results={**filter_results, "manipulation": {"passed": False, "reason": "Weak reclaim after resistance sweep"}},
-                        now_utc=now_utc,
-                        block_category="manipulation",
-                        lookback_used=active_zone.get("lookback_hours"),
-                        terminal=True,
-                    )
-                return self._no("Post-sweep candle did not confirm SELL")
-            if cfg.M15_SR_REQUIRE_CANDLE_CONFIRMATION and not sweep_context and not self._is_sell_rejection(confirmation_candle, active_zone):
-                return self._no("No bearish rejection at resistance")
-            if cfg.M15_SR_REQUIRE_CANDLE_CONFIRMATION and self._prior_candle_was_fake_breakout(closed, active_zone, atr_m15, "SELL"):
-                if not self._is_sell_rejection(confirmation_candle, active_zone):
-                    return self._no("Post-sweep candle did not confirm SELL")
+                sweep_reason = "Awaiting strong bearish reclaim after resistance sweep" if int(sweep_context.get("bars_ago", 0)) == 0 else "Post-sweep candle did not confirm SELL"
+                return self._skip(
+                    reason=sweep_reason,
+                    price=current_price,
+                    atr_m15=atr_m15,
+                    support_zones=[nearest_support] if nearest_support else [],
+                    resistance_zones=[nearest_resistance] if nearest_resistance else [],
+                    active_zone=self._zone_payload(active_zone),
+                    zone_touch_count=active_zone.get("touches"),
+                    entry_direction=direction,
+                    confirmation=confirmation,
+                    filter_results=filter_results,
+                    now_utc=now_utc,
+                    block_category="manipulation",
+                    lookback_used=active_zone.get("lookback_hours"),
+                    terminal=True,
+                    market_context=market_context,
+                    candle_metrics=candle_metrics,
+                    zone_id=str(active_zone.get("zone_id") or ""),
+                    side=direction,
+                    invalidate_pending=True,
+                )
 
-        plan = self._build_trade_plan(
+        outcome = self.evaluate_rejection_setup(
             direction=direction,
             zone=active_zone,
-            opposite_zones=opposite_zones,
+            candle=confirmation_candle,
             tick=tick,
             atr_m15=atr_m15,
+            market_context=market_context,
+            opposite_zones=opposite_zones,
+            closed=closed,
             sweep_context=sweep_context,
+            now_utc=now_utc,
         )
-        if plan is None:
-            return self._skip(
-                reason="Poor RR: no valid M15 SR trade plan",
-                price=current_price,
-                atr_m15=atr_m15,
-                support_zones=[nearest_support] if nearest_support else [],
-                resistance_zones=[nearest_resistance] if nearest_resistance else [],
-                active_zone=self._zone_payload(active_zone),
-                zone_touch_count=active_zone.get("touches"),
-                entry_direction=direction,
-                confirmation=confirmation,
-                filter_results=filter_results,
-                now_utc=now_utc,
-                block_category="poor_rr",
-                lookback_used=active_zone.get("lookback_hours"),
-                terminal=True,
-            )
-
-        confidence = self._confidence_score(active_zone, confirmation_candle, plan)
-        tick_pressure = tick_pressure or {}
-        pressure_reason = entry_pressure_block_reason(
-            direction,
-            tick_pressure,
-            strong_threshold=float(getattr(cfg, "TICK_PRESSURE_ENTRY_BLOCK_THRESHOLD", 0.35) or 0.35),
-            short_positive_veto_threshold=float(getattr(cfg, "TICK_PRESSURE_SHORT_ENTRY_VETO_THRESHOLD", 0.05) or 0.05),
+        if outcome.get("signal") in {"BUY", "SELL"}:
+            return outcome
+        return self._skip(
+            reason=str(outcome.get("reason") or "No valid M15 SR trade plan"),
+            price=current_price,
+            atr_m15=atr_m15,
+            support_zones=[nearest_support] if nearest_support else [],
+            resistance_zones=[nearest_resistance] if nearest_resistance else [],
+            active_zone=self._zone_payload(active_zone),
+            zone_touch_count=active_zone.get("touches"),
+            entry_direction=direction,
+            confirmation=confirmation,
+            filter_results=filter_results,
+            now_utc=now_utc,
+            block_category="setup",
+            lookback_used=active_zone.get("lookback_hours"),
+            terminal=True,
+            market_context=market_context,
+            candle_metrics=candle_metrics,
+            signal_family_candidate=str(outcome.get("_signal_family_candidate") or ""),
+            rejection_reasons=outcome.get("_rejection_reasons"),
+            zone_id=str(active_zone.get("zone_id") or ""),
+            side=direction,
+            invalidate_pending=True,
+            intended_execution_time=now_utc,
         )
-        if pressure_reason:
-            filter_results["tick_pressure"] = {"passed": False, "reason": pressure_reason}
-            return self._skip(
-                reason=pressure_reason,
-                price=current_price,
-                atr_m15=atr_m15,
-                support_zones=[nearest_support] if nearest_support else [],
-                resistance_zones=[nearest_resistance] if nearest_resistance else [],
-                active_zone=self._zone_payload(active_zone),
-                zone_touch_count=active_zone.get("touches"),
-                entry_direction=direction,
-                confirmation=confirmation,
-                filter_results=filter_results,
-                now_utc=now_utc,
-                block_category="tick_pressure",
-                lookback_used=active_zone.get("lookback_hours"),
-                terminal=True,
-            )
-        signal = {
-            "signal": direction,
-            "entry": plan["entry"],
-            "sl": plan["sl"],
-            "tp": plan["tp"],
-            "sl_distance": plan["sl_distance"],
-            "rr": plan["rr"],
-            "confidence": confidence,
-            "reason": f"{direction} rejection from {active_zone['zone_id']} | touches {active_zone['touches']} | RR {plan['rr']:.2f}",
-            "indicators": {
-                "atr14_m15": round(atr_m15, 4),
-                "spread": round(float(tick.get("spread", 0.0) or 0.0), 4),
-            },
-            "_active_zone": active_zone,
-            "_signal_candle_time": confirmation_candle["datetime"].isoformat(),
-            "_comment": f"FT_{self._POSITION_TAG}_{active_zone['zone_id'][:8]}",
-            "_setup_direction": "LONG" if direction == "BUY" else "SHORT",
-            "_quality_score": confidence,
-            "_threshold": 0.55,
-            "_signal_family": "M15",
-            "_sweep_confirmed": bool(plan.get("_sweep_reclaim")),
-            "_candle_confirmation": True,
-            "_exit_profile": "swing_structured",
-            "_entry_spread": float(tick.get("spread", 0.0) or 0.0),
-            "_entry_tick_pressure_score": float(tick_pressure.get("pressure_score", 0.0) or 0.0),
-            "_entry_tick_pressure_bias": str(tick_pressure.get("directional_bias", "NEUTRAL") or "NEUTRAL"),
-            "_be_trigger": 0.30,
-            "_be_trigger_r": cfg.EXIT_PROFILE_M15_BE_TRIGGER_R,
-            "_timeout": 300,
-            "_timeout_min_progress_r": cfg.EXIT_PROFILE_M15_TIMEOUT_MIN_PROGRESS_R,
-            "_min_hold_seconds": cfg.EXIT_PROFILE_M15_MIN_HOLD_SECONDS,
-            "_early_fail": max(0.15, round(atr_m15 * 0.20, 3)),
-            "_tier1_min_ticks": cfg.SMC_TIER1_MIN_TICKS,
-            "_tier1_max_ticks": cfg.SMC_TIER1_MAX_TICKS,
-            "_reversal_arm_r": cfg.EXIT_PROFILE_M15_REVERSAL_ARM_R,
-            "_reversal_drawdown_pct": cfg.EXIT_PROFILE_M15_REVERSAL_DRAWDOWN_PCT,
-            "_reversal_floor_r": cfg.EXIT_PROFILE_M15_REVERSAL_FLOOR_R,
-            "_trail_activate_r": cfg.EXIT_PROFILE_M15_TRAIL_ACTIVATE_R,
-            "_trail_lock_r": cfg.EXIT_PROFILE_M15_TRAIL_LOCK_R,
-            "_velocity_drop_enabled": cfg.EXIT_PROFILE_M15_VELOCITY_DROP_ENABLED,
-        }
-        signal.update(plan)
-        return signal
 
     def _detect_nearby_zones(
         self,
@@ -777,6 +1265,9 @@ class M15SupportResistanceStrategy(BaseStrategy):
         tick: Dict,
         atr_m15: float,
         sweep_context: Optional[Dict] = None,
+        signal_family: str = "",
+        market_context: Optional[Dict] = None,
+        closed: Optional[pd.DataFrame] = None,
     ) -> Optional[Dict]:
         entry = round(float(tick["ask"] if direction == "BUY" else tick["bid"]), 2)
         if direction == "BUY":
@@ -786,7 +1277,6 @@ class M15SupportResistanceStrategy(BaseStrategy):
             sl = round(sl_anchor - atr_m15 * float(cfg.M15_SR_SL_BUFFER_ATR), 2)
             risk = entry - sl
             preferred = next((z for z in opposite_zones if z["zone_mid"] > entry), None)
-            preferred_tp = round(float(preferred["zone_mid"]), 2) if preferred else None
         else:
             sl_anchor = float(zone["zone_high"])
             if sweep_context and sweep_context.get("direction") == "SELL":
@@ -794,29 +1284,46 @@ class M15SupportResistanceStrategy(BaseStrategy):
             sl = round(sl_anchor + atr_m15 * float(cfg.M15_SR_SL_BUFFER_ATR), 2)
             risk = sl - entry
             preferred = next((z for z in opposite_zones if z["zone_mid"] < entry), None)
-            preferred_tp = round(float(preferred["zone_mid"]), 2) if preferred else None
 
         if risk <= 0:
             return None
 
-        tp = preferred_tp
-        rr = 0.0
         target_source = "fixed_rr"
-        if tp is not None:
-            reward = (tp - entry) if direction == "BUY" else (entry - tp)
-            rr = reward / risk if risk > 0 else 0.0
-            if rr >= float(cfg.M15_SR_MIN_RR):
-                target_source = "opposite_zone"
-            else:
-                tp = None
+        min_rr = 1.40 if not signal_family else float(getattr(cfg, "M15_SR_NORMAL_MIN_RR", 1.5))
+        max_rr_allowed: Optional[float] = None
+        if signal_family == self.FAMILY_BOUNCE:
+            min_rr = float(getattr(cfg, "M15_SR_BOUNCE_MIN_RR", 0.8))
+            max_rr_allowed = float(getattr(cfg, "M15_SR_BOUNCE_MAX_RR", 1.2))
+        elif signal_family == self.FAMILY_TRUE_REVERSAL:
+            min_rr = float(getattr(cfg, "M15_SR_TRUE_REVERSAL_MIN_RR", 1.8))
+
+        tp = None
+        obstacle = None
+        if signal_family == self.FAMILY_BOUNCE:
+            obstacle = self._mean_reversion_target(direction, entry, risk, preferred, market_context or {}, closed)
+            if obstacle is not None:
+                tp = round(float(obstacle), 2)
+                target_source = "nearest_obstacle"
+        elif preferred is not None:
+            tp = round(float(preferred["zone_mid"]), 2)
+            target_source = "opposite_zone"
 
         if tp is None:
-            rr = float(cfg.M15_SR_DEFAULT_RR)
-            tp = round(entry + (risk * rr), 2) if direction == "BUY" else round(entry - (risk * rr), 2)
+            default_rr = float(cfg.M15_SR_DEFAULT_RR)
+            if max_rr_allowed is not None:
+                default_rr = min(default_rr, max_rr_allowed)
+            if signal_family == self.FAMILY_TRUE_REVERSAL:
+                default_rr = max(default_rr, min_rr)
+            tp = round(entry + (risk * default_rr), 2) if direction == "BUY" else round(entry - (risk * default_rr), 2)
 
         reward = (tp - entry) if direction == "BUY" else (entry - tp)
         rr = reward / risk if risk > 0 else 0.0
-        if rr < float(cfg.M15_SR_MIN_RR):
+        if max_rr_allowed is not None and rr > max_rr_allowed:
+            tp = round(entry + (risk * max_rr_allowed), 2) if direction == "BUY" else round(entry - (risk * max_rr_allowed), 2)
+            reward = (tp - entry) if direction == "BUY" else (entry - tp)
+            rr = reward / risk if risk > 0 else 0.0
+            target_source = "capped_bounce_rr"
+        if rr < min_rr:
             return None
 
         return {
@@ -830,6 +1337,9 @@ class M15SupportResistanceStrategy(BaseStrategy):
             "_sl_anchor": round(sl_anchor, 2),
             "_sweep_reclaim": bool(sweep_context),
             "_sweep_extreme": round(float(sweep_context["extreme"]), 2) if sweep_context and sweep_context.get("extreme") is not None else None,
+            "_obstacle_target": round(float(obstacle), 2) if obstacle is not None else None,
+            "_min_rr_required": round(min_rr, 2),
+            "_max_rr_allowed": round(max_rr_allowed, 2) if max_rr_allowed is not None else None,
         }
 
     def _check_spread_filter(self, tick: Dict, tick_snap: Dict) -> Tuple[bool, str]:
@@ -970,7 +1480,6 @@ class M15SupportResistanceStrategy(BaseStrategy):
         recent = closed.tail(3).reset_index(drop=True)
         support_touch_indices = {idx for idx, row in recent.iterrows() if self._candle_touches_zone(row, support_zone)}
         resistance_touch_indices = {idx for idx, row in recent.iterrows() if self._candle_touches_zone(row, resistance_zone)}
-        # Only choppy if touches occur on different candles (not a single wide-range candle spanning both zones)
         return bool(support_touch_indices and resistance_touch_indices and support_touch_indices != resistance_touch_indices)
 
     def _strong_momentum_against_trade(self, closed: pd.DataFrame, direction: str) -> bool:
@@ -1030,6 +1539,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
         signal_data: Optional[Dict] = None,
         block_category: Optional[str] = None,
         lookback_used: Optional[int] = None,
+        market_context: Optional[Dict] = None,
+        candle_metrics: Optional[Dict] = None,
+        signal_family_candidate: Optional[str] = None,
+        rejection_reasons: Optional[List[str]] = None,
+        intended_execution_time: Optional[datetime] = None,
     ):
         additional = {
             "_sim_now": now_utc,
@@ -1044,6 +1558,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
             "filter_results": filter_results or {},
             "block_category": block_category,
             "lookback_hours_used": lookback_used,
+            "signal_family_candidate": signal_family_candidate,
+            "rejection_reasons": rejection_reasons or [],
+            "candle_metrics": candle_metrics or {},
+            "market_context": market_context or {},
+            "intended_execution_time": intended_execution_time.isoformat() if hasattr(intended_execution_time, "isoformat") else intended_execution_time,
         }
         if signal_data:
             additional["signal_data"] = {
@@ -1053,6 +1572,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 "rr": signal_data.get("rr"),
                 "lot_size": signal_data.get("lot_size"),
                 "zone_id": (signal_data.get("_active_zone") or {}).get("zone_id"),
+                "signal_family": signal_data.get("_signal_family"),
+                "exit_profile": signal_data.get("_exit_profile"),
+                "ttl_seconds": signal_data.get("_ttl_seconds"),
+                "context_hash": signal_data.get("_context_hash"),
+                "trend_classification": signal_data.get("_context_classification"),
             }
         log_decision(
             strategy=self.name,
@@ -1086,7 +1610,17 @@ class M15SupportResistanceStrategy(BaseStrategy):
         block_category: Optional[str] = None,
         lookback_used: Optional[int] = None,
         terminal: bool = False,
+        market_context: Optional[Dict] = None,
+        candle_metrics: Optional[Dict] = None,
+        signal_family_candidate: Optional[str] = None,
+        rejection_reasons: Optional[List[str]] = None,
+        zone_id: str = "",
+        side: str = "",
+        invalidate_pending: bool = False,
+        intended_execution_time: Optional[datetime] = None,
     ) -> Dict:
+        if invalidate_pending and zone_id and side:
+            self._invalidate_pending_for_zone(zone_id, side, reason, now_utc or datetime.now(timezone.utc))
         self._log_decision(
             decision="TRADE_SKIPPED",
             reason=reason,
@@ -1102,11 +1636,195 @@ class M15SupportResistanceStrategy(BaseStrategy):
             now_utc=now_utc,
             block_category=block_category,
             lookback_used=lookback_used,
+            market_context=market_context,
+            candle_metrics=candle_metrics,
+            signal_family_candidate=signal_family_candidate,
+            rejection_reasons=rejection_reasons,
+            intended_execution_time=intended_execution_time,
         )
         payload = self._no(reason)
+        payload["_signal_family_candidate"] = signal_family_candidate
+        payload["_rejection_reasons"] = rejection_reasons or []
         if terminal:
             payload["_terminal"] = True
         return payload
+
+    @staticmethod
+    def candle_metrics(candle: pd.Series) -> Optional[Dict[str, float]]:
+        high = float(candle["high"])
+        low = float(candle["low"])
+        open_px = float(candle["open"])
+        close_px = float(candle["close"])
+        candle_range = high - low
+        if candle_range <= 0:
+            return None
+        body = abs(close_px - open_px)
+        lower_wick = min(open_px, close_px) - low
+        upper_wick = high - max(open_px, close_px)
+        close_pos = (close_px - low) / candle_range
+        return {
+            "range": candle_range,
+            "body": body,
+            "lower_wick": lower_wick,
+            "upper_wick": upper_wick,
+            "close_pos": close_pos,
+            "lower_wick_pct": lower_wick / candle_range,
+            "upper_wick_pct": upper_wick / candle_range,
+            "upper_to_lower": upper_wick / max(lower_wick, 0.0001),
+            "lower_to_upper": lower_wick / max(upper_wick, 0.0001),
+            "is_green": close_px >= open_px,
+            "is_red": close_px < open_px,
+        }
+
+    def buy_candle_quality_normal(self, candle: pd.Series, zone: Dict, atr_m15: float) -> bool:
+        m = self.candle_metrics(candle)
+        if m is None:
+            return False
+        return (
+            float(candle["low"]) <= float(zone["zone_high"])
+            and float(candle["close"]) > float(zone["zone_high"]) + 0.03 * atr_m15
+            and m["close_pos"] >= 0.65
+            and m["lower_wick_pct"] >= 0.40
+            and m["upper_wick"] <= 0.75 * m["lower_wick"]
+        )
+
+    def buy_candle_quality_counter_bias(self, candle: pd.Series, zone: Dict, atr_m15: float) -> bool:
+        m = self.candle_metrics(candle)
+        if m is None:
+            return False
+        return (
+            float(candle["low"]) <= float(zone["zone_high"])
+            and float(candle["close"]) > float(zone["zone_high"]) + 0.03 * atr_m15
+            and float(candle["close"]) >= float(candle["open"])
+            and m["close_pos"] >= 0.75
+            and m["lower_wick_pct"] >= 0.45
+            and m["upper_wick"] <= 0.60 * m["lower_wick"]
+            and int(zone.get("touches", 0) or 0) >= 3
+        )
+
+    def buy_candle_quality_true_reversal(self, candle: pd.Series, zone: Dict, atr_m15: float) -> bool:
+        m = self.candle_metrics(candle)
+        if m is None:
+            return False
+        return (
+            float(candle["low"]) <= float(zone["zone_high"])
+            and float(candle["close"]) > float(zone["zone_high"]) + 0.05 * atr_m15
+            and float(candle["close"]) > float(candle["open"])
+            and m["close_pos"] >= 0.80
+            and m["lower_wick_pct"] >= 0.40
+            and m["upper_wick"] <= 0.50 * m["lower_wick"]
+        )
+
+    def sell_candle_quality_normal(self, candle: pd.Series, zone: Dict, atr_m15: float) -> bool:
+        m = self.candle_metrics(candle)
+        if m is None:
+            return False
+        return (
+            float(candle["high"]) >= float(zone["zone_low"])
+            and float(candle["close"]) < float(zone["zone_low"]) - 0.03 * atr_m15
+            and m["close_pos"] <= 0.35
+            and m["upper_wick_pct"] >= 0.40
+            and m["lower_wick"] <= 0.75 * m["upper_wick"]
+        )
+
+    def sell_candle_quality_counter_bias(self, candle: pd.Series, zone: Dict, atr_m15: float) -> bool:
+        m = self.candle_metrics(candle)
+        if m is None:
+            return False
+        return (
+            float(candle["high"]) >= float(zone["zone_low"])
+            and float(candle["close"]) < float(zone["zone_low"]) - 0.03 * atr_m15
+            and float(candle["close"]) <= float(candle["open"])
+            and m["close_pos"] <= 0.25
+            and m["upper_wick_pct"] >= 0.45
+            and m["lower_wick"] <= 0.60 * m["upper_wick"]
+            and int(zone.get("touches", 0) or 0) >= 3
+        )
+
+    def sell_candle_quality_true_reversal(self, candle: pd.Series, zone: Dict, atr_m15: float) -> bool:
+        m = self.candle_metrics(candle)
+        if m is None:
+            return False
+        return (
+            float(candle["high"]) >= float(zone["zone_low"])
+            and float(candle["close"]) < float(zone["zone_low"]) - 0.05 * atr_m15
+            and float(candle["close"]) < float(candle["open"])
+            and m["close_pos"] <= 0.20
+            and m["upper_wick_pct"] >= 0.40
+            and m["lower_wick"] <= 0.50 * m["upper_wick"]
+        )
+
+    def classify_buy_context(self, ctx: Dict) -> str:
+        h1 = str(ctx.get("h1_direction") or "RANGE").upper()
+        m15 = str(ctx.get("m15_direction") or "RANGE").upper()
+        bias = str(ctx.get("status_bias") or "NEUTRAL").upper()
+        macro_long = ctx.get("macro_long_supportive")
+
+        if bool(getattr(cfg, "M15_SR_H1_FILTER_ENABLED", True)) and h1 == "DOWN" and bool(getattr(cfg, "M15_SR_BLOCK_BUY_WHEN_H1_DOWN", True)):
+            return "TRUE_REVERSAL_REQUIRED"
+        if h1 == "UP" and m15 != "DOWN":
+            if macro_long is False and bias == "SHORT":
+                return "MEAN_REVERSION_BOUNCE_ONLY"
+            return "TREND_ALIGNED"
+        if h1 == "RANGE" and m15 == "DOWN" and bias == "SHORT":
+            return "MEAN_REVERSION_BOUNCE_ONLY"
+        if macro_long is False and bias == "SHORT":
+            return "MEAN_REVERSION_BOUNCE_ONLY"
+        if h1 == "RANGE":
+            if m15 == "DOWN" and bool(getattr(cfg, "M15_SR_BLOCK_NORMAL_BUY_WHEN_M15_DOWN", True)):
+                return "MEAN_REVERSION_BOUNCE_ONLY"
+            return "TREND_ALIGNED" if bias != "SHORT" else "MEAN_REVERSION_BOUNCE_ONLY"
+        return "BLOCK"
+
+    def classify_sell_context(self, ctx: Dict) -> str:
+        h1 = str(ctx.get("h1_direction") or "RANGE").upper()
+        m15 = str(ctx.get("m15_direction") or "RANGE").upper()
+        bias = str(ctx.get("status_bias") or "NEUTRAL").upper()
+        macro_short = ctx.get("macro_short_supportive")
+
+        if bool(getattr(cfg, "M15_SR_H1_FILTER_ENABLED", True)) and h1 == "UP" and bool(getattr(cfg, "M15_SR_BLOCK_SELL_WHEN_H1_UP", True)):
+            return "TRUE_REVERSAL_REQUIRED"
+        if h1 == "DOWN" and m15 != "UP":
+            if macro_short is False and bias == "LONG":
+                return "MEAN_REVERSION_BOUNCE_ONLY"
+            return "TREND_ALIGNED"
+        if h1 == "RANGE" and m15 == "UP" and bias == "LONG":
+            return "MEAN_REVERSION_BOUNCE_ONLY"
+        if macro_short is False and bias == "LONG":
+            return "MEAN_REVERSION_BOUNCE_ONLY"
+        if h1 == "RANGE":
+            if m15 == "UP" and bool(getattr(cfg, "M15_SR_BLOCK_NORMAL_SELL_WHEN_M15_UP", True)):
+                return "MEAN_REVERSION_BOUNCE_ONLY"
+            return "TREND_ALIGNED" if bias != "LONG" else "MEAN_REVERSION_BOUNCE_ONLY"
+        return "BLOCK"
+
+    def bullish_m15_structure_shift_confirmed(self, ctx: Dict) -> bool:
+        struct = (ctx.get("bias") or {}).get("m15_structure") or {}
+        pattern = str(struct.get("pattern") or "").upper()
+        bos_direction = str(struct.get("bos_direction") or "").upper()
+        return bos_direction == "LONG" or pattern == "BULLISH" or str(ctx.get("m15_direction") or "") == "UP"
+
+    def bearish_m15_structure_shift_confirmed(self, ctx: Dict) -> bool:
+        struct = (ctx.get("bias") or {}).get("m15_structure") or {}
+        pattern = str(struct.get("pattern") or "").upper()
+        bos_direction = str(struct.get("bos_direction") or "").upper()
+        return bos_direction == "SHORT" or pattern == "BEARISH" or str(ctx.get("m15_direction") or "") == "DOWN"
+
+    def price_reclaimed_ema20_or_vwap(self, direction: str, candle: pd.Series, ctx: Dict) -> bool:
+        close_px = float(candle["close"])
+        ema20_val = float(ctx.get("ema20", 0.0) or 0.0)
+        vwap_val = float(ctx.get("vwap", 0.0) or 0.0)
+        if direction == "BUY":
+            return (ema20_val > 0 and close_px >= ema20_val) or (vwap_val > 0 and close_px >= vwap_val)
+        return (ema20_val > 0 and close_px <= ema20_val) or (vwap_val > 0 and close_px <= vwap_val)
+
+    def higher_low_confirmed(self, closed: Optional[pd.DataFrame]) -> bool:
+        swings = self._swing_points(closed if closed is not None else pd.DataFrame(), "support")
+        return len(swings) >= 2 and float(swings[-1]["price"]) > float(swings[-2]["price"])
+
+    def lower_high_confirmed(self, closed: Optional[pd.DataFrame]) -> bool:
+        swings = self._swing_points(closed if closed is not None else pd.DataFrame(), "resistance")
+        return len(swings) >= 2 and float(swings[-1]["price"]) < float(swings[-2]["price"])
 
     @staticmethod
     def _wick_stats(candle: pd.Series) -> Dict:
@@ -1135,13 +1853,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
 
     @staticmethod
     def _has_random_closes(closes: List[float], zone_low: float, zone_high: float, zone_type: str = "") -> bool:
-        # Only inspect the 3 most recent closes to avoid flagging historically-straddled zones
         recent = closes[-3:]
         above = any(float(c) > zone_high for c in recent)
         below = any(float(c) < zone_low for c in recent)
         if not (above and below):
             return False
-        # If the last close is cleanly on the expected side, the zone still has directional bias
         last = float(recent[-1])
         if zone_type == "support" and last > zone_high:
             return False
@@ -1167,12 +1883,15 @@ class M15SupportResistanceStrategy(BaseStrategy):
         stats = self._wick_stats(candle)
         return float(candle["close"]) > float(candle["open"]) and stats["close_pct"] >= 0.65 and stats["body"] >= stats["range"] * 0.45
 
-    def _confidence_score(self, zone: Dict, candle: pd.Series, plan: Dict) -> float:
+    def _confidence_score(self, zone: Dict, candle: pd.Series, plan: Dict, signal_family: str) -> float:
         stats = self._wick_stats(candle)
         wick_bonus = min(0.08, max(stats["upper_wick"], stats["lower_wick"]) / max(stats["range"], 0.0001) * 0.08)
         touch_bonus = min(0.12, max(0, int(zone.get("touches", 0)) - int(cfg.M15_SR_MIN_TOUCHES)) * 0.04)
-        rr_bonus = min(0.10, max(0.0, float(plan.get("rr", 0.0)) - float(cfg.M15_SR_MIN_RR)) * 0.08)
-        return round(min(0.90, 0.58 + wick_bonus + touch_bonus + rr_bonus), 3)
+        rr_bonus = min(0.10, max(0.0, float(plan.get("rr", 0.0)) - float(plan.get("_min_rr_required", cfg.M15_SR_MIN_RR))) * 0.08)
+        family_bonus = 0.02 if signal_family == self.FAMILY_TREND else 0.0
+        if signal_family == self.FAMILY_TRUE_REVERSAL:
+            family_bonus = 0.04
+        return round(min(0.92, 0.58 + wick_bonus + touch_bonus + rr_bonus + family_bonus), 3)
 
     @staticmethod
     def _candle_snapshot(candle: pd.Series) -> Dict:
@@ -1202,6 +1921,8 @@ class M15SupportResistanceStrategy(BaseStrategy):
 
     @staticmethod
     def _closed_frame(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame is None or frame.empty:
+            return pd.DataFrame()
         if "datetime" in frame.columns and len(frame) >= 2:
             return frame.iloc[:-1].reset_index(drop=True)
         return frame.copy().reset_index(drop=True)
@@ -1237,8 +1958,11 @@ class M15SupportResistanceStrategy(BaseStrategy):
         parsed = M15SupportResistanceStrategy._coerce_dt(tick_time)
         if parsed is not None:
             return parsed
-        candle_time = M15SupportResistanceStrategy._coerce_dt(closed.iloc[-1]["datetime"])
-        return candle_time or datetime.now(timezone.utc)
+        if closed is not None and not closed.empty:
+            candle_time = M15SupportResistanceStrategy._coerce_dt(closed.iloc[-1]["datetime"])
+            if candle_time is not None:
+                return candle_time
+        return datetime.now(timezone.utc)
 
     @staticmethod
     def _atr_m15(closed: pd.DataFrame) -> float:
@@ -1250,3 +1974,401 @@ class M15SupportResistanceStrategy(BaseStrategy):
     @staticmethod
     def _no(reason: str) -> Dict:
         return {"signal": "NO_TRADE", "reason": reason, "score": 0.0}
+
+    def _build_market_context(self, data: Dict, closed: Optional[pd.DataFrame], now_utc: datetime) -> Dict:
+        bias = dict(data.get("bias") or {})
+        regime = dict(data.get("regime") or {})
+        market_state = dict(data.get("market_state") or {})
+        trend = dict(market_state.get("trend") or {})
+        structure = dict(market_state.get("structure") or {})
+        indicators = dict(data.get("indicators") or {})
+        tf_context = dict(data.get("tf_context") or {})
+        tick_pressure = dict(data.get("tick_pressure") or {})
+        h1_direction = self._direction_label(
+            trend.get("H1"),
+            structure.get("H1"),
+            (bias.get("h1_structure") or {}).get("pattern"),
+            tf_context.get("h1_ema50_slope"),
+        )
+        m15_direction = self._direction_label(
+            trend.get("M15"),
+            (bias.get("m15_structure") or {}).get("pattern"),
+            None,
+            indicators.get("ema20_slope"),
+        )
+        session = str(data.get("session") or get_session_at(now_utc)).upper()
+        ema20_val = 0.0
+        vwap_val = 0.0
+        range_mid = 0.0
+        if closed is not None and len(closed) >= 20:
+            closes = closed["close"].astype(float).to_numpy()
+            ema20_val = float(ema(closes, 20)[-1])
+            recent = closed.tail(20)
+            volume = recent["volume"].astype(float)
+            typical = (recent["high"].astype(float) + recent["low"].astype(float) + recent["close"].astype(float)) / 3.0
+            vol_sum = float(volume.sum() or 0.0)
+            if vol_sum > 0:
+                vwap_val = float((typical * volume).sum() / vol_sum)
+            range_mid = float((recent["high"].astype(float).max() + recent["low"].astype(float).min()) / 2.0)
+        macro_long = self._macro_supportive("BUY", bias, market_state, h1_direction)
+        macro_short = self._macro_supportive("SELL", bias, market_state, h1_direction)
+        return {
+            "bias": bias,
+            "regime": str(regime.get("state") or "UNKNOWN").upper(),
+            "market_state": market_state,
+            "h1_direction": h1_direction,
+            "m15_direction": m15_direction,
+            "status_bias": self._normalize_bias_direction(bias.get("direction")),
+            "session": session,
+            "tick_pressure": tick_pressure,
+            "ema20": round(ema20_val, 4) if ema20_val else 0.0,
+            "vwap": round(vwap_val, 4) if vwap_val else 0.0,
+            "range_mid": round(range_mid, 4) if range_mid else 0.0,
+            "macro_long_supportive": macro_long,
+            "macro_short_supportive": macro_short,
+            "macro_support_status": self._macro_support_status(macro_long, macro_short),
+        }
+
+    @staticmethod
+    def _normalize_bias_direction(direction: Any) -> str:
+        raw = str(direction or "NEUTRAL").upper()
+        if raw == "BUY":
+            return "LONG"
+        if raw == "SELL":
+            return "SHORT"
+        return raw if raw in {"LONG", "SHORT", "NEUTRAL"} else "NEUTRAL"
+
+    @staticmethod
+    def _direction_label(primary: Any, secondary: Any, tertiary: Any, slope: Any) -> str:
+        for value in (primary, secondary, tertiary):
+            raw = str(value or "").upper()
+            if raw in {"UP", "DOWN", "RANGE"}:
+                return raw
+            if raw in {"BULLISH", "LONG"}:
+                return "UP"
+            if raw in {"BEARISH", "SHORT"}:
+                return "DOWN"
+        try:
+            slope_val = float(slope or 0.0)
+            if slope_val > 0:
+                return "UP"
+            if slope_val < 0:
+                return "DOWN"
+        except Exception:
+            pass
+        return "RANGE"
+
+    def _macro_supportive(self, side: str, bias: Dict, market_state: Dict, h1_direction: str) -> Optional[bool]:
+        trend = dict((market_state.get("trend") or {}))
+        structure = dict((market_state.get("structure") or {}))
+        h4 = self._direction_label(trend.get("H4"), structure.get("H4"), None, None)
+        d1 = self._direction_label(trend.get("D1"), structure.get("D1"), None, None)
+        bias_dir = self._normalize_bias_direction((bias or {}).get("direction"))
+        if side == "BUY":
+            up_votes = sum(1 for item in (h1_direction, h4, d1) if item == "UP")
+            down_votes = sum(1 for item in (h1_direction, h4, d1) if item == "DOWN")
+            if bias_dir == "SHORT" and down_votes >= 2:
+                return False
+            if up_votes >= 2 and bias_dir != "SHORT":
+                return True
+            return None
+        up_votes = sum(1 for item in (h1_direction, h4, d1) if item == "UP")
+        down_votes = sum(1 for item in (h1_direction, h4, d1) if item == "DOWN")
+        if bias_dir == "LONG" and up_votes >= 2:
+            return False
+        if down_votes >= 2 and bias_dir != "LONG":
+            return True
+        return None
+
+    @staticmethod
+    def _macro_support_status(macro_long: Optional[bool], macro_short: Optional[bool]) -> str:
+        if macro_long is False and macro_short is True:
+            return "SHORT_SUPPORTIVE"
+        if macro_short is False and macro_long is True:
+            return "LONG_SUPPORTIVE"
+        if macro_long is False or macro_short is False:
+            return "OPPOSING"
+        if macro_long is True or macro_short is True:
+            return "SUPPORTIVE"
+        return "UNKNOWN"
+
+    def _signal_family_for_classification(self, classification: str) -> str:
+        if classification == "TREND_ALIGNED":
+            return self.FAMILY_TREND
+        if classification == "MEAN_REVERSION_BOUNCE_ONLY":
+            return self.FAMILY_BOUNCE
+        if classification == "TRUE_REVERSAL_REQUIRED":
+            return self.FAMILY_TRUE_REVERSAL
+        return "M15"
+
+    def select_exit_profile_for_signal_family(self, signal_family: str, market_context: Dict) -> str:
+        if signal_family == self.FAMILY_BOUNCE:
+            return "m15_mean_reversion_fast"
+        if signal_family == self.FAMILY_TRUE_REVERSAL:
+            return "swing_structured"
+        return "structured_intraday" if str(market_context.get("h1_direction") or "") == "RANGE" else "swing_structured"
+
+    @staticmethod
+    def _classification_rank(classification: str) -> int:
+        ranks = {
+            "TREND_ALIGNED": 0,
+            "MEAN_REVERSION_BOUNCE_ONLY": 1,
+            "TRUE_REVERSAL_REQUIRED": 2,
+            "BLOCK": 3,
+        }
+        return ranks.get(str(classification or "").upper(), 3)
+
+    def _mean_reversion_target(
+        self,
+        direction: str,
+        entry: float,
+        risk: float,
+        preferred_zone: Optional[Dict],
+        market_context: Dict,
+        closed: Optional[pd.DataFrame],
+    ) -> Optional[float]:
+        candidates: List[float] = []
+        if preferred_zone:
+            candidates.append(float(preferred_zone.get("zone_mid", 0.0) or 0.0))
+        for key in ("vwap", "ema20", "range_mid"):
+            value = float(market_context.get(key, 0.0) or 0.0)
+            if value > 0:
+                candidates.append(value)
+        if closed is not None and len(closed):
+            recent = closed.tail(8)
+            if direction == "BUY":
+                candidates.append(float(recent["high"].astype(float).max()))
+            else:
+                candidates.append(float(recent["low"].astype(float).min()))
+        filtered = []
+        for candidate in candidates:
+            if direction == "BUY" and candidate > entry:
+                filtered.append(candidate)
+            elif direction == "SELL" and candidate < entry:
+                filtered.append(candidate)
+        if not filtered:
+            rr = float(getattr(cfg, "M15_SR_BOUNCE_MIN_RR", 0.8))
+            return entry + (risk * rr) if direction == "BUY" else entry - (risk * rr)
+        return min(filtered) if direction == "BUY" else max(filtered)
+
+    def _tick_pressure_flipped_against(self, side: str, score: float, bias: str) -> bool:
+        if side == "BUY":
+            return score < 0 or bias == "SHORT"
+        if side == "SELL":
+            return score > 0 or bias == "LONG"
+        return False
+
+    def _calculate_rr(self, side: str, entry: float, sl: float, tp: float) -> float:
+        side = str(side or "").upper()
+        if side == "BUY":
+            risk = entry - sl
+            reward = tp - entry
+        else:
+            risk = sl - entry
+            reward = entry - tp
+        if risk <= 0:
+            return 0.0
+        return round(reward / risk, 3)
+
+    def _make_signal_id(self, direction: str, zone: Dict, now_utc: datetime) -> str:
+        return f"{self.name}:{direction}:{zone.get('zone_id')}:{int(now_utc.timestamp())}"
+
+    def _context_hash(self, context: Dict) -> str:
+        payload = {
+            "h1": context.get("h1_direction"),
+            "m15": context.get("m15_direction"),
+            "bias": context.get("status_bias"),
+            "session": context.get("session"),
+            "regime": context.get("regime"),
+            "macro": context.get("macro_support_status"),
+            "tick_bias": (context.get("tick_pressure") or {}).get("directional_bias"),
+        }
+        return hashlib.md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def _register_pending_signal(self, signal: Dict) -> None:
+        signal_id = str(signal.get("_signal_id") or "")
+        zone_id = str(signal.get("_zone_id") or "")
+        side = str(signal.get("signal") or "").upper()
+        if not signal_id or not zone_id or side not in {"BUY", "SELL"}:
+            return
+        self._pending_signals[signal_id] = {
+            "signal_id": signal_id,
+            "zone_id": zone_id,
+            "side": side,
+            "decision_time": signal.get("_decision_time"),
+            "invalidated": False,
+            "invalidate_reason": "",
+        }
+        self._pending_by_zone_side[(zone_id, side)] = signal_id
+
+    def _invalidate_pending_for_zone(self, zone_id: str, side: str, reason: str, now_utc: datetime) -> None:
+        key = (str(zone_id or ""), str(side or "").upper())
+        signal_id = self._pending_by_zone_side.get(key)
+        if not signal_id:
+            return
+        pending = self._pending_signals.get(signal_id)
+        if not pending:
+            return
+        pending["invalidated"] = True
+        pending["invalidate_reason"] = reason
+        pending["invalidated_at"] = now_utc.isoformat()
+
+    def _rejected_setup_payload(
+        self,
+        direction: str,
+        zone: Dict,
+        candle: pd.Series,
+        atr_m15: float,
+        market_context: Dict,
+        reason: str,
+        signal_family_candidate: str,
+        rejection_reasons: List[str],
+        intended_execution_time: Optional[datetime] = None,
+    ) -> Dict:
+        payload = self._no(reason)
+        payload["_signal_family_candidate"] = signal_family_candidate
+        payload["_rejection_reasons"] = rejection_reasons
+        payload["_decision_context"] = {
+            "zone_id": zone.get("zone_id"),
+            "touches": zone.get("touches"),
+            "atr_m15": atr_m15,
+            "candle_metrics": self.candle_metrics(candle),
+            "market_context": market_context,
+            "intended_execution_time": intended_execution_time.isoformat() if hasattr(intended_execution_time, "isoformat") else intended_execution_time,
+        }
+        return payload
+
+    def _asian_counter_bias_trade_count(self, now_utc: datetime) -> int:
+        return int(self._asian_counter_bias_counts.get(self._session_key(now_utc, "ASIAN"), 0))
+
+    @staticmethod
+    def _session_key(now_utc: datetime, session: str) -> str:
+        return f"{date_str_ist(now_utc)}:{session}"
+
+    @staticmethod
+    def _breakeven_trigger_r(signal_family: str) -> float:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return float(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_BE_TRIGGER_R", 0.22))
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return float(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_BE_TRIGGER_R", 0.35))
+        return float(getattr(cfg, "EXIT_PROFILE_M15_BE_TRIGGER_R", 0.60))
+
+    @staticmethod
+    def _timeout_seconds(signal_family: str) -> int:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            candles = int(getattr(cfg, "M15_SR_BOUNCE_MAX_HOLD_CANDLES", 4) or 4)
+            return max(60, candles * 15 * 60)
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return int(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_TIMEOUT_SECONDS", 1800) or 1800)
+        return int(getattr(cfg, "EXIT_PROFILE_M15_TIMEOUT_SECONDS", 300) or 300)
+
+    @staticmethod
+    def _timeout_min_progress(signal_family: str) -> float:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return float(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_TIMEOUT_MIN_PROGRESS_R", 0.05))
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return float(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_TIMEOUT_MIN_PROGRESS_R", 0.15))
+        return float(getattr(cfg, "EXIT_PROFILE_M15_TIMEOUT_MIN_PROGRESS_R", 0.30))
+
+    @staticmethod
+    def _min_hold_seconds(signal_family: str) -> int:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return int(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_MIN_HOLD_SECONDS", 15) or 15)
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return int(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_MIN_HOLD_SECONDS", 30) or 30)
+        return int(getattr(cfg, "EXIT_PROFILE_M15_MIN_HOLD_SECONDS", 60) or 60)
+
+    @staticmethod
+    def _reversal_arm_r(signal_family: str) -> float:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return float(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_REVERSAL_ARM_R", 0.80))
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return float(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_ARM_R", 1.00))
+        return float(getattr(cfg, "EXIT_PROFILE_M15_REVERSAL_ARM_R", 1.50))
+
+    @staticmethod
+    def _reversal_drawdown_pct(signal_family: str) -> float:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return float(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_REVERSAL_DRAWDOWN_PCT", 0.60))
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return float(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_DRAWDOWN_PCT", 0.70))
+        return float(getattr(cfg, "EXIT_PROFILE_M15_REVERSAL_DRAWDOWN_PCT", 0.75))
+
+    @staticmethod
+    def _reversal_floor_r(signal_family: str) -> float:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return float(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_REVERSAL_FLOOR_R", 0.10))
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return float(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_FLOOR_R", 0.20))
+        return float(getattr(cfg, "EXIT_PROFILE_M15_REVERSAL_FLOOR_R", 0.50))
+
+    @staticmethod
+    def _trail_activate_r(signal_family: str) -> float:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return float(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_TRAIL_ACTIVATE_R", 0.90))
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return float(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_TRAIL_ACTIVATE_R", 1.10))
+        return float(getattr(cfg, "EXIT_PROFILE_M15_TRAIL_ACTIVATE_R", 1.50))
+
+    @staticmethod
+    def _trail_lock_r(signal_family: str) -> float:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return float(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_TRAIL_LOCK_R", 0.20))
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return float(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_TRAIL_LOCK_R", 0.35))
+        return float(getattr(cfg, "EXIT_PROFILE_M15_TRAIL_LOCK_R", 0.75))
+
+    @staticmethod
+    def _velocity_drop_enabled(signal_family: str) -> bool:
+        if signal_family == M15SupportResistanceStrategy.FAMILY_BOUNCE:
+            return bool(getattr(cfg, "EXIT_PROFILE_M15_BOUNCE_VELOCITY_DROP_ENABLED", True))
+        if signal_family == M15SupportResistanceStrategy.FAMILY_TREND:
+            return bool(getattr(cfg, "EXIT_PROFILE_STRUCTURED_INTRADAY_VELOCITY_DROP_ENABLED", True))
+        return bool(getattr(cfg, "EXIT_PROFILE_M15_VELOCITY_DROP_ENABLED", False))
+
+    def _log_pre_send_rejection(
+        self,
+        signal: Dict,
+        age_seconds: float,
+        current_price: float,
+        planned_entry: float,
+        drift_atr: float,
+        spread: float,
+        recalculated_rr: float,
+        pressure_score: float,
+        pressure_bias: str,
+        live_ctx: Dict,
+        reason: str,
+        now_utc: datetime,
+    ) -> None:
+        log_decision(
+            strategy=self.name,
+            setup_direction="LONG" if str(signal.get("signal") or "").upper() == "BUY" else "SHORT",
+            bias_direction=None,
+            quality_score=float(signal.get("confidence", 0.0) or 0.0),
+            threshold=0.55,
+            spread_mean=spread,
+            spread_std=0.0,
+            compression_ok=True,
+            ltf_conflict=False,
+            decision="TRADE_SKIPPED",
+            reason=reason,
+            price=current_price,
+            additional_data={
+                "_sim_now": now_utc,
+                "pre_send_rejection": {
+                    "signal_age_seconds": round(age_seconds, 2),
+                    "current_price": round(current_price, 2),
+                    "planned_entry": round(planned_entry, 2),
+                    "price_drift_atr": round(drift_atr, 3),
+                    "current_spread": round(spread, 4),
+                    "recalculated_rr": round(recalculated_rr, 3),
+                    "current_tick_pressure_score": round(pressure_score, 3),
+                    "current_tick_pressure_bias": pressure_bias,
+                    "current_context": live_ctx,
+                    "rejection_reason": reason,
+                    "signal_id": signal.get("_signal_id"),
+                    "signal_family": signal.get("_signal_family"),
+                }
+            },
+        )

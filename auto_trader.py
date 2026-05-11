@@ -672,6 +672,13 @@ class AutoTrader:
                 continue
             lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
 
+            strategy_obj = self.strat_mgr.get(strat_name)
+            if strategy_obj is not None and hasattr(strategy_obj, "pre_send_revalidate"):
+                pre_send = strategy_obj.pre_send_revalidate(sig, strat_data)
+                if not pre_send.get("allowed", True):
+                    self._log_strategy_skip(strat_name, f"Execution blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}")
+                    continue
+
             comment = sig.get("_comment") or f"FT_{strat_name[:8]}"
             result = None
             for _ in range(3):
@@ -710,6 +717,10 @@ class AutoTrader:
                         "macro_bias": sig.get("_macro_bias"),
                         "news": sig.get("_news"),
                         "entry_volume_ratio": sig.get("_entry_volume_ratio"),
+                        "signal_family": sig.get("_signal_family"),
+                        "context_hash": sig.get("_context_hash"),
+                        "signal_id": sig.get("_signal_id"),
+                        "ttl_seconds": sig.get("_ttl_seconds"),
                     },
                 )
                 record_trade_taken()
@@ -780,6 +791,11 @@ class AutoTrader:
         if lot <= 0:
             return
         lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
+        if hasattr(strategy, "pre_send_revalidate"):
+            pre_send = strategy.pre_send_revalidate(sig, strat_data)
+            if not pre_send.get("allowed", True):
+                self.log("REENTRY", f"[{strategy_name}] Re-entry blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}")
+                return
         comment = sig.get("_comment") or f"FT_{strategy_name[:8]}_RE"
         result = self.bridge.open_trade(action, lot, sl, tp, comment=comment)
         if result and result.get("success"):
