@@ -4,9 +4,11 @@ Consolidates all trading system endpoints onto a single port.
 """
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse
 from starlette.responses import Response as _RawResponse
 from typing import Dict, Any, Set
 from bisect import bisect_left
+import hmac
 import json
 import os
 import time
@@ -19,6 +21,7 @@ from datetime import datetime, timezone, timedelta
 import config as cfg
 from engine import strategy_configs as _scfg_store
 from engine.deployment_metadata import capture_code_snapshot, compare_snapshots
+from engine.debug_bundle import build_debug_bundle, build_debug_manifest
 from engine.market_context_qa import market_context_qa_service
 
 _IST = timezone(timedelta(hours=5, minutes=30))
@@ -81,6 +84,28 @@ _MANUAL_AI_IDEA_TTL_SECONDS = 15 * 60
 _config_version = 1
 
 router = APIRouter(tags=["trading"])
+
+
+def _is_local_request(request: Request) -> bool:
+    host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
+    return host in {"127.0.0.1", "::1", "localhost"}
+
+
+def _require_debug_bundle_access(request: Request) -> None:
+    required_token = os.getenv("DEBUG_BUNDLE_TOKEN", "").strip()
+    if required_token:
+        provided = (
+            str(request.headers.get("x-debug-bundle-token", "") or "").strip()
+            or str(request.query_params.get("token", "") or "").strip()
+        )
+        if not provided or not hmac.compare_digest(provided, required_token):
+            raise HTTPException(status_code=403, detail="Invalid debug bundle token")
+        return
+    if not _is_local_request(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Debug bundle export is local-only unless DEBUG_BUNDLE_TOKEN is configured",
+        )
 
 def _invalidate_status_cache(include_slow: bool = False):
     """Force the next dashboard/status request and WS tick to reflect control changes."""
@@ -1636,6 +1661,33 @@ async def get_logs_today(limit: int = Query(0, ge=0, le=1000)):
     today_entries = [entry for entry in entries if entry.get("ist_date") == today_ist_date]
     payload = today_entries[-limit:] if limit else today_entries
     return {"logs": payload, "count": len(today_entries)}
+
+
+@router.get("/debug/manifest")
+async def get_debug_manifest(
+    request: Request,
+    recent_days: int = Query(7, ge=1, le=30),
+):
+    """Inspect which runtime artifacts are available for a portable debug export."""
+    _require_debug_bundle_access(request)
+    base_dir = Path(__file__).resolve().parent.parent
+    return build_debug_manifest(base_dir, recent_days=recent_days)
+
+
+@router.get("/debug/export")
+async def download_debug_bundle(
+    request: Request,
+    recent_days: int = Query(7, ge=1, le=30),
+):
+    """Build and download a portable runtime debug bundle."""
+    _require_debug_bundle_access(request)
+    base_dir = Path(__file__).resolve().parent.parent
+    bundle = build_debug_bundle(base_dir, recent_days=recent_days)
+    return FileResponse(
+        bundle["bundle_path"],
+        media_type="application/zip",
+        filename=bundle["bundle_name"],
+    )
 
 @router.get("/trades")
 async def get_trades():

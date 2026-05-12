@@ -12,6 +12,7 @@ __pycache__/
 logs/
 backup_logs/
 recent_logs_since_restart/
+debug_exports/
 
 # Runtime data / state
 *.jsonl
