@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import queue
@@ -145,6 +146,22 @@ def _request_shutdown() -> bool:
     return False
 
 
+def _fetch_running_commit() -> str | None:
+    for base_url in TRADER_URLS:
+        try:
+            with urllib.request.urlopen(f"{base_url}/status", timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            deployment = payload.get("deployment") or {}
+            runtime = deployment.get("runtime") or {}
+            git_meta = runtime.get("git") or {}
+            commit = git_meta.get("commit")
+            if commit:
+                return str(commit)
+        except Exception:
+            continue
+    return None
+
+
 def _start_unified(base_dir: str) -> subprocess.Popen | None:
     startup_script = os.path.join(base_dir, "unified_startup.py")
     if not os.path.exists(startup_script):
@@ -178,6 +195,7 @@ class UnifiedTraderWindow:
         self.watcher_enabled = threading.Event()
         self.deploy_lock = threading.Lock()
         self.watcher_thread: threading.Thread | None = None
+        self.watcher_initial_check = False
 
         self.root.title("Unified Trader Console")
         self.root.geometry("980x640")
@@ -372,6 +390,7 @@ class UnifiedTraderWindow:
             return
 
         self.watcher_enabled.set()
+        self.watcher_initial_check = True
         self.watcher_btn.configure(text="Disable Auto Deploy")
         self._set_watcher_status(f"Auto Deploy: On ({POLL_INTERVAL}s)")
         self._enqueue(f"[watcher] auto deploy enabled; polling every {POLL_INTERVAL}s")
@@ -412,6 +431,38 @@ class UnifiedTraderWindow:
         finally:
             self.deploy_lock.release()
 
+    def _check_for_deploys_once(self, initial: bool = False) -> None:
+        running_commit = _fetch_running_commit()
+        local_head, _, local_rc = _run_shell("git rev-parse HEAD", self.base_dir)
+        if local_rc == 0 and local_head and running_commit and running_commit != local_head:
+            self._enqueue(
+                f"[watcher] runtime {running_commit[:7]} is behind local HEAD {local_head[:7]}; restarting current code"
+            )
+            self.restart_app(disable_watcher=False)
+            return
+
+        changed, detail = _has_new_commits(self.base_dir)
+        if changed:
+            if detail:
+                self._enqueue(f"[watcher] {detail}")
+            self._deploy_latest()
+            return
+
+        if detail:
+            self._enqueue(f"[watcher] {detail}")
+            return
+
+        if initial:
+            head_display = local_head[:7] if local_head else "unknown"
+            if running_commit and local_head and running_commit == local_head:
+                self._enqueue(
+                    f"[watcher] no new commit on origin; HEAD {head_display} is already deployed"
+                )
+            else:
+                self._enqueue(
+                    f"[watcher] no new commit on origin; HEAD {head_display} is already current locally"
+                )
+
     def _watch_for_deploys(self) -> None:
         while not self.shutdown_event.is_set():
             if not self.watcher_enabled.is_set():
@@ -419,15 +470,11 @@ class UnifiedTraderWindow:
                 continue
 
             try:
-                changed, detail = _has_new_commits(self.base_dir)
-                if changed:
-                    if detail:
-                        self._enqueue(f"[watcher] {detail}")
-                    self._deploy_latest()
-                elif detail:
-                    self._enqueue(f"[watcher] {detail}")
+                self._check_for_deploys_once(initial=self.watcher_initial_check)
+                self.watcher_initial_check = False
             except Exception as exc:
                 self._enqueue(f"[watcher] error: {exc}")
+                self.watcher_initial_check = False
 
             for _ in range(POLL_INTERVAL):
                 if self.shutdown_event.is_set():
