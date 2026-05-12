@@ -56,6 +56,13 @@ def run(cmd: str, cwd: Path = BASE_DIR) -> tuple[str, str, int]:
     return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
 
 
+def _clean_python_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in ("PYTHONHOME", "PYTHONPATH", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR"):
+        env.pop(key, None)
+    return env
+
+
 def git_branch() -> str:
     branch, _, rc = run("git rev-parse --abbrev-ref HEAD")
     if rc != 0 or not branch:
@@ -84,9 +91,11 @@ def pull() -> bool:
 
 def install_deps() -> None:
     python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
-    if not python.exists():
-        python = Path(sys.executable)
-    out, err, code = run(f'"{python}" -m pip install -r requirements.txt -q')
+    if python.exists():
+        cmd = f'"{python}" -m pip install -r requirements.txt -q'
+    else:
+        cmd = "py -3 -m pip install -r requirements.txt -q"
+    out, err, code = run(cmd)
     if code == 0:
         log.info("Dependencies up to date")
     else:
@@ -125,30 +134,21 @@ def stop_trader() -> None:
 
 
 def start_trader() -> None:
-    launcher_exe = BASE_DIR / "UnifiedTraderRestart.exe"
     startup_script = BASE_DIR / "unified_startup.py"
-    if launcher_exe.exists():
-        subprocess.Popen(
-            [str(launcher_exe)],
-            cwd=str(BASE_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        log.info("Started trader via UnifiedTraderRestart.exe")
-        return
-
     python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
-    if not python.exists():
-        python = Path(sys.executable)
+    if python.exists():
+        launch_cmd = [str(python), "-u", str(startup_script)]
+    else:
+        launch_cmd = ["py", "-3", "-u", str(startup_script)]
     subprocess.Popen(
-        [str(python), "-u", str(startup_script)],
+        launch_cmd,
         cwd=str(BASE_DIR),
+        env=_clean_python_env(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    log.info(f"Started trader via {python.name} unified_startup.py")
+    log.info(f"Started trader via {' '.join(launch_cmd[:2])} unified_startup.py")
 
 
 def deploy() -> None:

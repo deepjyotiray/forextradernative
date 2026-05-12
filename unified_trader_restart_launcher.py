@@ -84,9 +84,11 @@ def _pull_latest(base_dir: str) -> tuple[bool, str]:
 
 def _install_deps(base_dir: str) -> tuple[bool, str]:
     python = pathlib.Path(base_dir) / ".venv" / "Scripts" / "python.exe"
-    if not python.exists():
-        python = pathlib.Path(sys.executable)
-    out, err, rc = _run_shell(f'"{python}" -m pip install -r requirements.txt -q', base_dir)
+    if python.exists():
+        cmd = f'"{python}" -m pip install -r requirements.txt -q'
+    else:
+        cmd = 'py -3 -m pip install -r requirements.txt -q'
+    out, err, rc = _run_shell(cmd, base_dir)
     return rc == 0, out or err or "dependencies up to date"
 
 
@@ -109,10 +111,14 @@ def _start_unified(base_dir: str) -> subprocess.Popen | None:
         return None
 
     create_no_window = 0x08000000
+    env = os.environ.copy()
+    for key in ("PYTHONHOME", "PYTHONPATH", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR"):
+        env.pop(key, None)
 
     return subprocess.Popen(
         ["py", "-u", startup_script],
         cwd=base_dir,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
