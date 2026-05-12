@@ -706,7 +706,7 @@ class SMCStrategy(BaseStrategy):
             relaxed_params = anti_starvation.get_relaxed_params()
             spread_limit = cfg.SMC_SPREAD_MEAN_MAX
             if relaxed_params["active"] and relaxed_params["type"] == "spread_tolerance":
-                spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], cfg.SMC_SPREAD_MEAN_MAX)
+                spread_limit = spread_limit + float(relaxed_params.get("spread_tolerance_bonus", 0.0) or 0.0)
             
             if spread >= spread_limit and not cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED:
                 return False, f"Spread {spread:.3f} >= {spread_limit:.3f}"
@@ -720,7 +720,7 @@ class SMCStrategy(BaseStrategy):
         relaxed_params = anti_starvation.get_relaxed_params()
         spread_limit = cfg.SMC_SPREAD_MEAN_MAX
         if relaxed_params["active"] and relaxed_params["type"] == "spread_tolerance":
-            spread_limit = min(spread_limit + relaxed_params["spread_tolerance_bonus"], cfg.SMC_SPREAD_MEAN_MAX)
+            spread_limit = spread_limit + float(relaxed_params.get("spread_tolerance_bonus", 0.0) or 0.0)
 
         # SMC conditions with relaxation
         if spread_mean >= spread_limit and not cfg.SPREAD_MEAN_GATE_OVERRIDE_ENABLED:

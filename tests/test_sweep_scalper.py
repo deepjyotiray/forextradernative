@@ -276,6 +276,20 @@ def test_sweep_setup_still_requires_edge_close():
     assert "close near candle low" in reason
 
 
+def test_spread_tolerance_relaxation_can_raise_scalper_spread_limit():
+    scalper = SweepScalper()
+
+    with patch("engine.sweep_scalper.anti_starvation.get_relaxed_params", return_value={
+        "active": True,
+        "type": "spread_tolerance",
+        "spread_tolerance_bonus": 0.02,
+    }):
+        ok, reason = scalper._check_spread_quality(0.51, {"ready": False})
+
+    assert ok is True
+    assert reason == "OK"
+
+
 def _wide_range_df(direction="SHORT"):
     rows = []
     for idx in range(24):

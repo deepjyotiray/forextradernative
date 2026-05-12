@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -470,6 +471,40 @@ class M15SupportResistanceStrategyTests(unittest.TestCase):
         self.assertEqual(outcome["_signal_family"], self.strategy.FAMILY_BOUNCE)
         self.assertEqual(outcome["_exit_profile"], "m15_mean_reversion_fast")
         self.assertNotEqual(outcome["_exit_profile"], "swing_structured")
+
+    def test_asian_counter_bias_can_use_normal_rejection_when_a_plus_disabled(self):
+        candle = pd.Series(
+            {
+                "datetime": datetime(2026, 5, 11, 3, 0, tzinfo=timezone.utc),
+                "open": 99.95,
+                "high": 100.95,
+                "low": 99.20,
+                "close": 100.43,
+                "volume": 4200,
+            }
+        )
+        zone = {
+            "zone_id": "SUPPORT_6H_100.00",
+            "type": "support",
+            "zone_low": 99.70,
+            "zone_high": 100.00,
+            "zone_mid": 99.85,
+            "touches": 3,
+        }
+        with patch.object(cfg, "M15_SR_ASIAN_COUNTER_BIAS_REQUIRE_A_PLUS", False):
+            outcome = self.strategy.evaluate_rejection_setup(
+                direction="BUY",
+                zone=zone,
+                candle=candle,
+                tick={"bid": 100.44, "ask": 100.65, "spread": 0.21},
+                atr_m15=10.0,
+                market_context=self._context(score=0.35, tick_bias="LONG"),
+                opposite_zones=[{"zone_id": "RES_1", "zone_mid": 118.00}],
+                now_utc=datetime(2026, 5, 11, 3, 15, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(outcome["signal"], "BUY")
+        self.assertEqual(outcome["_signal_family"], self.strategy.FAMILY_BOUNCE)
 
     def test_trade_8564640195_style_setup_is_blocked(self):
         candle = pd.Series(

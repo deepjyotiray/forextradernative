@@ -495,6 +495,9 @@ class M15SupportResistanceStrategy(BaseStrategy):
                 if session == "ASIAN"
                 else getattr(cfg, "M15_SR_TICK_MIN_COUNTER_BIAS_BOUNCE", 0.30)
             )
+            require_a_plus = True
+            if session == "ASIAN":
+                require_a_plus = bool(getattr(cfg, "M15_SR_ASIAN_COUNTER_BIAS_REQUIRE_A_PLUS", True))
             if int(zone.get("touches", 0) or 0) < min_touches:
                 rejection_reasons.append(
                     "COUNTER_BIAS_SUPPORT_NOT_STRONG_ENOUGH" if direction == "BUY" else "COUNTER_BIAS_RESISTANCE_NOT_STRONG_ENOUGH"
@@ -506,7 +509,10 @@ class M15SupportResistanceStrategy(BaseStrategy):
                     rejection_reasons.append("COUNTER_BIAS_BUY_TICK_BIAS_SHORT")
                 if tick_score < min_tick or tick_bias != "LONG":
                     rejection_reasons.append("COUNTER_BIAS_BUY_NEEDS_STRONG_LONG_TICK_PRESSURE")
-                if not self.buy_candle_quality_counter_bias(candle, zone, atr_m15):
+                candle_ok = self.buy_candle_quality_counter_bias(candle, zone, atr_m15)
+                if not candle_ok and not require_a_plus:
+                    candle_ok = self.buy_candle_quality_normal(candle, zone, atr_m15)
+                if not candle_ok:
                     rejection_reasons.append("COUNTER_BIAS_BUY_CANDLE_NOT_A_PLUS")
                 if session == "ASIAN" and self._asian_counter_bias_trade_count(now_utc) >= int(getattr(cfg, "M15_SR_ASIAN_COUNTER_BIAS_MAX_TRADES_PER_SESSION", 1)):
                     rejection_reasons.append("ASIAN_COUNTER_BIAS_TRADE_LIMIT_REACHED")
@@ -517,7 +523,10 @@ class M15SupportResistanceStrategy(BaseStrategy):
                     rejection_reasons.append("COUNTER_BIAS_SELL_TICK_BIAS_LONG")
                 if tick_score > -min_tick or tick_bias != "SHORT":
                     rejection_reasons.append("COUNTER_BIAS_SELL_NEEDS_STRONG_SHORT_TICK_PRESSURE")
-                if not self.sell_candle_quality_counter_bias(candle, zone, atr_m15):
+                candle_ok = self.sell_candle_quality_counter_bias(candle, zone, atr_m15)
+                if not candle_ok and not require_a_plus:
+                    candle_ok = self.sell_candle_quality_normal(candle, zone, atr_m15)
+                if not candle_ok:
                     rejection_reasons.append("COUNTER_BIAS_SELL_CANDLE_NOT_A_PLUS")
                 if session == "ASIAN" and self._asian_counter_bias_trade_count(now_utc) >= int(getattr(cfg, "M15_SR_ASIAN_COUNTER_BIAS_MAX_TRADES_PER_SESSION", 1)):
                     rejection_reasons.append("ASIAN_COUNTER_BIAS_TRADE_LIMIT_REACHED")
@@ -1699,7 +1708,6 @@ class M15SupportResistanceStrategy(BaseStrategy):
             and m["close_pos"] >= 0.75
             and m["lower_wick_pct"] >= 0.45
             and m["upper_wick"] <= 0.60 * m["lower_wick"]
-            and int(zone.get("touches", 0) or 0) >= 3
         )
 
     def buy_candle_quality_true_reversal(self, candle: pd.Series, zone: Dict, atr_m15: float) -> bool:
@@ -1738,7 +1746,6 @@ class M15SupportResistanceStrategy(BaseStrategy):
             and m["close_pos"] <= 0.25
             and m["upper_wick_pct"] >= 0.45
             and m["lower_wick"] <= 0.60 * m["upper_wick"]
-            and int(zone.get("touches", 0) or 0) >= 3
         )
 
     def sell_candle_quality_true_reversal(self, candle: pd.Series, zone: Dict, atr_m15: float) -> bool:
