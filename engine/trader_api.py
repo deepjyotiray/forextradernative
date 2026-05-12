@@ -2218,6 +2218,11 @@ async def start_trading():
     """Enable trading."""
     trader = get_auto_trader()
     trader.enabled = True
+    cfg.TRADING_ENABLED = True
+    try:
+        cfg.save_runtime_config()
+    except Exception:
+        pass
     trader.log("API", "Trading ENABLED")
     _invalidate_status_cache()
     return {"enabled": True, "strategy": trader.strat_mgr.active_name if trader.strat_mgr else "AUTO"}
@@ -2227,6 +2232,11 @@ async def stop_trading():
     """Disable trading."""
     trader = get_auto_trader()
     trader.enabled = False
+    cfg.TRADING_ENABLED = False
+    try:
+        cfg.save_runtime_config()
+    except Exception:
+        pass
     trader.log("API", "Trading DISABLED")
     _invalidate_status_cache()
     return {"enabled": False}
@@ -2236,6 +2246,11 @@ async def emergency_stop():
     """Emergency stop - disable trading and close all positions."""
     trader = get_auto_trader()
     trader.enabled = False
+    cfg.TRADING_ENABLED = False
+    try:
+        cfg.save_runtime_config()
+    except Exception:
+        pass
     if trader.trades:
         trader.trades.close_all()
     trader.log("API", "EMERGENCY STOP")
@@ -2821,6 +2836,7 @@ async def hot_reload():
     """Hot reload the trading system - restart background service."""
     trader = get_auto_trader()
     trader.log("API", "HOT RELOAD initiated")
+    previous_enabled = bool(trader.enabled)
     
     # Stop current trading
     trader.enabled = False
@@ -2876,6 +2892,7 @@ async def hot_reload():
             trader._recompute_all()
             if hasattr(trader, "mark_restart_time"):
                 trader.mark_restart_time()
+            trader.enabled = previous_enabled
             
             trader.log("ENGINE", "Trading engine started")
             trader.log("API", "HOT RELOAD completed - engine restarted")

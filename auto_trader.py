@@ -115,7 +115,7 @@ class AutoTrader:
         self._market_state: Dict = {}
 
         self._running = False
-        self.enabled = False
+        self.enabled = bool(getattr(cfg, "TRADING_ENABLED", False))
         self._mt5_connected = False
         self._cycle = 0
         self._last_log_date_ist: str = ""
@@ -1396,11 +1396,26 @@ class AutoTrader:
             def do_POST(s):
                 p = s.path
                 if p == "/start":
-                    trader.enabled = True; trader.log("API","Trading ENABLED"); s._j({"enabled":True,"strategy":trader.strat_mgr.active_name if trader.strat_mgr else "AUTO"})
+                    trader.enabled = True; cfg.TRADING_ENABLED = True
+                    try:
+                        cfg.save_runtime_config()
+                    except Exception:
+                        pass
+                    trader.log("API","Trading ENABLED"); s._j({"enabled":True,"strategy":trader.strat_mgr.active_name if trader.strat_mgr else "AUTO"})
                 elif p == "/stop":
-                    trader.enabled = False; trader.log("API","Trading DISABLED"); s._j({"enabled":False})
+                    trader.enabled = False; cfg.TRADING_ENABLED = False
+                    try:
+                        cfg.save_runtime_config()
+                    except Exception:
+                        pass
+                    trader.log("API","Trading DISABLED"); s._j({"enabled":False})
                 elif p == "/emergency":
                     trader.enabled = False
+                    cfg.TRADING_ENABLED = False
+                    try:
+                        cfg.save_runtime_config()
+                    except Exception:
+                        pass
                     if trader.trades: trader.trades.close_all()
                     trader.log("API","EMERGENCY STOP"); s._j({"enabled":False})
                 elif p == "/strategies/select":
