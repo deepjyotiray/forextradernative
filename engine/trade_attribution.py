@@ -13,6 +13,8 @@ For executed trades, also logs:
 """
 import json
 import time
+import math
+import shutil
 from datetime import datetime, timezone
 from typing import Dict, Optional, List
 import os
@@ -25,6 +27,12 @@ from .time_utils import isoformat_ist
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ATTRIBUTION_FILE = os.path.join(_BASE_DIR, "trade_attribution.jsonl")
+_BACKUP_DIR = os.path.join(_BASE_DIR, "backup_logs")
+_ATTRIBUTION_MAX_BYTES = int(os.getenv("TRADE_ATTRIBUTION_MAX_BYTES", str(512 * 1024 * 1024)))
+_ATTRIBUTION_LINE_MAX_BYTES = int(os.getenv("TRADE_ATTRIBUTION_LINE_MAX_BYTES", str(512 * 1024)))
+_ATTRIBUTION_FALLBACK_FILE = os.path.join(_BASE_DIR, "trade_attribution_fallback.jsonl")
+
+os.makedirs(_BACKUP_DIR, exist_ok=True)
 
 
 def _json_safe(value):
@@ -39,6 +47,118 @@ def _json_safe(value):
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(v) for v in value]
     return value
+
+
+def _is_finite_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _shrink_for_log(value, *, max_depth: int = 6, max_items: int = 40, max_string: int = 2000):
+    """Keep attribution payloads informative but bounded for reliable file writes."""
+    if max_depth <= 0:
+        text = str(value)
+        return text[:max_string] + ("...<truncated>" if len(text) > max_string else "")
+
+    if value is None or isinstance(value, (bool, int)):
+        return value
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+
+    if isinstance(value, str):
+        return value[:max_string] + ("...<truncated>" if len(value) > max_string else "")
+
+    if isinstance(value, dict):
+        items = list(value.items())
+        shrunk = {
+            str(k): _shrink_for_log(v, max_depth=max_depth - 1, max_items=max_items, max_string=max_string)
+            for k, v in items[:max_items]
+        }
+        if len(items) > max_items:
+            shrunk["__truncated_items__"] = len(items) - max_items
+        return shrunk
+
+    if isinstance(value, (list, tuple, set)):
+        seq = list(value)
+        shrunk = [
+            _shrink_for_log(v, max_depth=max_depth - 1, max_items=max_items, max_string=max_string)
+            for v in seq[:max_items]
+        ]
+        if len(seq) > max_items:
+            shrunk.append(f"...<{len(seq) - max_items} more items>")
+        return shrunk
+
+    try:
+        return _shrink_for_log(_json_safe(value), max_depth=max_depth - 1, max_items=max_items, max_string=max_string)
+    except Exception:
+        text = str(value)
+        return text[:max_string] + ("...<truncated>" if len(text) > max_string else "")
+
+
+def _serialize_attribution(attribution: Dict) -> bytes:
+    shrunk = _shrink_for_log(_json_safe(attribution))
+    payload = json.dumps(shrunk, default=str, ensure_ascii=False, separators=(",", ":"))
+    encoded = payload.encode("utf-8", errors="replace")
+    if len(encoded) <= _ATTRIBUTION_LINE_MAX_BYTES:
+        return encoded
+
+    minimal = {
+        "timestamp": shrunk.get("timestamp"),
+        "unix_time": shrunk.get("unix_time"),
+        "strategy": shrunk.get("strategy"),
+        "setup_direction": shrunk.get("setup_direction"),
+        "bias_direction": shrunk.get("bias_direction"),
+        "trade_type": shrunk.get("trade_type"),
+        "decision": shrunk.get("decision"),
+        "reason": shrunk.get("reason"),
+        "price": shrunk.get("price"),
+        "trade_id": shrunk.get("trade_id"),
+        "trade_completed": shrunk.get("trade_completed", False),
+        "payload_truncated": True,
+        "payload_original_bytes": len(encoded),
+    }
+    return json.dumps(minimal, default=str, ensure_ascii=False, separators=(",", ":")).encode("utf-8", errors="replace")
+
+
+def _rotate_if_needed(path: str) -> None:
+    try:
+        if not os.path.exists(path):
+            return
+        size = os.path.getsize(path)
+        if size < _ATTRIBUTION_MAX_BYTES:
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dest = os.path.join(_BACKUP_DIR, f"trade_attribution_{stamp}.jsonl")
+        shutil.move(path, dest)
+    except Exception:
+        pass
+
+
+def _append_bytes(path: str, data: bytes) -> None:
+    with open(path, "ab") as f:
+        f.write(data)
+        f.write(b"\n")
+
+
+def _candidate_attribution_paths() -> List[str]:
+    paths: List[str] = []
+    for candidate in [_ATTRIBUTION_FILE, _ATTRIBUTION_FALLBACK_FILE]:
+        if os.path.exists(candidate):
+            paths.append(candidate)
+    try:
+        rotated = sorted(
+            [
+                os.path.join(_BACKUP_DIR, name)
+                for name in os.listdir(_BACKUP_DIR)
+                if name.startswith("trade_attribution_") and name.endswith(".jsonl")
+            ],
+            key=lambda item: os.path.getmtime(item),
+            reverse=True,
+        )
+        paths.extend(rotated[:7])
+    except Exception:
+        pass
+    return paths
 
 
 class TradeAttributionEngine:
@@ -151,34 +271,46 @@ class TradeAttributionEngine:
         """Write attribution data to file."""
         if is_backtest_mode():
             return
+        payload = None
         try:
-            with open(_ATTRIBUTION_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(_json_safe(attribution), default=str) + "\n")
+            _rotate_if_needed(_ATTRIBUTION_FILE)
+            payload = _serialize_attribution(attribution)
+            _append_bytes(_ATTRIBUTION_FILE, payload)
         except Exception as e:
-            print(f"[ATTRIBUTION ERROR] Failed to write: {e}")
+            try:
+                _rotate_if_needed(_ATTRIBUTION_FILE)
+                if payload is None:
+                    payload = _serialize_attribution(attribution)
+                _append_bytes(_ATTRIBUTION_FALLBACK_FILE, payload)
+                print(f"[ATTRIBUTION WARN] Primary write failed, used fallback file: {e}")
+            except Exception as fallback_error:
+                print(f"[ATTRIBUTION ERROR] Failed to write: {e} | fallback failed: {fallback_error}")
     
     def get_recent_attributions(self, hours: int = 24) -> List[Dict]:
         """Get recent attribution data."""
         if is_backtest_mode():
             return []
-        if not os.path.exists(_ATTRIBUTION_FILE):
+        candidate_paths = _candidate_attribution_paths()
+        if not candidate_paths:
             return []
         
         cutoff = time.time() - (hours * 3600)
         attributions = []
         
         try:
-            with open(_ATTRIBUTION_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        attr = json.loads(line.strip())
-                        if attr.get("unix_time", 0) >= cutoff:
-                            attributions.append(attr)
-                    except:
-                        continue
+            for path in candidate_paths:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        try:
+                            attr = json.loads(line.strip())
+                            if attr.get("unix_time", 0) >= cutoff:
+                                attributions.append(attr)
+                        except Exception:
+                            continue
         except Exception:
             pass
         
+        attributions.sort(key=lambda row: row.get("unix_time", 0))
         return attributions
     
     def get_active_trades(self) -> Dict:
