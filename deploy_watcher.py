@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -56,11 +57,46 @@ def run(cmd: str, cwd: Path = BASE_DIR) -> tuple[str, str, int]:
     return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
 
 
+def run_command(
+    args: list[str],
+    cwd: Path = BASE_DIR,
+    env: dict[str, str] | None = None,
+) -> tuple[str, str, int]:
+    proc = subprocess.run(
+        args,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
+
+
 def _clean_python_env() -> dict[str, str]:
     env = os.environ.copy()
     for key in ("PYTHONHOME", "PYTHONPATH", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR"):
         env.pop(key, None)
     return env
+
+
+def _python_command() -> list[str]:
+    venv_python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        return [str(venv_python)]
+
+    py_launcher = shutil.which("py")
+    if py_launcher:
+        return [py_launcher, "-3"]
+
+    local_launcher = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python" / "Launcher" / "py.exe"
+    if local_launcher.exists():
+        return [str(local_launcher), "-3"]
+
+    python_exe = shutil.which("python")
+    if python_exe:
+        return [python_exe]
+
+    raise FileNotFoundError("Could not locate a usable Python interpreter for deploy watcher")
 
 
 def git_branch() -> str:
@@ -90,12 +126,8 @@ def pull() -> bool:
 
 
 def install_deps() -> None:
-    python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
-    if python.exists():
-        cmd = f'"{python}" -m pip install -r requirements.txt -q'
-    else:
-        cmd = "py -3 -m pip install -r requirements.txt -q"
-    out, err, code = run(cmd)
+    cmd = _python_command() + ["-m", "pip", "install", "-r", "requirements.txt", "-q"]
+    out, err, code = run_command(cmd, env=_clean_python_env())
     if code == 0:
         log.info("Dependencies up to date")
     else:
@@ -135,11 +167,7 @@ def stop_trader() -> None:
 
 def start_trader() -> None:
     startup_script = BASE_DIR / "unified_startup.py"
-    python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
-    if python.exists():
-        launch_cmd = [str(python), "-u", str(startup_script)]
-    else:
-        launch_cmd = ["py", "-3", "-u", str(startup_script)]
+    launch_cmd = _python_command() + ["-u", str(startup_script)]
     subprocess.Popen(
         launch_cmd,
         cwd=str(BASE_DIR),

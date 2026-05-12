@@ -1,6 +1,7 @@
 import os
 import pathlib
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -17,6 +18,7 @@ TRADER_URLS = [
     "http://127.0.0.1:8000",
     "http://127.0.0.1:8899",
 ]
+LAUNCHER_LOG_NAME = "launcher_auto_deploy.log"
 
 
 def _base_dir() -> str:
@@ -52,6 +54,48 @@ def _run_shell(cmd: str, cwd: str) -> tuple[str, str, int]:
     return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
 
 
+def _run_command(
+    args: list[str],
+    cwd: str,
+    env: dict[str, str] | None = None,
+) -> tuple[str, str, int]:
+    proc = subprocess.run(
+        args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
+
+
+def _clean_python_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in ("PYTHONHOME", "PYTHONPATH", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR"):
+        env.pop(key, None)
+    return env
+
+
+def _python_command(base_dir: str) -> list[str]:
+    venv_python = pathlib.Path(base_dir) / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        return [str(venv_python)]
+
+    py_launcher = shutil.which("py")
+    if py_launcher:
+        return [py_launcher, "-3"]
+
+    local_launcher = pathlib.Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python" / "Launcher" / "py.exe"
+    if local_launcher.exists():
+        return [str(local_launcher), "-3"]
+
+    python_exe = shutil.which("python")
+    if python_exe:
+        return [python_exe]
+
+    raise FileNotFoundError("Could not locate a usable Python interpreter for auto deploy")
+
+
 def _git_branch(base_dir: str) -> str | None:
     branch, _, rc = _run_shell("git rev-parse --abbrev-ref HEAD", base_dir)
     if rc != 0 or not branch:
@@ -83,12 +127,8 @@ def _pull_latest(base_dir: str) -> tuple[bool, str]:
 
 
 def _install_deps(base_dir: str) -> tuple[bool, str]:
-    python = pathlib.Path(base_dir) / ".venv" / "Scripts" / "python.exe"
-    if python.exists():
-        cmd = f'"{python}" -m pip install -r requirements.txt -q'
-    else:
-        cmd = 'py -3 -m pip install -r requirements.txt -q'
-    out, err, rc = _run_shell(cmd, base_dir)
+    cmd = _python_command(base_dir) + ["-m", "pip", "install", "-r", "requirements.txt", "-q"]
+    out, err, rc = _run_command(cmd, base_dir, env=_clean_python_env())
     return rc == 0, out or err or "dependencies up to date"
 
 
@@ -111,12 +151,10 @@ def _start_unified(base_dir: str) -> subprocess.Popen | None:
         return None
 
     create_no_window = 0x08000000
-    env = os.environ.copy()
-    for key in ("PYTHONHOME", "PYTHONPATH", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR"):
-        env.pop(key, None)
+    env = _clean_python_env()
 
     return subprocess.Popen(
-        ["py", "-u", startup_script],
+        _python_command(base_dir) + ["-u", startup_script],
         cwd=base_dir,
         env=env,
         stdout=subprocess.PIPE,
@@ -188,6 +226,17 @@ class UnifiedTraderWindow:
         self.root.after(100, self._drain_queue)
         self.restart_app()
 
+    def _launcher_log_path(self) -> str:
+        return os.path.join(self.base_dir, LAUNCHER_LOG_NAME)
+
+    def _write_launcher_log(self, line: str) -> None:
+        try:
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(self._launcher_log_path(), "a", encoding="utf-8") as log_file:
+                log_file.write(f"[{timestamp}] {line.rstrip()}\n")
+        except OSError:
+            pass
+
     def _append(self, line: str) -> None:
         self.log_view.configure(state="normal")
         self.log_view.insert("end", line.rstrip("\n") + "\n")
@@ -205,6 +254,7 @@ class UnifiedTraderWindow:
 
     def _enqueue(self, line: str) -> None:
         self.log_queue.put(line)
+        self._write_launcher_log(line)
 
     def _set_status(self, value: str) -> None:
         self.root.after(0, lambda: self.status_var.set(value))
