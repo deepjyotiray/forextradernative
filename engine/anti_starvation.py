@@ -43,9 +43,9 @@ class AntiStarvationManager:
             self._current_date = date
             if session_key not in self._session_trades:
                 self._session_trades[session_key] = 0
-            self._check_starvation()
-            if not is_backtest_mode():
-                self._save_state()
+        self._check_starvation()
+        if not is_backtest_mode():
+            self._save_state()
     
     def record_trade(self):
         """Record a trade taken in current session."""
