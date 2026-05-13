@@ -199,6 +199,7 @@ def master_trade_gate(
 
     # 6-8. Signal, candle, RR, score, and confirmation gates
     sweep_confirmed = bool(signal.get("_sweep_confirmed"))
+    m15_zone_confirmed = bool(signal.get("_m15_zone_confirmed"))
     candle_confirmed = bool(signal.get("_candle_confirmation")) or bool(m15_context.get("candle_confirmation"))
     ema_aligned = bool(signal.get("_ema_aligned", True))
     bias_confirmed = bias_dir == trade_dir and trade_dir in ("LONG", "SHORT")
@@ -215,7 +216,7 @@ def master_trade_gate(
 
     confirmations = {
         "bias": bias_confirmed,
-        "sweep": sweep_confirmed,
+        "setup": sweep_confirmed or m15_zone_confirmed,
         "m15_context": bool(m15_context.get("allowed")),
         "candle": candle_confirmed,
     }
@@ -233,7 +234,7 @@ def master_trade_gate(
 
     score = 0
     if cfg_module.TRADE_SCORE_ENABLED:
-        if sweep_confirmed:
+        if sweep_confirmed or m15_zone_confirmed:
             score += 20
         if m15_context.get("allowed"):
             score += 20
@@ -467,6 +468,6 @@ def _atr_is_healthy(indicators: Dict[str, Any], spike_context: Dict[str, Any]) -
 
 def _family_bucket(signal_family: str) -> str:
     family = str(signal_family or "").upper()
-    if family.startswith("M15_SR_"):
+    if family.startswith("M15_SR_") or family.startswith("M15_ZONE"):
         return "M15"
     return family

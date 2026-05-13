@@ -32,6 +32,22 @@ class ZoneDetector:
         resistance.sort(key=lambda x: x["zone_low"])
         return {"support": support, "resistance": resistance}
 
+    def scored_clusters(self, df: pd.DataFrame) -> List[Dict]:
+        """
+        All scored clusters without splitting into support/resistance by spot price.
+
+        Use this when strategies need proximity while price overlaps a zone — the
+        regular detect() splits would drop those zones once price trades through.
+        """
+        if len(df) < 20:
+            return []
+        price = float(df["close"].iloc[-1])
+        levels = self._collect_levels(df)
+        if not levels:
+            return []
+        zones = self._cluster(levels)
+        return self._score(zones, df, price)
+
     def _collect_levels(self, df: pd.DataFrame) -> List[Dict]:
         levels = []
         h, l, o, c = df["high"].values, df["low"].values, df["open"].values, df["close"].values

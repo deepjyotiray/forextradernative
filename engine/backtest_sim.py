@@ -25,6 +25,7 @@ from .regime import classify_regime
 from .session_filter import is_market_open, is_session_open_blocked
 from .smc_strategy import SMCStrategy
 from .m15_sr_strategy import M15SupportResistanceStrategy
+from .m15_zone_scalp_strategy import M15ZoneScalpStrategy
 from .strategy_manager import StrategyManager
 from .sweep_scalper import SweepScalper
 from .strategies.trend_channel_strategy import TrendChannelStrategy
@@ -452,11 +453,13 @@ class BacktestRunner:
         self.smc = SMCStrategy()
         self.scalper = SweepScalper()
         self.m15_sr = M15SupportResistanceStrategy()
+        self.m15_zone_scalp = M15ZoneScalpStrategy()
         self.trend_channel = TrendChannelStrategy()
         self.strategy_manager = StrategyManager()
         self.strategy_manager.register(self.smc)
         self.strategy_manager.register(self.scalper)
         self.strategy_manager.register(self.m15_sr)
+        self.strategy_manager.register(self.m15_zone_scalp)
         self.strategy_manager.register(self.trend_channel)
         self._decision_entries: List[Dict] = []
 
