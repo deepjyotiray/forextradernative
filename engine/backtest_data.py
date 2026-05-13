@@ -29,6 +29,40 @@ _TF_MAP = {
 }
 
 
+def _parquet_available() -> bool:
+    try:
+        import pyarrow  # noqa: F401
+        return True
+    except Exception:
+        pass
+    try:
+        import fastparquet  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+_CACHE_FRAME_EXT = ".parquet" if _parquet_available() else ".pkl"
+
+
+def _read_cache_frame(path: str) -> pd.DataFrame:
+    lower = path.lower()
+    if lower.endswith(".pkl") or lower.endswith(".pickle"):
+        return pd.read_pickle(path)
+    if lower.endswith(".parquet"):
+        return pd.read_parquet(path)
+    raise ValueError(f"Unsupported cache format: {path}")
+
+
+def _write_cache_frame(df: pd.DataFrame, path_without_ext: str) -> str:
+    path = f"{path_without_ext}{_CACHE_FRAME_EXT}"
+    if _CACHE_FRAME_EXT == ".parquet":
+        df.to_parquet(path, index=False)
+    else:
+        df.to_pickle(path)
+    return path
+
+
 @dataclass
 class BacktestDataset:
     symbol: str
@@ -342,7 +376,7 @@ class BacktestDataProvider:
                 ticks_path = str(entry.get("ticks_path", ""))
                 if not ticks_path or not os.path.exists(ticks_path):
                     continue
-                ticks = pd.read_parquet(ticks_path)
+                ticks = _read_cache_frame(ticks_path)
                 ticks = ticks.loc[(ticks["datetime"] >= start_utc) & (ticks["datetime"] <= end_utc)].reset_index(drop=True)
                 if ticks.empty:
                     continue
@@ -355,7 +389,7 @@ class BacktestDataProvider:
                         candles[tf] = pd.DataFrame()
                         continue
                     try:
-                        cdf = pd.read_parquet(path)
+                        cdf = _read_cache_frame(path)
                         if cdf.empty or "datetime" not in cdf.columns:
                             candles[tf] = pd.DataFrame()
                             continue
@@ -446,7 +480,7 @@ class BacktestDataProvider:
         if not path or not os.path.exists(path):
             return pd.DataFrame(columns=["bucket_start", "estimated_ticks"])
         try:
-            m1 = pd.read_parquet(path)
+            m1 = _read_cache_frame(path)
         except Exception:
             return pd.DataFrame(columns=["bucket_start", "estimated_ticks"])
         if m1.empty or "datetime" not in m1.columns:
@@ -496,13 +530,11 @@ class BacktestDataProvider:
         cache_dir = os.path.join(self._cache_root, dataset.symbol, cache_id)
         os.makedirs(cache_dir, exist_ok=True)
 
-        ticks_path = os.path.join(cache_dir, "ticks.parquet")
-        dataset.ticks.to_parquet(ticks_path, index=False)
+        ticks_path = _write_cache_frame(dataset.ticks, os.path.join(cache_dir, "ticks"))
 
         candle_paths: Dict[str, str] = {}
         for tf, cdf in dataset.candles.items():
-            path = os.path.join(cache_dir, f"{tf}.parquet")
-            cdf.to_parquet(path, index=False)
+            path = _write_cache_frame(cdf, os.path.join(cache_dir, tf))
             candle_paths[tf] = path
 
         entry = {
