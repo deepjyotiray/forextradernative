@@ -283,18 +283,7 @@ def _get_live_strategy_blockers(trader) -> dict:
                             "tick_pressure": getattr(trader, "_tick_pressure", {}) or {},
                             "_risk_manager": getattr(trader, "risk", None),
                             "now_utc": datetime.now(timezone.utc),
-                            "strategy_trade_counts": {
-                                name: sum(
-                                    1
-                                    for trade in (
-                                        trader.trades.open_trades.values()
-                                        if getattr(trader, "trades", None) and getattr(trader.trades, "open_trades", None)
-                                        else []
-                                    )
-                                    if getattr(trade, "strategy", "") == name
-                                )
-                                for name in ["SWING_ENGINE", "INTRADAY_ENGINE"]
-                            },
+                            "strategy_trade_counts": _strategy_trade_counts_for_trader(trader),
                         },
                         strategy_names=enabled,
                     ).get("all_results")
@@ -489,6 +478,37 @@ def _clean_close_reason(primary: Any, *fallbacks: Any) -> str:
     return "Reason unavailable"
 
 
+def _strategy_names_for_trader(trader) -> list[str]:
+    names = []
+    try:
+        names = [name for name in getattr(trader.strat_mgr, "available", []) if name and name != "AUTO"]
+    except Exception:
+        names = []
+    if names:
+        return names
+    try:
+        return list(_scfg_store.list_strategies())
+    except Exception:
+        return []
+
+
+def _strategy_trade_counts_for_trader(trader) -> Dict[str, int]:
+    counts = {str(name).upper(): 0 for name in _strategy_names_for_trader(trader)}
+    try:
+        open_trades = (
+            trader.trades.open_trades.values()
+            if getattr(trader, "trades", None) and getattr(trader.trades, "open_trades", None)
+            else []
+        )
+        for trade in open_trades:
+            key = str(getattr(trade, "strategy", "") or "").upper()
+            if key:
+                counts[key] = counts.get(key, 0) + 1
+    except Exception:
+        pass
+    return counts
+
+
 def _reason_to_trigger_text(strategy_name: str, reason: Any) -> str:
     text = str(reason or "").strip()
     lower = text.lower()
@@ -547,18 +567,7 @@ def _build_strategy_eval_data(trader) -> Dict[str, Any]:
         "tick_pressure": getattr(trader, "_tick_pressure", {}) or {},
         "_risk_manager": getattr(trader, "risk", None),
         "now_utc": datetime.now(timezone.utc),
-        "strategy_trade_counts": {
-            name: sum(
-                1
-                for trade in (
-                    trader.trades.open_trades.values()
-                    if getattr(trader, "trades", None) and getattr(trader.trades, "open_trades", None)
-                    else []
-                )
-                if getattr(trade, "strategy", "") == name
-            )
-            for name in ["SWING_ENGINE", "INTRADAY_ENGINE"]
-        },
+        "strategy_trade_counts": _strategy_trade_counts_for_trader(trader),
     }
 
 

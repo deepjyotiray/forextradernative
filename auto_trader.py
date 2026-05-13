@@ -623,11 +623,7 @@ class AutoTrader:
             "market_state": self._market_state,
             "_risk_manager": self.risk,
             "now_utc": datetime.now(timezone.utc),
-            "strategy_trade_counts": {
-                name: sum(1 for t in (self.trades.open_trades.values() if self.trades else [])
-                          if getattr(t, "strategy", "") == name)
-                for name in ["SWING_ENGINE", "INTRADAY_ENGINE"]
-            },
+            "strategy_trade_counts": self._strategy_trade_counts(),
         }
         if self.strat_mgr.is_auto:
             item = self.strat_mgr.generate_signal(strat_data)
@@ -658,8 +654,9 @@ class AutoTrader:
                 self._log_strategy_skip(strat_name, "Execution blocked: missing SL/TP")
                 continue
 
-            entry = sig.get("entry", tick["bid"] if action == "SELL" else tick["ask"])
-            sl_distance = sig.get("sl_distance", abs(entry - sl))
+            signal_entry = _safe_float(sig.get("entry"), 0.0)
+            entry = self._market_entry_price(action, tick, fallback=signal_entry)
+            sl_distance = abs(entry - _safe_float(sl))
             if sl_distance <= 0:
                 self._log_strategy_skip(strat_name, "Execution blocked: invalid stop distance")
                 continue
@@ -766,11 +763,7 @@ class AutoTrader:
             "market_state": self._market_state,
             "_risk_manager": self.risk,
             "now_utc": datetime.now(timezone.utc),
-            "strategy_trade_counts": {
-                name: sum(1 for t in (self.trades.open_trades.values() if self.trades else [])
-                          if getattr(t, "strategy", "") == name)
-                for name in ["SWING_ENGINE", "INTRADAY_ENGINE"]
-            },
+            "strategy_trade_counts": self._strategy_trade_counts(),
         }
         strategy = self.strat_mgr.get(strategy_name)
         if strategy is None:
@@ -786,8 +779,9 @@ class AutoTrader:
         sl, tp = sig.get("sl"), sig.get("tp")
         if not sl or not tp:
             return
-        entry = sig.get("entry", tick["bid"] if action == "SELL" else tick["ask"])
-        sl_distance = sig.get("sl_distance", abs(entry - sl))
+        signal_entry = _safe_float(sig.get("entry"), 0.0)
+        entry = self._market_entry_price(action, tick, fallback=signal_entry)
+        sl_distance = abs(entry - _safe_float(sl))
         if sl_distance <= 0:
             return
         lot = _safe_float(sig.get("lot", sig.get("lot_size")), 0.0)
@@ -889,6 +883,26 @@ class AutoTrader:
                 strategy.confirm_trade_executed(float(sig.get("sweep_level") or 0.0), candle_ts)
             else:
                 strategy.confirm_trade_executed(sig)
+
+    def _strategy_trade_counts(self) -> Dict[str, int]:
+        names = [name for name in getattr(self.strat_mgr, "available", []) if name and name != "AUTO"]
+        counts = {str(name).upper(): 0 for name in names}
+        if not self.trades:
+            return counts
+        for trade in self.trades.open_trades.values():
+            key = str(getattr(trade, "strategy", "") or "").upper()
+            if key:
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    @staticmethod
+    def _market_entry_price(action: str, tick: Dict, fallback: float = 0.0) -> float:
+        action = str(action or "").upper()
+        if action == "BUY":
+            return _safe_float((tick or {}).get("ask"), fallback)
+        if action == "SELL":
+            return _safe_float((tick or {}).get("bid"), fallback)
+        return _safe_float(fallback, 0.0)
 
     def _strategy_open_count(self, strategy_name: str) -> int:
         if not self.trades:

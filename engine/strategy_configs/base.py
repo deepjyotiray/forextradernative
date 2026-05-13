@@ -42,10 +42,18 @@ _DATA_DIR.mkdir(exist_ok=True)
 
 # In-memory cache: name → config dict
 _cache: Dict[str, Dict[str, Any]] = {}
+_cache_mtimes: Dict[str, int | None] = {}
 
 
 def _path(name: str) -> Path:
     return _DATA_DIR / f"{name}.json"
+
+
+def _mtime(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
 
 
 def _merge(defaults: Dict, saved: Dict) -> Dict:
@@ -69,13 +77,14 @@ def _normalize_disabled_fields(mod: Any, values: Dict[str, Any]) -> Dict[str, An
 
 def load(name: str) -> Dict[str, Any]:
     """Load config for a strategy. Creates from defaults if file missing."""
-    if name in _cache:
+    p = _path(name)
+    disk_mtime = _mtime(p)
+    if name in _cache and _cache_mtimes.get(name) == disk_mtime:
         return dict(_cache[name])
     mod = _REGISTRY.get(name)
     if mod is None:
         return {}
     defaults = copy.deepcopy(mod.DEFAULTS)
-    p = _path(name)
     if p.exists():
         try:
             saved = json.loads(p.read_text(encoding="utf-8"))
@@ -88,6 +97,7 @@ def load(name: str) -> Dict[str, Any]:
         merged = _normalize_disabled_fields(mod, defaults)
         p.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     _cache[name] = merged
+    _cache_mtimes[name] = _mtime(p)
     return dict(merged)
 
 
@@ -106,6 +116,7 @@ def save(name: str, values: Dict[str, Any]) -> Dict[str, Any]:
     current = _normalize_disabled_fields(mod, current)
     _path(name).write_text(json.dumps(current, indent=2), encoding="utf-8")
     _cache[name] = current
+    _cache_mtimes[name] = _mtime(_path(name))
     _apply_to_cfg(name, current)
     return dict(current)
 
@@ -118,6 +129,7 @@ def reset(name: str) -> Dict[str, Any]:
     defaults = _normalize_disabled_fields(mod, copy.deepcopy(mod.DEFAULTS))
     _path(name).write_text(json.dumps(defaults, indent=2), encoding="utf-8")
     _cache[name] = defaults
+    _cache_mtimes[name] = _mtime(_path(name))
     _apply_to_cfg(name, defaults)
     return dict(defaults)
 
