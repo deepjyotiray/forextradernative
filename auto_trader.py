@@ -43,6 +43,7 @@ from engine.m15_sr_strategy import M15SupportResistanceStrategy
 from engine.strategies.trend_channel_strategy import TrendChannelStrategy
 from engine.swing_engine_strategy import SwingEngineStrategy
 from engine.intraday_engine_strategy import IntradayEngineStrategy
+from engine.m15_zone_scalp_strategy import M15ZoneScalpStrategy
 from engine.strategies.htf_long_strategy import HTFLongStrategy
 from engine.strategies.htf_short_strategy import HTFShortStrategy
 from engine.calendar import calendar as eco_calendar
@@ -155,6 +156,7 @@ class AutoTrader:
             ("TREND_CHANNEL", TrendChannelStrategy),
             ("SWING_ENGINE", SwingEngineStrategy),
             ("INTRADAY_ENGINE", IntradayEngineStrategy),
+            ("M15_ZONE_SCALP", M15ZoneScalpStrategy),
             ("HTF_LONG", HTFLongStrategy),
             ("HTF_SHORT", HTFShortStrategy),
         ]
