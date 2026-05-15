@@ -1,0 +1,45 @@
+NAME = "M15_SCALP_DEEP"
+
+DEFAULTS = {
+    "enabled": True,
+    "risk_pct": 0.35,
+    "fixed_lot": None,
+    "max_active_trades": 1,
+    "max_trades_day": 0,
+    "spread_max": 0.35,
+    "pip_size": 0.1,
+    "tp_min_pips": 28,
+    "tp_max_pips": 60,
+    "target_rr": 1.3,
+    "min_rr": 1.15,
+    "sl_buffer_atr_mult": 0.25,
+    "sl_floor_pips": 10,
+    "sl_ceiling_pips": 28,
+    "zone_touch_atr_mult": 0.18,
+    "zone_touch_floor_pts": 0.6,
+    "reaction_zone_buffer_atr_mult": 0.10,
+    "reaction_zone_buffer_pts": 0.25,
+    "min_zone_strength": 0.55,
+    "max_zone_width_atr_mult": 0.85,
+    "bias_fallback_min_confidence": 0.70,
+    "rejection_wick_ratio": 0.36,
+    "displacement_body_ratio": 0.58,
+    "min_signal_body_ratio": 0.32,
+    "close_near_extreme_ratio": 0.68,
+    "ema_slope_min": 0.05,
+    "min_entry_velocity": 5.0,
+    "min_entry_burst_rate": 3.0,
+    "min_signed_pressure": -0.02,
+    "opposing_bias_pressure_threshold": 0.05,
+    "allow_ranging": False,
+    "sessions": ["ASIAN", "LONDON", "NEW_YORK"],
+    "news_block": True,
+    "zone_detector_eps": 1.0,
+    "zone_detector_min_samples": 2,
+    "zone_detector_max_width": 4.0,
+    "notes": "Deep-confluence M15 scalp: stricter HTF agreement, micro confirmation, and minimum RR.",
+}
+
+LOCKED = {}
+DISABLED = {}
+CFG_MAP = {}

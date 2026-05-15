@@ -40,6 +40,7 @@ from engine.strategy_manager import StrategyManager
 from engine.smc_strategy import SMCStrategy
 from engine.sweep_scalper import SweepScalper
 from engine.m15_sr_strategy import M15SupportResistanceStrategy
+from engine.m15_scalp_deep_strategy import M15ScalpDeepStrategy
 from engine.strategies.trend_channel_strategy import TrendChannelStrategy
 from engine.swing_engine_strategy import SwingEngineStrategy
 from engine.intraday_engine_strategy import IntradayEngineStrategy
@@ -156,6 +157,7 @@ class AutoTrader:
             ("TREND_CHANNEL", TrendChannelStrategy),
             ("SWING_ENGINE", SwingEngineStrategy),
             ("INTRADAY_ENGINE", IntradayEngineStrategy),
+            ("M15_SCALP_DEEP", M15ScalpDeepStrategy),
             ("M15_ZONE_SCALP", M15ZoneScalpStrategy),
             ("HTF_LONG", HTFLongStrategy),
             ("HTF_SHORT", HTFShortStrategy),

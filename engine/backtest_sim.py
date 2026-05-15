@@ -20,16 +20,18 @@ from .backtest_context import set_backtest_now
 from .backtest_data import BacktestDataset
 from .indicators import compute_indicators, compute_timeframe_context
 from .liquidity import compute_liquidity
+from .market_state import compute_market_state
 from .mtf_bias import compute_bias
 from .regime import classify_regime
 from .session_filter import is_market_open, is_session_open_blocked
 from .smc_strategy import SMCStrategy
+from .m15_scalp_deep_strategy import M15ScalpDeepStrategy
 from .m15_sr_strategy import M15SupportResistanceStrategy
 from .m15_zone_scalp_strategy import M15ZoneScalpStrategy
 from .strategy_manager import StrategyManager
 from .sweep_scalper import SweepScalper
 from .strategies.trend_channel_strategy import TrendChannelStrategy
-from .tick_processor import TickProcessor
+from .tick_processor import TickProcessor, analyze_tick_pressure
 from .zones import ZoneDetector
 from .xgb_model import xgb_model
 
@@ -182,7 +184,7 @@ class SimExecutionEngine:
         if sl_distance <= 0:
             return cfg.MIN_LOT
         strategy_name = str(strategy or "").upper()
-        if strategy_name == "SWEEP_SCALPER":
+        if strategy_name in {"SWEEP_SCALPER", "M15_SCALP_DEEP"}:
             base_risk_pct = float(getattr(cfg, "INTRADAY_RISK_PCT", self._risk_pct))
         elif strategy_name in {"SMC_CONFLUENCE", "M15_SUPPORT_RESISTANCE_REJECTION_V1", "TREND_CHANNEL"}:
             base_risk_pct = float(getattr(cfg, "SWING_RISK_PCT", self._risk_pct))
@@ -453,12 +455,14 @@ class BacktestRunner:
         self.smc = SMCStrategy()
         self.scalper = SweepScalper()
         self.m15_sr = M15SupportResistanceStrategy()
+        self.m15_scalp_deep = M15ScalpDeepStrategy()
         self.m15_zone_scalp = M15ZoneScalpStrategy()
         self.trend_channel = TrendChannelStrategy()
         self.strategy_manager = StrategyManager()
         self.strategy_manager.register(self.smc)
         self.strategy_manager.register(self.scalper)
         self.strategy_manager.register(self.m15_sr)
+        self.strategy_manager.register(self.m15_scalp_deep)
         self.strategy_manager.register(self.m15_zone_scalp)
         self.strategy_manager.register(self.trend_channel)
         self._decision_entries: List[Dict] = []
@@ -532,6 +536,7 @@ class BacktestRunner:
                 }
                 tick_proc.feed(last_tick)
                 tick_metrics = tick_proc.snapshot()
+                tick_pressure = analyze_tick_pressure(list(getattr(tick_proc, "_ticks", [])))
                 thought_message = ""
                 thought_kind = "TICK"
                 event_tag = ""
@@ -632,6 +637,9 @@ class BacktestRunner:
                     "liquidity": liquidity,
                     "correlation": {},
                     "calendar": {},
+                    "tick_snapshot": tick_metrics,
+                    "tick_pressure": tick_pressure,
+                    "market_state": compute_market_state(current_frames, now_utc),
                     "now_utc": now_utc,
                 }
 

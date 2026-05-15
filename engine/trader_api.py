@@ -359,6 +359,7 @@ def _get_cached_ai_reviews(limit: int = 12) -> list:
 _STRATEGY_LABELS = {
     "SMC_CONFLUENCE": "SMC",
     "M15_SUPPORT_RESISTANCE_REJECTION_V1": "M15 SR",
+    "M15_SCALP_DEEP": "M15 Scalp Deep",
     "SWEEP_SCALPER": "Sweep Scalper",
     "TREND_CHANNEL": "Trend Channel",
     "SWING_ENGINE": "Swing Engine",
@@ -370,6 +371,7 @@ _STRATEGY_LABELS = {
 _STRATEGY_TRIGGER_HINTS = {
     "SMC_CONFLUENCE": "Needs a clean zone interaction, sweep or rejection, supportive tick pressure, and score above the SMC threshold.",
     "M15_SUPPORT_RESISTANCE_REJECTION_V1": "Needs price to reject a strong M15 support or resistance zone with candle confirmation and clean spread.",
+    "M15_SCALP_DEEP": "Needs aligned D1 and H4 structure, a strong M15 rejection at a quality zone, supportive micro pressure, and a minimum RR before entry.",
     "SWEEP_SCALPER": "Needs a fresh liquidity sweep or compression release, clear short-term momentum, and session-quality execution.",
     "TREND_CHANNEL": "Needs price to touch a valid trend channel boundary in supertrend direction with enough room to the opposite wall.",
     "SWING_ENGINE": "Needs D1 and H4 to align, price to be near a key swing level, and an H4 rejection or strong directional candle.",
@@ -381,6 +383,7 @@ _STRATEGY_TRIGGER_HINTS = {
 _STRATEGY_RECHECK_SECONDS = {
     "SMC_CONFLUENCE": 180,
     "M15_SUPPORT_RESISTANCE_REJECTION_V1": 900,
+    "M15_SCALP_DEEP": 240,
     "SWEEP_SCALPER": 120,
     "TREND_CHANNEL": 900,
     "SWING_ENGINE": 3600,
@@ -984,7 +987,7 @@ def _build_config_dict() -> dict:
 
 def _build_sl_streak_guard_status() -> dict:
     from engine.sl_streak_guard import sl_streak_guard
-    strategies = ["SWING_ENGINE", "INTRADAY_ENGINE", "SMC_CONFLUENCE", "SWEEP_SCALPER"]
+    strategies = ["SWING_ENGINE", "INTRADAY_ENGINE", "SMC_CONFLUENCE", "SWEEP_SCALPER", "M15_SCALP_DEEP"]
     return {s: sl_streak_guard.status(s) for s in strategies
             if sl_streak_guard.status(s)["consecutive_sl_hits"] > 0}
 

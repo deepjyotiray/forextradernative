@@ -34,6 +34,14 @@ def test_normalize_signal_adds_m15_gate_metadata_from_reclaim_flag():
     assert signal["_candle_confirmation"] is True
 
 
+def test_normalize_signal_marks_m15_scalp_deep_as_m15_family():
+    signal = _normalize_signal({"signal": "BUY", "entry": 100.0}, "M15_SCALP_DEEP")
+
+    assert signal["_strategy_name"] == "M15_SCALP_DEEP"
+    assert signal["_signal_family"] == "M15"
+    assert signal["_candle_confirmation"] is True
+
+
 def test_normalize_signal_preserves_existing_gate_metadata():
     signal = _normalize_signal(
         {

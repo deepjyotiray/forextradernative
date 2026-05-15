@@ -119,14 +119,13 @@ def _resolve_exit_profile(
     isolated_profile = profile_name in {"intraday_engine", "swing_engine"}
     risk_unit = _risk_unit_dollars(sl_distance, volume)
     legacy_be_trigger_r = (_safe_float(be_trigger, 0.0) / risk_unit) if _safe_float(be_trigger, 0.0) > 0 else 0.0
+    be_trigger_override = feature_map["be_trigger_r"] if "be_trigger_r" in feature_map else feature_map.get("_be_trigger_r")
 
     resolved = {
         "profile_name": profile_name,
         "be_trigger_r": _safe_float(
-            feature_map.get("be_trigger_r", feature_map.get("_be_trigger_r", 0.0)),
-            _safe_float(profile.get("be_trigger_r"), 0.0)
-            if isolated_profile
-            else (legacy_be_trigger_r or _safe_float(profile.get("be_trigger_r"), 0.0)),
+            be_trigger_override,
+            0.0 if isolated_profile else (legacy_be_trigger_r or _safe_float(profile.get("be_trigger_r"), 0.0)),
         ),
         "breakeven_min_hold_seconds": _safe_int(
             feature_map.get("breakeven_min_hold_seconds", feature_map.get("_breakeven_min_hold_seconds")),

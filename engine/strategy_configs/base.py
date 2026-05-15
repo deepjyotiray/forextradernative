@@ -19,6 +19,7 @@ from . import intraday_engine
 from . import smc_confluence
 from . import sweep_scalper
 from . import m15_sr
+from . import m15_scalp_deep
 from . import trend_channel
 from . import htf_long
 from . import htf_short
@@ -31,6 +32,7 @@ _REGISTRY = {
     smc_confluence.NAME: smc_confluence,
     sweep_scalper.NAME: sweep_scalper,
     m15_sr.NAME: m15_sr,
+    m15_scalp_deep.NAME: m15_scalp_deep,
     m15_zone_scalp.NAME: m15_zone_scalp,
     trend_channel.NAME: trend_channel,
     htf_long.NAME: htf_long,

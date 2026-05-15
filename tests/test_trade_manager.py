@@ -4,6 +4,8 @@ from unittest.mock import Mock
 
 import pandas as pd
 
+import config as cfg
+
 from engine.trade_manager import TradeManager, TradeRecord
 
 
@@ -101,6 +103,22 @@ class TradeManagerTests(unittest.TestCase):
         self.assertEqual(args[13]["profile_name"], "swing_fast")
         self.assertEqual(args[13]["trail_lock_r"], 0.60)
         self.assertFalse(args[13]["velocity_drop_enabled"])
+
+    def test_register_trade_uses_profile_be_trigger_when_signal_does_not_override(self):
+        manager = self._build_manager()
+
+        manager.register_trade(
+            22334, "SELL", 0.01, 4610.0, 4612.0, 4607.0, 2.0,
+            strategy="M15_SCALP_DEEP",
+            confidence=0.8,
+            reason="profile default regression",
+            scalp=True,
+            features={"profile_name": "m15_scalp_deep"},
+        )
+
+        trade = manager.open_trades[22334]
+        self.assertEqual(trade.exit_profile, "m15_scalp_deep")
+        self.assertEqual(trade.be_trigger_r, cfg.get_exit_profile_config("m15_scalp_deep")["be_trigger_r"])
 
     def test_scalp_reversal_waits_for_min_hold(self):
         manager = self._build_manager()
