@@ -22,7 +22,7 @@ class _FakeRiskManager:
         self._last_trade_outcome = ""
         self._floating_pnl = 0.0
 
-    def can_trade(self, account, open_count):
+    def can_trade(self, account, open_count, strategy_name="", strategy_trade_counts=None):
         return self._allowed, self._reason
 
     @property
@@ -103,6 +103,8 @@ class MasterTradeGateTests(unittest.TestCase):
             "SMC_SPREAD_MEAN_MAX": cfg.SMC_SPREAD_MEAN_MAX,
             "SCALPER_SPREAD_MEAN_MAX": cfg.SCALPER_SPREAD_MEAN_MAX,
             "TREND_CHANNEL_MAX_SPREAD": cfg.TREND_CHANNEL_MAX_SPREAD,
+            "ALLOW_CONCURRENT_STRATEGY_POSITIONS": cfg.ALLOW_CONCURRENT_STRATEGY_POSITIONS,
+            "TEMP_DISABLE_GLOBAL_BLOCKS": cfg.TEMP_DISABLE_GLOBAL_BLOCKS,
         }
         cfg.TRADE_SCORE_MIN = 75
         cfg.TRADE_SCORE_PREMIUM = 85
@@ -131,6 +133,8 @@ class MasterTradeGateTests(unittest.TestCase):
         cfg.SMC_SPREAD_MEAN_MAX = 0.50
         cfg.SCALPER_SPREAD_MEAN_MAX = 0.65
         cfg.TREND_CHANNEL_MAX_SPREAD = 0.60
+        cfg.ALLOW_CONCURRENT_STRATEGY_POSITIONS = True
+        cfg.TEMP_DISABLE_GLOBAL_BLOCKS = False
 
     def tearDown(self):
         for key, value in self._original.items():
@@ -220,6 +224,32 @@ class MasterTradeGateTests(unittest.TestCase):
         self.assertTrue(result["allowed"])
         self.assertGreaterEqual(result["score"], 75)
         self.assertEqual(result["confirmation_count"], 4)
+
+    def test_risk_gate_passes_strategy_name_for_independent_slots(self):
+        calls = {}
+
+        class _CaptureRisk(_FakeRiskManager):
+            def can_trade(self, account, open_count, strategy_name="", strategy_trade_counts=None):
+                calls["strategy_name"] = strategy_name
+                calls["strategy_trade_counts"] = dict(strategy_trade_counts or {})
+                return True, "RISK_PASS"
+
+        signal = self._signal()
+        signal["_strategy_name"] = "M15_SCALP_DEEP"
+        market_state = self._market_state()
+        market_state["positions"] = [{"ticket": 1}]
+        market_state["strategy_trade_counts"] = {"SMC_CONFLUENCE": 1, "M15_SCALP_DEEP": 0}
+
+        result = master_trade_gate(
+            signal,
+            market_state,
+            risk_manager=_CaptureRisk(),
+            m15_context_provider=_FakeM15Context(),
+        )
+
+        self.assertTrue(result["allowed"])
+        self.assertEqual(calls["strategy_name"], "M15_SCALP_DEEP")
+        self.assertEqual(calls["strategy_trade_counts"]["SMC_CONFLUENCE"], 1)
 
     def test_counter_trend_trade_blocked_without_premium_conditions(self):
         signal = self._signal(bias="SHORT")

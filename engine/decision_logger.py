@@ -205,7 +205,7 @@ def log_scalper_decision(
     sweep_level: Optional[float] = None,
     signal_data: Optional[Dict] = None
 ):
-    """Log Sweep Scalper decision."""
+    """Log scalp-family decision."""
     additional = {}
     if sweep_level:
         additional["sweep_level"] = round(sweep_level, 2)
@@ -218,7 +218,7 @@ def log_scalper_decision(
         }
 
     log_decision(
-        strategy="SWEEP_SCALPER",
+        strategy="M15_SCALP_DEEP",
         setup_direction=setup_direction,
         bias_direction=None,  # Scalper doesn't use bias
         quality_score=quality_score,

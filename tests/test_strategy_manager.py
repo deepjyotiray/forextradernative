@@ -14,21 +14,21 @@ class _StubStrategy(BaseStrategy):
 
 
 def test_normalize_signal_adds_sweep_gate_metadata():
-    signal = _normalize_signal({"signal": "BUY", "entry": 100.0}, "SWEEP_SCALPER")
+    signal = _normalize_signal({"signal": "BUY", "entry": 100.0}, "M15_SCALP_DEEP")
 
-    assert signal["_strategy_name"] == "SWEEP_SCALPER"
-    assert signal["_signal_family"] == "SWEEP"
-    assert signal["_sweep_confirmed"] is True
+    assert signal["_strategy_name"] == "M15_SCALP_DEEP"
+    assert signal["_signal_family"] == "M15"
+    assert signal["_sweep_confirmed"] is False
     assert signal["_candle_confirmation"] is True
 
 
 def test_normalize_signal_adds_m15_gate_metadata_from_reclaim_flag():
     signal = _normalize_signal(
         {"signal": "SELL", "entry": 100.0, "_sweep_reclaim": True},
-        "M15_SUPPORT_RESISTANCE_REJECTION_V1",
+        "M15_ZONE_SCALP",
     )
 
-    assert signal["_strategy_name"] == "M15_SUPPORT_RESISTANCE_REJECTION_V1"
+    assert signal["_strategy_name"] == "M15_ZONE_SCALP"
     assert signal["_signal_family"] == "M15"
     assert signal["_sweep_confirmed"] is True
     assert signal["_candle_confirmation"] is True
@@ -62,11 +62,11 @@ def test_normalize_signal_preserves_existing_gate_metadata():
 
 def test_auto_mode_prefers_gate_allowed_signal_over_higher_confidence_blocked_signal():
     manager = StrategyManager()
-    manager.register(_StubStrategy("SWEEP_SCALPER", {"signal": "BUY", "entry": 100.0, "confidence": 0.92, "rr": 1.7}))
+    manager.register(_StubStrategy("M15_SCALP_DEEP", {"signal": "BUY", "entry": 100.0, "confidence": 0.92, "rr": 1.7}))
     manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "BUY", "entry": 100.0, "confidence": 0.74, "rr": 1.8}))
 
     def fake_gate(signal, market_state, risk_manager=None, m15_context_provider=None):
-        if signal["_strategy_name"] == "SWEEP_SCALPER":
+        if signal["_strategy_name"] == "M15_SCALP_DEEP":
             return {
                 "allowed": False,
                 "reason": "SPREAD_BLOCK: 0.600 > 0.450",
@@ -88,15 +88,15 @@ def test_auto_mode_prefers_gate_allowed_signal_over_higher_confidence_blocked_si
     assert result["strategy"] == "SMC_CONFLUENCE"
     assert result["signal"]["signal"] == "BUY"
     assert result["signal"]["_arb_log"]["strategy"] == "SMC_CONFLUENCE"
-    assert result["all_results"]["SWEEP_SCALPER"]["gate_allowed"] is False
-    assert "SPREAD_BLOCK" in result["all_results"]["SWEEP_SCALPER"]["reason"]
+    assert result["all_results"]["M15_SCALP_DEEP"]["gate_allowed"] is False
+    assert "SPREAD_BLOCK" in result["all_results"]["M15_SCALP_DEEP"]["reason"]
 
 
 def test_auto_mode_prefers_bias_aligned_signal_when_gate_quality_is_similar():
     manager = StrategyManager()
     manager.register(
         _StubStrategy(
-            "SWEEP_SCALPER",
+            "M15_SCALP_DEEP",
             {"signal": "SELL", "entry": 100.0, "confidence": 0.88, "rr": 1.6, "_entry_tick_pressure_score": -0.05},
         )
     )
@@ -108,7 +108,7 @@ def test_auto_mode_prefers_bias_aligned_signal_when_gate_quality_is_similar():
     )
 
     def fake_gate(signal, market_state, risk_manager=None, m15_context_provider=None):
-        is_counter = signal["_strategy_name"] == "SWEEP_SCALPER"
+        is_counter = signal["_strategy_name"] == "M15_SCALP_DEEP"
         return {
             "allowed": True,
             "reason": "MASTER_GATE_PASS",
@@ -122,12 +122,12 @@ def test_auto_mode_prefers_bias_aligned_signal_when_gate_quality_is_similar():
 
     assert result["strategy"] == "SMC_CONFLUENCE"
     assert result["signal"]["signal"] == "BUY"
-    assert result["all_results"]["SMC_CONFLUENCE"]["arb_score"] > result["all_results"]["SWEEP_SCALPER"]["arb_score"]
+    assert result["all_results"]["SMC_CONFLUENCE"]["arb_score"] > result["all_results"]["M15_SCALP_DEEP"]["arb_score"]
 
 
 def test_auto_mode_returns_no_trade_when_all_candidates_fail_gate():
     manager = StrategyManager()
-    manager.register(_StubStrategy("SWEEP_SCALPER", {"signal": "BUY", "entry": 100.0, "confidence": 0.81, "rr": 1.4}))
+    manager.register(_StubStrategy("M15_SCALP_DEEP", {"signal": "BUY", "entry": 100.0, "confidence": 0.81, "rr": 1.4}))
     manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "SELL", "entry": 100.0, "confidence": 0.77, "rr": 1.5}))
 
     def fake_gate(signal, market_state, risk_manager=None, m15_context_provider=None):
@@ -144,43 +144,42 @@ def test_auto_mode_returns_no_trade_when_all_candidates_fail_gate():
 
     assert result["signal"]["signal"] == "NO_TRADE"
     assert "BLOCKED_" in result["signal"]["reason"]
-    assert result["strategy"] in ("SWEEP_SCALPER", "SMC_CONFLUENCE")
+    assert result["strategy"] in ("M15_SCALP_DEEP", "SMC_CONFLUENCE")
 
 
 def test_multi_select_status_tracks_explicit_selection():
     manager = StrategyManager()
     manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "NO_TRADE", "reason": "smc"}))
-    manager.register(_StubStrategy("SWEEP_SCALPER", {"signal": "NO_TRADE", "reason": "scalper"}))
+    manager.register(_StubStrategy("M15_SCALP_DEEP", {"signal": "NO_TRADE", "reason": "scalper"}))
 
-    assert manager.set_selection(["SMC_CONFLUENCE", "SWEEP_SCALPER"]) is True
+    assert manager.set_selection(["SMC_CONFLUENCE", "M15_SCALP_DEEP"]) is True
 
     status = manager.status()
     assert status["is_auto"] is False
-    assert status["selected"] == ["SMC_CONFLUENCE", "SWEEP_SCALPER"]
-    assert status["enabled"] == ["SMC_CONFLUENCE", "SWEEP_SCALPER"]
-    assert manager.active_name == "SMC_CONFLUENCE,SWEEP_SCALPER"
+    assert status["selected"] == ["SMC_CONFLUENCE", "M15_SCALP_DEEP"]
+    assert status["enabled"] == ["SMC_CONFLUENCE", "M15_SCALP_DEEP"]
+    assert manager.active_name == "SMC_CONFLUENCE,M15_SCALP_DEEP"
 
 
 def test_auto_selection_enables_all_registered_strategies():
     manager = StrategyManager()
     manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "NO_TRADE", "reason": "smc"}))
-    manager.register(_StubStrategy("SWEEP_SCALPER", {"signal": "NO_TRADE", "reason": "scalper"}))
+    manager.register(_StubStrategy("M15_SCALP_DEEP", {"signal": "NO_TRADE", "reason": "scalper"}))
 
     assert manager.set_selection(["AUTO"]) is True
 
     status = manager.status()
     assert status["is_auto"] is True
-    assert status["enabled"] == ["SMC_CONFLUENCE", "SWEEP_SCALPER"]
+    assert status["enabled"] == ["SMC_CONFLUENCE", "M15_SCALP_DEEP"]
 
 
 def test_group_selection_expands_swing_and_intraday_tokens():
     manager = StrategyManager()
     manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "NO_TRADE", "reason": "smc"}))
-    manager.register(_StubStrategy("M15_SUPPORT_RESISTANCE_REJECTION_V1", {"signal": "NO_TRADE", "reason": "m15"}))
-    manager.register(_StubStrategy("SWEEP_SCALPER", {"signal": "NO_TRADE", "reason": "scalper"}))
+    manager.register(_StubStrategy("M15_ZONE_SCALP", {"signal": "NO_TRADE", "reason": "m15"}))
+    manager.register(_StubStrategy("M15_SCALP_DEEP", {"signal": "NO_TRADE", "reason": "scalper"}))
     manager.register(_StubStrategy("TREND_CHANNEL", {"signal": "NO_TRADE", "reason": "trend"}))
     manager.register(_StubStrategy("SWING_ENGINE", {"signal": "NO_TRADE", "reason": "swing"}))
-    manager.register(_StubStrategy("INTRADAY_ENGINE", {"signal": "NO_TRADE", "reason": "intraday"}))
 
     assert manager.set_selection(["SWING", "INTRADAY"]) is True
 
@@ -188,11 +187,10 @@ def test_group_selection_expands_swing_and_intraday_tokens():
     assert status["selected"] == ["SWING", "INTRADAY"]
     assert status["enabled"] == [
         "SMC_CONFLUENCE",
-        "M15_SUPPORT_RESISTANCE_REJECTION_V1",
+        "M15_ZONE_SCALP",
         "TREND_CHANNEL",
         "SWING_ENGINE",
-        "SWEEP_SCALPER",
-        "INTRADAY_ENGINE",
+        "M15_SCALP_DEEP",
     ]
     assert manager.active_name == "SWING,INTRADAY"
 
@@ -200,7 +198,7 @@ def test_group_selection_expands_swing_and_intraday_tokens():
 def test_set_active_accepts_group_alias():
     manager = StrategyManager()
     manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "NO_TRADE", "reason": "smc"}))
-    manager.register(_StubStrategy("M15_SUPPORT_RESISTANCE_REJECTION_V1", {"signal": "NO_TRADE", "reason": "m15"}))
+    manager.register(_StubStrategy("M15_ZONE_SCALP", {"signal": "NO_TRADE", "reason": "m15"}))
     manager.register(_StubStrategy("TREND_CHANNEL", {"signal": "NO_TRADE", "reason": "trend"}))
     manager.register(_StubStrategy("SWING_ENGINE", {"signal": "NO_TRADE", "reason": "swing"}))
 
@@ -210,7 +208,7 @@ def test_set_active_accepts_group_alias():
     assert status["selected"] == ["SWING"]
     assert status["enabled"] == [
         "SMC_CONFLUENCE",
-        "M15_SUPPORT_RESISTANCE_REJECTION_V1",
+        "M15_ZONE_SCALP",
         "TREND_CHANNEL",
         "SWING_ENGINE",
     ]

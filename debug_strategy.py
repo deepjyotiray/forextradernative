@@ -10,7 +10,6 @@ from engine.zones import ZoneDetector
 from engine.regime import classify_regime
 from engine.mtf_bias import compute_bias
 from engine.liquidity import compute_liquidity
-from engine.sweep_scalper import SweepScalper
 from engine.smc_strategy import SMCStrategy
 from engine.tick_processor import TickProcessor
 
@@ -42,17 +41,6 @@ data = {
     "tick": tick, "zones": zones, "indicators": ind,
     "account": {}, "positions": [], "correlation": {}, "calendar": {},
 }
-
-print("=== SWEEP SCALPER ===")
-sc = SweepScalper()
-# Feed ticks to build buffer
-for i in range(10):
-    sc.tick_proc.feed(tick)
-    time.sleep(0.01)
-sig = sc.generate_signal(data)
-print(f"Signal: {sig.get('signal')}")
-print(f"Reason: {sig.get('reason')}")
-print()
 
 print("=== SMC CONFLUENCE ===")
 smc = SMCStrategy()

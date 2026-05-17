@@ -1,7 +1,6 @@
 HTF_LONG.json -=True
-INTRADAY_ENGINE.json -=True
-M15_SUPPORT_RESISTANCE_REJECTION_V1.json -=True
+M15_SCALP_DEEP.json -=True
+M15_ZONE_SCALP.json -=True
 SMC_CONFLUENCE.json -=True
-SWEEP_SCALPER.json -=True
 SWING_ENGINE.json -=True
 TREND_CHANNEL.json -=True

@@ -171,12 +171,25 @@ class RiskManager:
         dd = (balance - equity) / balance * 100
         return dd >= cfg.MAX_DRAWDOWN_PCT
 
-    def can_trade(self, account: Dict, open_count: int) -> tuple:
+    def can_trade(
+        self,
+        account: Dict,
+        open_count: int,
+        strategy_name: str = "",
+        strategy_trade_counts: Dict | None = None,
+    ) -> tuple:
         """Returns (allowed: bool, reason: str)."""
         self.check_daily_reset()
 
+        if bool(getattr(cfg, "TEMP_DISABLE_GLOBAL_BLOCKS", False)):
+            return True, "GLOBAL_BLOCKS_DISABLED"
+
+        strategy_name = str(strategy_name or "").upper()
+        strategy_trade_counts = strategy_trade_counts or {}
+        independent_strategy_slots = bool(getattr(cfg, "ALLOW_CONCURRENT_STRATEGY_POSITIONS", False)) and bool(strategy_name)
+
         max_open_trades = int(getattr(cfg, "MAX_OPEN_TRADES", cfg.MAX_POSITIONS))
-        if open_count >= max_open_trades:
+        if not independent_strategy_slots and open_count >= max_open_trades:
             return False, "RISK_BLOCK: max open trades reached"
 
         max_trades_per_day = int(getattr(cfg, "MAX_TRADES_PER_DAY", self._daily_trades or 0) or 0)
@@ -214,7 +227,7 @@ class RiskManager:
         equity = account.get("equity", balance)
         self._last_account = account
 
-        if open_count >= cfg.MAX_POSITIONS:
+        if not independent_strategy_slots and open_count >= cfg.MAX_POSITIONS:
             return False, f"Max positions ({cfg.MAX_POSITIONS})"
 
         if balance > 0:
@@ -251,8 +264,8 @@ class RiskManager:
             if base_risk_pct <= 0:
                 raise ValueError
         except Exception:
-            intraday_strategies = {"SWEEP_SCALPER", "INTRADAY_ENGINE", "M15_SCALP_DEEP"}
-            swing_strategies = {"SMC_CONFLUENCE", "M15_SUPPORT_RESISTANCE_REJECTION_V1", "TREND_CHANNEL", "SWING_ENGINE"}
+            intraday_strategies = {"M15_SCALP_DEEP", "M15_ZONE_SCALP"}
+            swing_strategies = {"SMC_CONFLUENCE", "TREND_CHANNEL", "SWING_ENGINE", "HTF_LONG", "HTF_SHORT"}
             if strategy_name in intraday_strategies:
                 base_risk_pct = float(getattr(cfg, "INTRADAY_RISK_PCT", cfg.MAX_RISK_PCT))
             elif strategy_name in swing_strategies:

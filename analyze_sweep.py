@@ -5,7 +5,7 @@ from collections import Counter
 conn = sqlite3.connect('orders.db')
 conn.row_factory = sqlite3.Row
 rows = conn.execute(
-    "SELECT * FROM orders WHERE strategy='SWEEP_SCALPER' AND status='CLOSED' ORDER BY open_time"
+    "SELECT * FROM orders WHERE strategy='M15_SCALP_DEEP' AND status='CLOSED' ORDER BY open_time"
 ).fetchall()
 
 orders = []

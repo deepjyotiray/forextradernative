@@ -25,12 +25,10 @@ from engine.liquidity import compute_liquidity
 from engine.performance import PerformanceTracker
 from engine.strategy_manager import StrategyManager
 from engine.smc_strategy import SMCStrategy
-from engine.m15_sr_strategy import M15SupportResistanceStrategy
-from engine.sweep_scalper import SweepScalper
 from engine.strategies.trend_channel_strategy import TrendChannelStrategy
 from engine.strategies.htf_long_strategy import HTFLongStrategy
+from engine.strategies.htf_short_strategy import HTFShortStrategy
 from engine.swing_engine_strategy import SwingEngineStrategy
-from engine.intraday_engine_strategy import IntradayEngineStrategy
 from engine.m15_scalp_deep_strategy import M15ScalpDeepStrategy
 from engine.m15_zone_scalp_strategy import M15ZoneScalpStrategy
 from engine.calendar import calendar as eco_calendar
@@ -39,7 +37,7 @@ from engine.xgb_model import xgb_model, xgb_bypass_enabled, xgb_training_enabled
 from engine.anti_starvation import record_trade_taken
 from engine.decision_logger import get_live_blockers
 
-_TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120}
+_TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120, "D1": 720}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -61,12 +59,10 @@ class AutoTrader:
         self.strat_mgr = StrategyManager()
         _strategy_classes = [
             ("SMC_CONFLUENCE", SMCStrategy),
-            ("M15_SR", M15SupportResistanceStrategy),
-            ("SWEEP_SCALPER", SweepScalper),
             ("TREND_CHANNEL", TrendChannelStrategy),
             ("HTF_LONG", HTFLongStrategy),
+            ("HTF_SHORT", HTFShortStrategy),
             ("SWING_ENGINE", SwingEngineStrategy),
-            ("INTRADAY_ENGINE", IntradayEngineStrategy),
             ("M15_SCALP_DEEP", M15ScalpDeepStrategy),
             ("M15_ZONE_SCALP", M15ZoneScalpStrategy),
         ]

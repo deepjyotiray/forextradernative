@@ -15,10 +15,7 @@ from typing import Any, Dict
 import config as cfg
 
 from . import swing_engine
-from . import intraday_engine
 from . import smc_confluence
-from . import sweep_scalper
-from . import m15_sr
 from . import m15_scalp_deep
 from . import trend_channel
 from . import htf_long
@@ -28,10 +25,7 @@ from . import m15_zone_scalp
 # Registry: strategy name → definition module
 _REGISTRY = {
     swing_engine.NAME: swing_engine,
-    intraday_engine.NAME: intraday_engine,
     smc_confluence.NAME: smc_confluence,
-    sweep_scalper.NAME: sweep_scalper,
-    m15_sr.NAME: m15_sr,
     m15_scalp_deep.NAME: m15_scalp_deep,
     m15_zone_scalp.NAME: m15_zone_scalp,
     trend_channel.NAME: trend_channel,

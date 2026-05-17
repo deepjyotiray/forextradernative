@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from engine.backtest_sim import BacktestRequest, SimExecutionEngine
+from engine.backtest_sim import BacktestRequest, BacktestRunner, SimExecutionEngine
 from engine.backtest_context import set_backtest_now
 from engine.session_filter import get_session_at, is_market_open_at
 from engine.session_filter import get_session
@@ -69,6 +69,22 @@ class BacktestCoreTests(unittest.TestCase):
             self.assertEqual(get_session(), "NEW_YORK")
         finally:
             set_backtest_now(None)
+
+    def test_backtest_runner_registers_all_live_strategies(self):
+        runner = BacktestRunner()
+        self.assertEqual(
+            runner.strategy_manager.available,
+            [
+                "AUTO",
+                "SMC_CONFLUENCE",
+                "M15_SCALP_DEEP",
+                "M15_ZONE_SCALP",
+                "TREND_CHANNEL",
+                "SWING_ENGINE",
+                "HTF_LONG",
+                "HTF_SHORT",
+            ],
+        )
 
 
 if __name__ == "__main__":

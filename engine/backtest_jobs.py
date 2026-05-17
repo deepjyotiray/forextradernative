@@ -233,11 +233,12 @@ class BacktestJobManager:
         if req.strategy not in (
             "AUTO",
             "SMC_CONFLUENCE",
-            "M15_SUPPORT_RESISTANCE_REJECTION_V1",
             "M15_SCALP_DEEP",
             "M15_ZONE_SCALP",
-            "SWEEP_SCALPER",
             "TREND_CHANNEL",
+            "SWING_ENGINE",
+            "HTF_LONG",
+            "HTF_SHORT",
         ):
             raise ValueError(f"Unsupported strategy: {req.strategy}")
         if req.split_mode not in _ALLOWED_SPLITS:

@@ -69,7 +69,7 @@ class OrderDatabaseReviewTests(unittest.TestCase):
     def test_trade_outcome_review_segments_recent_trades(self):
         self._store_closed_order(
             1,
-            "SWEEP_SCALPER",
+            "M15_SCALP_DEEP",
             "scalp",
             0.0,
             "breakeven_stop",
@@ -89,7 +89,7 @@ class OrderDatabaseReviewTests(unittest.TestCase):
         )
         self._store_closed_order(
             3,
-            "SWEEP_SCALPER",
+            "M15_SCALP_DEEP",
             "scalp",
             -1.20,
             "sl",

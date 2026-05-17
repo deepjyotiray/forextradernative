@@ -358,36 +358,30 @@ def _get_cached_ai_reviews(limit: int = 12) -> list:
 
 _STRATEGY_LABELS = {
     "SMC_CONFLUENCE": "SMC",
-    "M15_SUPPORT_RESISTANCE_REJECTION_V1": "M15 SR",
     "M15_SCALP_DEEP": "M15 Scalp Deep",
-    "SWEEP_SCALPER": "Sweep Scalper",
+    "M15_ZONE_SCALP": "M15 Zone Scalp",
     "TREND_CHANNEL": "Trend Channel",
     "SWING_ENGINE": "Swing Engine",
-    "INTRADAY_ENGINE": "Intraday Engine",
     "HTF_LONG": "HTF Long",
     "HTF_SHORT": "HTF Short",
 }
 
 _STRATEGY_TRIGGER_HINTS = {
-    "SMC_CONFLUENCE": "Needs a clean zone interaction, sweep or rejection, supportive tick pressure, and score above the SMC threshold.",
-    "M15_SUPPORT_RESISTANCE_REJECTION_V1": "Needs price to reject a strong M15 support or resistance zone with candle confirmation and clean spread.",
-    "M15_SCALP_DEEP": "Needs aligned D1 and H4 structure, a strong M15 rejection at a quality zone, supportive micro pressure, and a minimum RR before entry.",
-    "SWEEP_SCALPER": "Needs a fresh liquidity sweep or compression release, clear short-term momentum, and session-quality execution.",
+    "SMC_CONFLUENCE": "Needs a fresh HTF liquidity sweep, a confirmed break of structure, a retest into the originating order block, and an LTF IFVG reclaim.",
+    "M15_SCALP_DEEP": "Needs an H1 unmitigated supply-demand origin, a fresh M5 structure shift, a breaker block retrace, and clean execution pressure.",
+    "M15_ZONE_SCALP": "Needs price to tap a validated M15 supply-demand zone and print a clean rejection inside session with tight execution.",
     "TREND_CHANNEL": "Needs price to touch a valid trend channel boundary in supertrend direction with enough room to the opposite wall.",
     "SWING_ENGINE": "Needs D1 and H4 to align, price to be near a key swing level, and an H4 rejection or strong directional candle.",
-    "INTRADAY_ENGINE": "Needs H1 and M15 alignment, a valid session, a sweep at a known intraday level, and strong M5 confirmation.",
     "HTF_LONG": "Needs DXY and US10Y both trending down (macro bullish), weekly bias STRONG_BULLISH or EARLY_BULLISH, pullback 20-50% into the weekly range, and H1 structure UP.",
     "HTF_SHORT": "Needs DXY and US10Y both trending up (macro bearish), weekly bias STRONG_BEARISH or EARLY_BEARISH, pullback 20-50% into the weekly range, and H1 structure DOWN.",
 }
 
 _STRATEGY_RECHECK_SECONDS = {
     "SMC_CONFLUENCE": 180,
-    "M15_SUPPORT_RESISTANCE_REJECTION_V1": 900,
     "M15_SCALP_DEEP": 240,
-    "SWEEP_SCALPER": 120,
+    "M15_ZONE_SCALP": 300,
     "TREND_CHANNEL": 900,
     "SWING_ENGINE": 3600,
-    "INTRADAY_ENGINE": 300,
     "HTF_LONG": 14400,
     "HTF_SHORT": 14400,
 }
@@ -987,7 +981,7 @@ def _build_config_dict() -> dict:
 
 def _build_sl_streak_guard_status() -> dict:
     from engine.sl_streak_guard import sl_streak_guard
-    strategies = ["SWING_ENGINE", "INTRADAY_ENGINE", "SMC_CONFLUENCE", "SWEEP_SCALPER", "M15_SCALP_DEEP"]
+    strategies = ["SWING_ENGINE", "SMC_CONFLUENCE", "M15_SCALP_DEEP", "M15_ZONE_SCALP"]
     return {s: sl_streak_guard.status(s) for s in strategies
             if sl_streak_guard.status(s)["consecutive_sl_hits"] > 0}
 
@@ -1935,7 +1929,11 @@ async def execute_manual_ai_trade_market(idea_id: str):
         raise HTTPException(status_code=400, detail="AI trade idea has invalid execution levels")
 
     open_count = trader.trades.open_count if trader.trades else len(bridge.get_my_positions())
-    allowed, reason = trader.risk.can_trade(account, open_count)
+    allowed, reason = trader.risk.can_trade(
+        account,
+        open_count,
+        strategy_name="AI_MANUAL",
+    )
     if not allowed:
         raise HTTPException(status_code=400, detail=reason)
 
@@ -2031,7 +2029,11 @@ async def execute_manual_ai_trade_pending(idea_id: str):
 
     account = bridge.get_account() or {}
     open_count = trader.trades.open_count if trader.trades else len(bridge.get_my_positions())
-    allowed, reason = trader.risk.can_trade(account, open_count)
+    allowed, reason = trader.risk.can_trade(
+        account,
+        open_count,
+        strategy_name="AI_MANUAL",
+    )
     if not allowed:
         raise HTTPException(status_code=400, detail=reason)
 

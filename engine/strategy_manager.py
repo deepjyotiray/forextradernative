@@ -20,8 +20,6 @@ _no_trade_log_times: Dict[str, float] = {}
 _AUTO = "AUTO"
 _SIGNAL_FAMILY_BY_STRATEGY = {
     "SMC_CONFLUENCE": "SMC",
-    "SWEEP_SCALPER": "SWEEP",
-    "M15_SUPPORT_RESISTANCE_REJECTION_V1": "M15",
     "M15_SCALP_DEEP": "M15",
     "M15_ZONE_SCALP": "M15",
     "TREND_CHANNEL": "TREND",
@@ -274,7 +272,7 @@ class StrategyManager:
         m15_context_provider = (
             data.get("_m15_context_provider")
             or data.get("m15_context_provider")
-            or self.get("M15_SUPPORT_RESISTANCE_REJECTION_V1")
+            or self.get("M15_ZONE_SCALP")
         )
 
         enabled = list(strategy_names or self._strategies.keys())

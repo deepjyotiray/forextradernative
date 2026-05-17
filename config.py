@@ -31,6 +31,17 @@ TRADING_ENABLED = False
 # Risk defaults
 MAX_POSITIONS = 3
 MAX_OPEN_TRADES = 2
+# When enabled, each live strategy can run independently and the global open-trade
+# caps no longer block a new strategy just because another strategy already has
+# a position. Duplicate protection stays per-strategy via each strategy's own
+# `max_active_trades` gate.
+ALLOW_CONCURRENT_STRATEGY_POSITIONS = True
+# Temporary ops switch: bypass shared/global software blocks so only
+# strategy-local conditions decide whether a setup can proceed. This bypasses
+# centralized master-gate blocking, shared risk/cooldown/session caps, and the
+# auto-trader's forced close-all / market-open guardrails. MT5/broker-side
+# rejections can still happen.
+TEMP_DISABLE_GLOBAL_BLOCKS = True
 MAX_RISK_PCT = 1.0
 INTRADAY_RISK_PCT = 0.5
 SWING_RISK_PCT = 1.0
@@ -357,31 +368,6 @@ EXIT_PROFILE_M15_BOUNCE_TRAIL_ACTIVATE_R = 0.90
 EXIT_PROFILE_M15_BOUNCE_TRAIL_LOCK_R = 0.20
 EXIT_PROFILE_M15_BOUNCE_VELOCITY_DROP_ENABLED = True
 
-EXIT_PROFILE_STRUCTURED_INTRADAY_BE_TRIGGER_R = 0.35
-EXIT_PROFILE_STRUCTURED_INTRADAY_BREAKEVEN_MIN_HOLD_SECONDS = 20
-EXIT_PROFILE_STRUCTURED_INTRADAY_BREAKEVEN_VOLUME_HOLD_RATIO = 0.0
-EXIT_PROFILE_STRUCTURED_INTRADAY_MIN_HOLD_SECONDS = 30
-EXIT_PROFILE_STRUCTURED_INTRADAY_EARLY_FAIL_POINTS = 0.12
-EXIT_PROFILE_STRUCTURED_INTRADAY_EARLY_FAIL_MIN_TICKS = 3
-EXIT_PROFILE_STRUCTURED_INTRADAY_EARLY_FAIL_MAX_TICKS = 15
-EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_ARM_R = 1.00
-EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_DRAWDOWN_PCT = 0.70
-EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_FLOOR_R = 0.20
-EXIT_PROFILE_STRUCTURED_INTRADAY_TIMEOUT_SECONDS = 1800
-EXIT_PROFILE_STRUCTURED_INTRADAY_TIMEOUT_MIN_PROGRESS_R = 0.15
-EXIT_PROFILE_STRUCTURED_INTRADAY_TRAIL_ACTIVATE_R = 1.10
-EXIT_PROFILE_STRUCTURED_INTRADAY_TRAIL_LOCK_R = 0.35
-EXIT_PROFILE_STRUCTURED_INTRADAY_VELOCITY_DROP_ENABLED = True
-
-# Swing Engine reversal exit parameters
-INTRADAY_ENGINE_REVERSAL_MIN_PEAK_R = 0.25       # low-conf intraday trades can cut once they show some profit first
-INTRADAY_ENGINE_REVERSAL_CANDLES_REQUIRED = 1    # default intraday behavior stays responsive
-INTRADAY_ENGINE_REVERSAL_BODY_THRESHOLD = 0.60   # base body ratio for a strong counter-candle
-INTRADAY_ENGINE_REVERSAL_HIGH_CONF_MIN = 0.80    # confidence threshold that enables hold-friendly reversal rules
-INTRADAY_ENGINE_REVERSAL_HIGH_CONF_MIN_PEAK_R = 0.50   # high-conf trades need more profit before reversal exits can arm
-INTRADAY_ENGINE_REVERSAL_HIGH_CONF_CANDLES_REQUIRED = 2  # require a second distinct counter-candle for high-conf trades
-INTRADAY_ENGINE_REVERSAL_HIGH_CONF_BODY = 0.85   # high-conf trades only react to very strong counter-candles
-
 # Swing Engine reversal exit parameters
 SWING_ENGINE_REVERSAL_MIN_PEAK_R = 1.5       # must have reached this profit before reversal exit fires
 SWING_ENGINE_REVERSAL_CANDLES_REQUIRED = 3   # consecutive counter-candles needed to confirm reversal
@@ -482,24 +468,6 @@ def get_exit_profile_config(name: str) -> dict:
             "trail_lock_r": EXIT_PROFILE_SMC_TRAIL_LOCK_R,
             "velocity_drop_enabled": EXIT_PROFILE_SMC_VELOCITY_DROP_ENABLED,
         },
-        "swing_structured": {
-            "profile_name": "swing_structured",
-            "be_trigger_r": EXIT_PROFILE_M15_BE_TRIGGER_R,
-            "breakeven_min_hold_seconds": EXIT_PROFILE_M15_BREAKEVEN_MIN_HOLD_SECONDS,
-            "breakeven_volume_hold_ratio": EXIT_PROFILE_M15_BREAKEVEN_VOLUME_HOLD_RATIO,
-            "min_hold_seconds": EXIT_PROFILE_M15_MIN_HOLD_SECONDS,
-            "early_fail_points": EXIT_PROFILE_M15_EARLY_FAIL_POINTS,
-            "early_fail_min_ticks": EXIT_PROFILE_M15_EARLY_FAIL_MIN_TICKS,
-            "early_fail_max_ticks": EXIT_PROFILE_M15_EARLY_FAIL_MAX_TICKS,
-            "reversal_arm_r": EXIT_PROFILE_M15_REVERSAL_ARM_R,
-            "reversal_drawdown_pct": EXIT_PROFILE_M15_REVERSAL_DRAWDOWN_PCT,
-            "reversal_floor_r": EXIT_PROFILE_M15_REVERSAL_FLOOR_R,
-            "timeout_seconds": EXIT_PROFILE_M15_TIMEOUT_SECONDS,
-            "timeout_min_progress_r": EXIT_PROFILE_M15_TIMEOUT_MIN_PROGRESS_R,
-            "trail_activate_r": EXIT_PROFILE_M15_TRAIL_ACTIVATE_R,
-            "trail_lock_r": EXIT_PROFILE_M15_TRAIL_LOCK_R,
-            "velocity_drop_enabled": EXIT_PROFILE_M15_VELOCITY_DROP_ENABLED,
-        },
         "m15_mean_reversion_fast": {
             "profile_name": "m15_mean_reversion_fast",
             "be_trigger_r": EXIT_PROFILE_M15_BOUNCE_BE_TRIGGER_R,
@@ -562,24 +530,6 @@ def get_exit_profile_config(name: str) -> dict:
             "trail_lock_r": 0.18,
             "velocity_drop_enabled": True,
         },
-        "structured_intraday": {
-            "profile_name": "structured_intraday",
-            "be_trigger_r": EXIT_PROFILE_STRUCTURED_INTRADAY_BE_TRIGGER_R,
-            "breakeven_min_hold_seconds": EXIT_PROFILE_STRUCTURED_INTRADAY_BREAKEVEN_MIN_HOLD_SECONDS,
-            "breakeven_volume_hold_ratio": EXIT_PROFILE_STRUCTURED_INTRADAY_BREAKEVEN_VOLUME_HOLD_RATIO,
-            "min_hold_seconds": EXIT_PROFILE_STRUCTURED_INTRADAY_MIN_HOLD_SECONDS,
-            "early_fail_points": EXIT_PROFILE_STRUCTURED_INTRADAY_EARLY_FAIL_POINTS,
-            "early_fail_min_ticks": EXIT_PROFILE_STRUCTURED_INTRADAY_EARLY_FAIL_MIN_TICKS,
-            "early_fail_max_ticks": EXIT_PROFILE_STRUCTURED_INTRADAY_EARLY_FAIL_MAX_TICKS,
-            "reversal_arm_r": EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_ARM_R,
-            "reversal_drawdown_pct": EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_DRAWDOWN_PCT,
-            "reversal_floor_r": EXIT_PROFILE_STRUCTURED_INTRADAY_REVERSAL_FLOOR_R,
-            "timeout_seconds": EXIT_PROFILE_STRUCTURED_INTRADAY_TIMEOUT_SECONDS,
-            "timeout_min_progress_r": EXIT_PROFILE_STRUCTURED_INTRADAY_TIMEOUT_MIN_PROGRESS_R,
-            "trail_activate_r": EXIT_PROFILE_STRUCTURED_INTRADAY_TRAIL_ACTIVATE_R,
-            "trail_lock_r": EXIT_PROFILE_STRUCTURED_INTRADAY_TRAIL_LOCK_R,
-            "velocity_drop_enabled": EXIT_PROFILE_STRUCTURED_INTRADAY_VELOCITY_DROP_ENABLED,
-        },
         "swing_trend": {
             "profile_name": "swing_trend",
             "be_trigger_r": EXIT_PROFILE_TREND_BE_TRIGGER_R,
@@ -597,28 +547,6 @@ def get_exit_profile_config(name: str) -> dict:
             "trail_activate_r": EXIT_PROFILE_TREND_TRAIL_ACTIVATE_R,
             "trail_lock_r": EXIT_PROFILE_TREND_TRAIL_LOCK_R,
             "velocity_drop_enabled": EXIT_PROFILE_TREND_VELOCITY_DROP_ENABLED,
-        },
-        "intraday_engine": {
-            "profile_name": "intraday_engine",
-            "be_trigger_r": 0.3,
-            "breakeven_min_hold_seconds": 20,
-            "breakeven_volume_hold_ratio": 0.0,
-            "min_hold_seconds": 0,
-            "early_fail_points": 0.0,
-            "early_fail_min_ticks": 0,
-            "early_fail_max_ticks": 0,
-            "reversal_arm_r": 0.0,
-            "reversal_drawdown_pct": 0.0,
-            "reversal_floor_r": 0.0,
-            "profit_lock_1_arm_r": 0.0,
-            "profit_lock_1_r": 0.0,
-            "profit_lock_2_arm_r": 0.0,
-            "profit_lock_2_r": 0.0,
-            "timeout_seconds": 0,
-            "timeout_min_progress_r": 0.0,
-            "trail_activate_r": 0.0,
-            "trail_lock_r": 0.0,
-            "velocity_drop_enabled": False,
         },
         "swing_engine": {
             "profile_name": "swing_engine",

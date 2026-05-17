@@ -80,7 +80,7 @@ def example_manual_engine_selection():
     
     req = BacktestRequest(
         symbol='EURUSD',
-        strategy='SWEEP_SCALPER',
+        strategy='M15_SCALP_DEEP',
         start_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
         end_utc=datetime(2024, 3, 31, tzinfo=timezone.utc),  # 3 months
         initial_balance=10000.0
@@ -206,7 +206,7 @@ def example_memory_constrained_system():
     
     req = BacktestRequest(
         symbol='USDJPY',
-        strategy='SWEEP_SCALPER',
+        strategy='M15_SCALP_DEEP',
         start_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
         end_utc=datetime(2024, 6, 30, tzinfo=timezone.utc),
         initial_balance=10000.0

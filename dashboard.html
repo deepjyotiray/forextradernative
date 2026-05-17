@@ -498,10 +498,9 @@ function strategyLabel(name){
   const labels={
     AUTO:'AUTO',
     SWING:'SWING',
-    INTRADAY:'INTRADAY',
     SMC_CONFLUENCE:'SMC',
-    M15_SUPPORT_RESISTANCE_REJECTION_V1:'M15 SR',
-    SWEEP_SCALPER:'SCALPER',
+    M15_SCALP_DEEP:'M15 Deep',
+    M15_ZONE_SCALP:'M15 Zone',
     TREND_CHANNEL:'TREND',
     HTF_LONG:'HTF Long',
     HTF_SHORT:'HTF Short'
@@ -811,8 +810,8 @@ function render(d,opts={}){
   const strats=d.strategies||{};
   const enabled=(strats.enabled||[]);
   const available=(strats.available||[]).filter(s=>s!=='AUTO');
-  const LABELS={'SMC_CONFLUENCE':'SMC','SWEEP_SCALPER':'SCALPER','TREND_CHANNEL':'TREND',
-    'M15_SUPPORT_RESISTANCE_REJECTION_V1':'M15SR','SWING_ENGINE':'SWING','INTRADAY_ENGINE':'INTRADAY','HTF_LONG':'HTF L','HTF_SHORT':'HTF S'};
+  const LABELS={'SMC_CONFLUENCE':'SMC','TREND_CHANNEL':'TREND',
+    'M15_SCALP_DEEP':'M15D','M15_ZONE_SCALP':'M15Z','SWING_ENGINE':'SWING','HTF_LONG':'HTF L','HTF_SHORT':'HTF S'};
   const stratBadgesEl=$('stratBadges');
   if(stratBadgesEl&&available.length){
     setHTML(stratBadgesEl,available.map(s=>{

@@ -124,7 +124,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             8398970520, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 11
@@ -140,7 +140,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1001, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 30
@@ -159,7 +159,7 @@ class TradeManagerTests(unittest.TestCase):
         features["profit_lock_2_arm_r"] = 0.0
         trade = TradeRecord(
             1002, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=features,
         )
         trade.fill_ts = time.time() - 30
@@ -176,7 +176,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1015, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 35
@@ -195,7 +195,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1016, "BUY", 0.02, 4579.0, 4579.18, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 45
@@ -213,7 +213,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1003, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 20
@@ -230,7 +230,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             10031, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 10
@@ -246,7 +246,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             10032, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 20
@@ -269,7 +269,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             10033, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 20
@@ -289,7 +289,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1004, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 95
@@ -304,7 +304,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1014, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 95
@@ -329,7 +329,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1017, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 25
@@ -354,7 +354,7 @@ class TradeManagerTests(unittest.TestCase):
         manager.bridge.close_trade.return_value = {"success": False, "error": "Code 10027: AutoTrading disabled by client"}
         trade = TradeRecord(
             1018, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         manager.open_trades[1018] = trade
@@ -386,7 +386,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1006, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.fill_ts = time.time() - 11
@@ -420,7 +420,7 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         trade = TradeRecord(
             1008, "SELL", 0.02, 4572.42, 4572.42, 4568.17, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.sl_breakeven = True
@@ -453,7 +453,7 @@ class TradeManagerTests(unittest.TestCase):
     def test_trade_record_from_dict_restores_exit_profile(self):
         trade = TradeRecord(
             1007, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
-            strategy="SWEEP_SCALPER", scalp=True, be_trigger=0.30, timeout=60,
+            strategy="M15_SCALP_DEEP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.20, features=self._scalp_features(),
         )
         trade.live_pnl = 0.50
@@ -465,160 +465,6 @@ class TradeManagerTests(unittest.TestCase):
         self.assertEqual(restored.profit_lock_1_r, 0.12)
         self.assertEqual(restored.profit_lock_2_r, 0.22)
         self.assertEqual(restored.trail_lock_r, 0.40)
-
-    def test_intraday_engine_moves_to_breakeven_and_partials(self):
-        manager = self._build_manager()
-        manager._partial_close = Mock()
-        trade = TradeRecord(
-            2001, "BUY", 0.04, 4500.0, 4498.0, 4504.0, 2.0,
-            strategy="INTRADAY_ENGINE", scalp=True, features={"profile_name": "intraday_engine"},
-        )
-        trade.live_pnl = 8.0  # 1R = $8 with 2pt stop and 0.04 lot
-        manager._manage_intraday_engine(trade)
-        manager.bridge.modify_trade.assert_called_once_with(2001, 4500.0, 4504.0)
-        self.assertTrue(trade.sl_breakeven)
-
-        manager.bridge.modify_trade.reset_mock()
-        trade.live_pnl = 12.0
-        manager._manage_intraday_engine(trade)
-        manager._partial_close.assert_called_once()
-        self.assertTrue(trade.partial_closed)
-
-    def test_intraday_engine_profile_does_not_inherit_shared_timeout_or_breakeven(self):
-        trade = TradeRecord(
-            20011, "BUY", 0.04, 4500.0, 4498.0, 4504.0, 2.0,
-            strategy="INTRADAY_ENGINE", scalp=True, be_trigger=0.30, timeout=60,
-            early_fail=0.20, features={"profile_name": "intraday_engine"},
-        )
-
-        self.assertEqual(trade.exit_profile, "intraday_engine")
-        self.assertEqual(trade.timeout_seconds, 0)
-        self.assertEqual(trade.be_trigger_r, 0.0)
-        self.assertEqual(trade.early_fail_points, 0.0)
-        self.assertFalse(trade.velocity_drop_enabled)
-
-    def test_intraday_engine_hard_profit_floor_closes_retraced_winner(self):
-        manager = self._build_manager()
-        manager._close_early = Mock()
-        trade = TradeRecord(
-            20012, "SELL", 0.04, 4500.0, 4502.0, 4496.0, 2.0,
-            strategy="INTRADAY_ENGINE", scalp=True, features={"profile_name": "intraday_engine"},
-        )
-        trade.live_pnl = 9.6   # 1.2R
-        trade.peak_pnl = 16.0  # 2.0R
-
-        manager._manage_intraday_engine(trade)
-
-        manager._close_early.assert_called_once()
-        self.assertIn("hard profit floor", manager._close_early.call_args[0][1].lower())
-
-    def test_intraday_engine_high_conf_reversal_waits_for_meaningful_peak(self):
-        manager = self._build_manager()
-        manager._close_early = Mock()
-        trade = TradeRecord(
-            8522930667, "BUY", 0.01, 4704.39, 4699.17, 4714.17, 5.0,
-            strategy="INTRADAY_ENGINE", scalp=True,
-            features={"profile_name": "intraday_engine", "signal_confidence": 0.80},
-        )
-        trade.live_pnl = -1.15
-        trade.peak_pnl = 1.32  # 0.264R peak, matching the reported failure
-        manager._current_market_context = {
-            "m15_df": pd.DataFrame(
-                {
-                    "open": [4704.1, 4704.3, 4704.2],
-                    "high": [4704.8, 4704.9, 4704.7],
-                    "low": [4703.6, 4703.8, 4703.7],
-                    "close": [4704.5, 4704.4, 4704.1],
-                }
-            ),
-            "m5_df": pd.DataFrame(
-                {
-                    "open": [4704.55],
-                    "high": [4704.55],
-                    "low": [4703.10],
-                    "close": [4703.10],
-                },
-                index=pd.to_datetime(["2026-05-07T05:35:00Z"]),
-            ),
-        }
-
-        manager._manage_intraday_engine(trade)
-
-        manager._close_early.assert_not_called()
-
-    def test_intraday_engine_high_conf_reversal_requires_distinct_second_candle(self):
-        manager = self._build_manager()
-        manager._close_early = Mock()
-        trade = TradeRecord(
-            200125, "BUY", 0.01, 4704.39, 4699.17, 4714.17, 5.0,
-            strategy="INTRADAY_ENGINE", scalp=True,
-            features={"profile_name": "intraday_engine", "signal_confidence": 0.80},
-        )
-        trade.live_pnl = 1.8
-        trade.peak_pnl = 3.0  # 0.60R peak, enough to arm high-confidence reversal logic
-
-        manager._current_market_context = {
-            "m15_df": pd.DataFrame(
-                {
-                    "open": [4704.1, 4704.4, 4704.5],
-                    "high": [4705.0, 4705.2, 4705.1],
-                    "low": [4703.9, 4704.0, 4704.1],
-                    "close": [4704.6, 4704.8, 4704.7],
-                }
-            ),
-            "m5_df": pd.DataFrame(
-                {
-                    "open": [4705.00],
-                    "high": [4705.00],
-                    "low": [4704.00],
-                    "close": [4704.00],
-                },
-                index=pd.to_datetime(["2026-05-07T05:35:00Z"]),
-            ),
-        }
-
-        manager._manage_intraday_engine(trade)
-        manager._manage_intraday_engine(trade)
-        manager._close_early.assert_not_called()
-
-        manager._current_market_context["m5_df"] = pd.DataFrame(
-            {
-                "open": [4704.90],
-                "high": [4704.90],
-                "low": [4703.85],
-                "close": [4703.85],
-            },
-            index=pd.to_datetime(["2026-05-07T05:40:00Z"]),
-        )
-        manager._manage_intraday_engine(trade)
-
-        manager._close_early.assert_called_once()
-        self.assertIn("2 consecutive strong bearish candles", manager._close_early.call_args[0][1])
-
-    def test_intraday_engine_runner_mode_trails_to_m15_structure(self):
-        manager = self._build_manager()
-        trade = TradeRecord(
-            20013, "SELL", 0.04, 4500.0, 4502.0, 4496.0, 2.0,
-            strategy="INTRADAY_ENGINE", scalp=True, features={"profile_name": "intraday_engine"},
-        )
-        trade.live_pnl = 20.0  # 2.5R
-        trade.peak_pnl = 20.0
-        trade.features["_prev_peak_pnl"] = 20.0
-        m15_df = pd.DataFrame(
-            {
-                "open": [4502, 4501, 4500, 4499, 4498, 4497],
-                "high": [4503, 4502, 4501, 4498, 4497, 4496],
-                "low": [4500, 4499, 4498, 4497, 4496, 4495],
-                "close": [4501, 4500, 4499, 4498, 4497, 4496],
-            }
-        )
-        manager._current_market_context = {"m15_df": m15_df}
-
-        manager._manage_intraday_engine(trade)
-
-        manager.bridge.modify_trade.assert_called_once_with(20013, 4498.0, 4496.0)
-        self.assertEqual(trade.sl, 4498.0)
-        self.assertTrue(trade.trail_active)
 
     def test_swing_engine_locks_profit_without_partial_close(self):
         manager = self._build_manager()
@@ -723,23 +569,16 @@ class TradeManagerTests(unittest.TestCase):
     def test_manage_trade_bypasses_universal_layer_for_isolated_engine_profiles(self):
         manager = self._build_manager()
         manager._apply_universal_management = Mock(return_value=True)
-        manager._manage_intraday_engine = Mock()
         manager._manage_swing_engine = Mock()
 
-        intraday_trade = TradeRecord(
-            3001, "BUY", 0.04, 4500.0, 4498.0, 4504.0, 2.0,
-            strategy="INTRADAY_ENGINE", scalp=True, features={"profile_name": "intraday_engine"},
-        )
         swing_trade = TradeRecord(
             3002, "BUY", 0.04, 4500.0, 4488.0, 4536.0, 12.0,
             strategy="SWING_ENGINE", scalp=False, features={"profile_name": "swing_engine"},
         )
 
-        manager._manage_trade(intraday_trade, {"tick_count": 1}, {})
         manager._manage_trade(swing_trade, {"tick_count": 1}, {"h4_df": pd.DataFrame({"high": [1]*6, "low": [1]*6, "close": [1]*6})})
 
         manager._apply_universal_management.assert_not_called()
-        manager._manage_intraday_engine.assert_called_once()
         manager._manage_swing_engine.assert_called_once()
 
 

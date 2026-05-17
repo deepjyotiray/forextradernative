@@ -176,7 +176,7 @@ def detect_strategy(comment):
         return 'unknown'
     c = comment.upper()
     if 'SWEEP' in c:
-        return 'SWEEP_SCALPER'
+        return 'M15_SCALP_DEEP'
     if 'SMC' in c:
         return 'SMC_CONFLUENCE'
     return 'unknown'
@@ -248,7 +248,7 @@ def seed_database(positions, all_deals, open_comments, partial_positions):
 
         comment = open_comments.get(p['ticket'], '')
         strategy = detect_strategy(comment)
-        is_scalp = strategy == 'SWEEP_SCALPER'
+        is_scalp = strategy in {'M15_SCALP_DEEP', 'M15_ZONE_SCALP'}
         sl_distance = abs(p['entry_price'] - p['sl']) if p['sl'] else 0
 
         # Total P&L from Positions section (MT5 authoritative)

@@ -2,11 +2,11 @@
 XAUUSD Auto Trader — Background Service with selectable strategies.
 
 Strategies:
-  AUTO                                   — choose the best eligible strategy
-  SMC_CONFLUENCE                         — swing / SMC confluence
-  M15_SUPPORT_RESISTANCE_REJECTION_V1    — M15 structure rejection
-  SWEEP_SCALPER                          — intraday sweep scalper
-  TREND_CHANNEL                          — trend-following channel continuation
+  AUTO             — choose the best eligible strategy
+  SMC_CONFLUENCE   — swing / SMC confluence
+  M15_SCALP_DEEP   — H1 origin zone into M5 breaker confirmation
+  M15_ZONE_SCALP   — M15 zone touch and rejection execution
+  TREND_CHANNEL    — trend-following channel continuation
 """
 import time
 import sys
@@ -38,12 +38,9 @@ from engine.liquidity import compute_liquidity
 from engine.performance import PerformanceTracker
 from engine.strategy_manager import StrategyManager
 from engine.smc_strategy import SMCStrategy
-from engine.sweep_scalper import SweepScalper
-from engine.m15_sr_strategy import M15SupportResistanceStrategy
 from engine.m15_scalp_deep_strategy import M15ScalpDeepStrategy
 from engine.strategies.trend_channel_strategy import TrendChannelStrategy
 from engine.swing_engine_strategy import SwingEngineStrategy
-from engine.intraday_engine_strategy import IntradayEngineStrategy
 from engine.m15_zone_scalp_strategy import M15ZoneScalpStrategy
 from engine.strategies.htf_long_strategy import HTFLongStrategy
 from engine.strategies.htf_short_strategy import HTFShortStrategy
@@ -152,11 +149,8 @@ class AutoTrader:
         self.strat_mgr._auto = True
         _strategy_classes = [
             ("SMC_CONFLUENCE", SMCStrategy),
-            ("M15_SR", M15SupportResistanceStrategy),
-            ("SWEEP_SCALPER", SweepScalper),
             ("TREND_CHANNEL", TrendChannelStrategy),
             ("SWING_ENGINE", SwingEngineStrategy),
-            ("INTRADAY_ENGINE", IntradayEngineStrategy),
             ("M15_SCALP_DEEP", M15ScalpDeepStrategy),
             ("M15_ZONE_SCALP", M15ZoneScalpStrategy),
             ("HTF_LONG", HTFLongStrategy),
@@ -505,13 +499,24 @@ class AutoTrader:
         self.risk.update_floating_pnl(floating)
 
         # Close all open trades if daily target/loss limit breached (realized+floating)
-        if self.trades and self.risk.should_close_all() and self.trades.open_count > 0:
+        if (
+            not bool(getattr(cfg, "TEMP_DISABLE_GLOBAL_BLOCKS", False))
+            and self.trades
+            and self.risk.should_close_all()
+            and self.trades.open_count > 0
+        ):
             reason = self.risk.should_close_all_reason()
             self.log("RISK", f"{reason}. Closing all.")
             self.trades.close_all()
 
         # Close all if equity drawdown exceeds limit
-        if self.trades and account and self.risk.should_close_drawdown(account) and self.trades.open_count > 0:
+        if (
+            not bool(getattr(cfg, "TEMP_DISABLE_GLOBAL_BLOCKS", False))
+            and self.trades
+            and account
+            and self.risk.should_close_drawdown(account)
+            and self.trades.open_count > 0
+        ):
             bal = account.get('balance', 0)
             eq = account.get('equity', bal)
             dd = (bal - eq) / bal * 100 if bal > 0 else 0
@@ -599,7 +604,7 @@ class AutoTrader:
 
         if not self.enabled:
             return
-        if not is_market_open():
+        if not bool(getattr(cfg, "TEMP_DISABLE_GLOBAL_BLOCKS", False)) and not is_market_open():
             if now - getattr(self, '_last_gate_log', 0) > 600:
                 self._last_gate_log = now
                 h = datetime.now(timezone.utc).hour
@@ -674,7 +679,6 @@ class AutoTrader:
             if lot <= 0:
                 self._log_strategy_skip(strat_name, "Execution blocked: invalid lot")
                 continue
-            lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
 
             strategy_obj = self.strat_mgr.get(strat_name)
             if strategy_obj is not None and hasattr(strategy_obj, "pre_send_revalidate"):
@@ -745,7 +749,10 @@ class AutoTrader:
 
     def _try_reentry(self, strategy_name: str, tick: Dict, account: Dict, positions: list):
         """Re-evaluate a strategy immediately after a recovery exit and open a new trade if valid."""
-        if not self.enabled or not is_market_open():
+        if not self.enabled or (
+            not bool(getattr(cfg, "TEMP_DISABLE_GLOBAL_BLOCKS", False))
+            and not is_market_open()
+        ):
             return
         if self._strategy_open_count(strategy_name) > 0:
             return
@@ -791,7 +798,6 @@ class AutoTrader:
             lot = self.risk.calculate_lot(account, sl_distance, strategy=strategy_name)
         if lot <= 0:
             return
-        lot = max(cfg.MIN_LOT, min(cfg.MAX_LOT, lot))
         if hasattr(strategy, "pre_send_revalidate"):
             pre_send = strategy.pre_send_revalidate(sig, strat_data)
             if not pre_send.get("allowed", True):
@@ -877,14 +883,7 @@ class AutoTrader:
     def _confirm_strategy_execution(self, strat_name: str, sig: Dict):
         strategy = self.strat_mgr.get(strat_name)
         if strategy and hasattr(strategy, "confirm_trade_executed"):
-            if strat_name == "SWEEP_SCALPER":
-                try:
-                    candle_ts = float(self._candles.get("M1", {}).iloc[-1]["datetime"].timestamp()) if self._candles.get("M1") is not None and len(self._candles.get("M1")) else 0.0
-                except Exception:
-                    candle_ts = 0.0
-                strategy.confirm_trade_executed(float(sig.get("sweep_level") or 0.0), candle_ts)
-            else:
-                strategy.confirm_trade_executed(sig)
+            strategy.confirm_trade_executed(sig)
 
     def _strategy_trade_counts(self) -> Dict[str, int]:
         names = [name for name in getattr(self.strat_mgr, "available", []) if name and name != "AUTO"]

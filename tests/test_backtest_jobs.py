@@ -140,6 +140,26 @@ class BacktestJobsTests(unittest.TestCase):
 
         self.assertEqual(job.request.strategy, "M15_SCALP_DEEP")
 
+    def test_create_job_accepts_swing_and_htf_strategies(self):
+        mgr = BacktestJobManager()
+        strategies = ["SWING_ENGINE", "HTF_LONG", "HTF_SHORT"]
+
+        for strategy in strategies:
+            req = BacktestRequest.from_payload(
+                {
+                    "symbol": "XAUUSD",
+                    "strategy": strategy,
+                    "start_utc": "2026-01-01T00:00:00Z",
+                    "end_utc": "2026-01-02T00:00:00Z",
+                    "initial_balance": 10000,
+                }
+            )
+
+            with patch.object(mgr._executor, "submit", return_value=None):
+                job = mgr.create_job(req)
+
+            self.assertEqual(job.request.strategy, strategy)
+
     def test_real_cache_chunk_load_survives_empty_m1_cache_file(self):
         from engine.backtest_data import BacktestDataProvider
 

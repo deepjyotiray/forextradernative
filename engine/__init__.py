@@ -11,7 +11,6 @@ from .liquidity import compute_liquidity
 from .performance import PerformanceTracker
 from .strategy_manager import StrategyManager
 from .smc_strategy import SMCStrategy
-from .sweep_scalper import SweepScalper
 from .calendar import calendar
 from .correlation import correlation
 from .strategies import BaseStrategy

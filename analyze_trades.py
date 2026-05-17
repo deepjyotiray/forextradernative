@@ -53,7 +53,7 @@ by_strat = {}
 for t in trades:
     comment = t.get("entry_comment", "")
     if "SWEEP" in comment:
-        s = "SWEEP_SCALPER"
+        s = "M15_SCALP_DEEP"
     elif "SMC" in comment:
         s = "SMC_CONFLUENCE"
     else:

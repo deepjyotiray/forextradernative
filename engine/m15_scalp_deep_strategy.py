@@ -1,15 +1,16 @@
 """
-M15 scalp deep - stricter M15 zone scalp for XAUUSD.
+M15 scalp deep - Strategy 2 implementation.
 
-Key differences from M15_ZONE_SCALP:
-- requires true higher-timeframe agreement instead of mixed-state bias fallback
-- requires stronger M15 structure and micro execution quality
-- enforces a configurable minimum reward-to-risk
+Model:
+- H1 strong trend with at least two consecutive BOS
+- trace the latest expansion origin to an unmitigated supply / demand zone
+- wait for price to tap the HTF zone
+- confirm on M5 with market-structure shift and a breaker block inside the HTF zone
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -17,19 +18,13 @@ import config as cfg
 from engine import strategy_configs as _scfg
 from engine.m15_zone_scalp_strategy import (
     M15ZoneScalpStrategy,
-    _dist_to_interval,
-    _m15_atr,
     _ohlc_row,
-    _resolve_htf_tf,
     _safe_float,
     _session_allowed,
 )
-from engine.zones import ZoneDetector
 
 _UTC = timezone.utc
 _SIDE_SIGN = {"BUY": 1.0, "SELL": -1.0}
-_SIDE_BIAS = {"BUY": "LONG", "SELL": "SHORT"}
-_SIDE_TREND = {"BUY": "UP", "SELL": "DOWN"}
 
 
 def _side_sign(direction: str) -> float:
@@ -41,105 +36,54 @@ def _body_ratio(candle: pd.Series) -> float:
     return abs(cl - o) / max(0.01, h - l)
 
 
-def _closed_candle_hits_zone(direction: str, candle: pd.Series, zone_low: float, zone_high: float, buffer_pts: float) -> bool:
-    _o, h, l, _cl = _ohlc_row(candle)
-    if str(direction).upper() == "BUY":
-        return l <= (zone_high + buffer_pts)
-    return h >= (zone_low - buffer_pts)
+def _ema(series: pd.Series, span: int) -> pd.Series:
+    return series.astype(float).ewm(span=span, adjust=False).mean()
 
 
-def _ema_alignment(m15: pd.DataFrame, direction: str, min_slope: float) -> Tuple[bool, float, float]:
-    frame = m15.rename(columns=lambda c: str(c).lower())
-    closes = frame["close"].astype(float)
-    if len(closes) < 24:
-        return False, 0.0, 0.0
-
-    ema_fast = closes.ewm(span=9, adjust=False).mean()
-    ema_slow = closes.ewm(span=21, adjust=False).mean()
-    fast_now = float(ema_fast.iloc[-2])
-    fast_prev = float(ema_fast.iloc[-5])
-    slow_now = float(ema_slow.iloc[-2])
-    slope = (fast_now - fast_prev) / 3.0
-    gap = fast_now - slow_now
-    sign = _side_sign(direction)
-    ok = (sign * gap) > 0 and (sign * slope) >= min_slope
-    return ok, slope, gap
-
-
-def _strict_htf_alignment(data: Dict, direction: str, min_bias_conf: float) -> Tuple[bool, str]:
-    market_state = data.get("market_state") or {}
-    d1 = _resolve_htf_tf(market_state, "D1")
-    h4 = _resolve_htf_tf(market_state, "H4")
-    bias = data.get("bias") or {}
-    bias_dir = str(bias.get("direction") or "").upper()
-    bias_conf = _safe_float(bias.get("confidence"), 0.0)
-    htf_note = f"D1:{d1} H4:{h4}"
-    trend = _SIDE_TREND[str(direction or "").upper()]
-    bias_target = _SIDE_BIAS[str(direction or "").upper()]
-
-    if d1 == trend and h4 == trend:
-        return True, htf_note
-    if d1 == "RANGE" and h4 == trend and bias_dir == bias_target and bias_conf >= min_bias_conf:
-        return True, htf_note
-    return False, htf_note
+def _atr(frame: pd.DataFrame, period: int = 14) -> float:
+    if frame is None or len(frame) < period + 2:
+        return 0.0
+    rows = frame.rename(columns=lambda c: str(c).lower())
+    high = rows["high"].astype(float)
+    low = rows["low"].astype(float)
+    close = rows["close"].astype(float)
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [
+            (high - low),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return float(tr.rolling(period).mean().iloc[-1] or 0.0)
 
 
-def _reaction_ok(direction: str, candle: pd.Series, rej_wick: float, body_min: float, close_pos_min: float) -> bool:
-    o, h, l, cl = _ohlc_row(candle)
-    rng = max(0.01, h - l)
-    sign = _side_sign(direction)
-    favorable_close = (sign * (cl - o)) > 0
-    reaction_wick = (min(o, cl) - l) if sign > 0 else (h - max(o, cl))
-    opposite_wick = (h - max(o, cl)) if sign > 0 else (min(o, cl) - l)
-    close_pos = ((cl - l) / rng) if sign > 0 else ((h - cl) / rng)
-    body = abs(cl - o)
-    rejection = (reaction_wick / rng) >= rej_wick and favorable_close
-    displacement = (
-        favorable_close
-        and (body / rng) >= body_min
-        and close_pos >= close_pos_min
-        and (opposite_wick / rng) <= 0.45
-    )
-    return rejection or displacement
+def _zones_overlap(a_low: float, a_high: float, b_low: float, b_high: float, tolerance: float = 0.0) -> bool:
+    return not (a_high < b_low - tolerance or b_high < a_low - tolerance)
 
 
-def _sequence_ok(direction: str, prior_close: float, current_close: float) -> bool:
-    return (_side_sign(direction) * (current_close - prior_close)) > 0
+def _price_in_zone(price: float, zone_low: float, zone_high: float, tolerance: float = 0.0) -> bool:
+    return zone_low - tolerance <= price <= zone_high + tolerance
 
 
-def _pick_zone(direction: str, bid: float, clusters: List[Dict], proximity: float, min_str: float) -> Tuple[int, Dict] | None:
-    sign = _side_sign(direction)
-    best: Tuple[int, Dict, float] | None = None
-    for i, z in enumerate(clusters):
-        strength = float(z.get("strength", 0.0))
-        if strength < min_str:
-            continue
-        zone_low = float(z["zone_low"])
-        zone_high = float(z["zone_high"])
-        zone_mid = float(z.get("zone_mid", (zone_low + zone_high) / 2.0))
-        outer_boundary = zone_low if sign > 0 else zone_high
-        if (sign * (bid - outer_boundary)) < 0:
-            continue
-        if (sign * (bid - zone_mid)) < 0:
-            continue
-        dist = _dist_to_interval(bid, zone_low, zone_high)
-        if dist > proximity:
-            continue
-        quality = strength + ((proximity - dist) / max(proximity, 1e-6) * 0.15)
-        if best is None or quality > best[2]:
-            best = (i, z, quality)
-    if best is None:
-        return None
-    return best[0], best[1]
+def _swing_points(highs: List[float], lows: List[float], window: int = 2) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
+    swing_highs: List[Tuple[int, float]] = []
+    swing_lows: List[Tuple[int, float]] = []
+    for i in range(window, len(highs) - window):
+        if all(highs[i] >= highs[i - j] for j in range(1, window + 1)) and all(highs[i] >= highs[i + j] for j in range(1, window + 1)):
+            swing_highs.append((i, float(highs[i])))
+        if all(lows[i] <= lows[i - j] for j in range(1, window + 1)) and all(lows[i] <= lows[i + j] for j in range(1, window + 1)):
+            swing_lows.append((i, float(lows[i])))
+    return swing_highs, swing_lows
 
 
-def _micro_ok(direction: str, data: Dict, s_cfg: Dict) -> Tuple[bool, str, float, float, float | None]:
+def _micro_ok(direction: str, data: Dict, s_cfg: Dict) -> Tuple[bool, str, float, float, float]:
     tick_snapshot = data.get("tick_snapshot") or {}
     tick_pressure = data.get("tick_pressure") or {}
     velocity = _safe_float(tick_snapshot.get("velocity"), _safe_float(tick_pressure.get("velocity"), 0.0))
     burst = _safe_float(tick_pressure.get("burst_rate"), 0.0)
-    pressure_raw = tick_pressure.get("pressure_score")
-    pressure = None if pressure_raw is None else _safe_float(pressure_raw, 0.0)
+    pressure = _safe_float(tick_pressure.get("pressure_score"), 0.0)
     pressure_bias = str(
         tick_pressure.get("directional_bias")
         or tick_pressure.get("bias")
@@ -152,15 +96,14 @@ def _micro_ok(direction: str, data: Dict, s_cfg: Dict) -> Tuple[bool, str, float
         return False, f"Burst {burst:.2f} < {s_cfg.get('min_entry_burst_rate', 3.0)}", velocity, burst, pressure
 
     sign = _side_sign(direction)
-    signed_pressure = None if pressure is None else (sign * pressure)
     min_signed_pressure = float(s_cfg.get("min_signed_pressure", -0.02) or -0.02)
-    if signed_pressure is not None and signed_pressure < min_signed_pressure:
+    signed_pressure = sign * pressure
+    if signed_pressure < min_signed_pressure:
         return False, f"Signed pressure {signed_pressure:.3f} < {min_signed_pressure:.3f}", velocity, burst, pressure
 
-    opposing_bias_threshold = float(s_cfg.get("opposing_bias_pressure_threshold", 0.05) or 0.05)
-    aligned_bias = _SIDE_BIAS[str(direction or "").upper()]
-    opposing_bias = "SHORT" if aligned_bias == "LONG" else "LONG"
-    if pressure_bias == opposing_bias and signed_pressure is not None and signed_pressure <= -opposing_bias_threshold:
+    opposing_bias = "SHORT" if direction == "BUY" else "LONG"
+    opposing_threshold = float(s_cfg.get("opposing_bias_pressure_threshold", 0.05) or 0.05)
+    if pressure_bias == opposing_bias and signed_pressure <= -opposing_threshold:
         return False, f"Opposing {opposing_bias} pressure bias", velocity, burst, pressure
 
     return True, "MICRO_OK", velocity, burst, pressure
@@ -181,13 +124,18 @@ class M15ScalpDeepStrategy(M15ZoneScalpStrategy):
         if bid <= 0:
             return self._no("No tick data")
 
-        m15 = data.get("m15_df")
-        if m15 is None or len(m15) < 40:
-            return self._no("Insufficient M15 data")
-
         s_cfg = _scfg.get(self.name)
-        if spread > float(s_cfg.get("spread_max", 0.35) or 0.35):
-            return self._no(f"Spread {spread:.2f} > {s_cfg.get('spread_max', 0.35)}")
+        h1 = data.get("h1_df")
+        m5 = data.get("m5_df")
+        min_h1_bars = int(s_cfg.get("min_h1_bars", 40) or 40)
+        min_m5_bars = int(s_cfg.get("min_m5_bars", 20) or 20)
+        if h1 is None or len(h1) < min_h1_bars:
+            return self._no("Insufficient H1 data")
+        if m5 is None or len(m5) < min_m5_bars:
+            return self._no("Insufficient M5 data")
+
+        if spread > float(s_cfg.get("spread_max", 0.45) or 0.45):
+            return self._no(f"Spread {spread:.2f} > {s_cfg.get('spread_max', 0.45)}")
 
         now_utc = data.get("now_utc")
         if not isinstance(now_utc, datetime):
@@ -201,8 +149,8 @@ class M15ScalpDeepStrategy(M15ZoneScalpStrategy):
 
         if bool(s_cfg.get("news_block", True)):
             cal = data.get("calendar") or {}
-            if bool(cal.get("blocked")):
-                return self._no("High-impact news (calendar blocked)")
+            if bool(cal.get("blocked")) or bool(cal.get("high_impact")):
+                return self._no("High-impact news active")
 
         regime_state = str(((data.get("regime") or {}).get("state") or "")).upper()
         if regime_state == "RANGING" and not bool(s_cfg.get("allow_ranging", False)):
@@ -212,119 +160,47 @@ class M15ScalpDeepStrategy(M15ZoneScalpStrategy):
         if open_count >= int(s_cfg.get("max_active_trades", 1) or 1):
             return self._no(f"Max {s_cfg.get('max_active_trades', 1)} active scalp(s)")
 
-        atr_m15 = _m15_atr(m15)
-        if atr_m15 <= 0:
-            return self._no("Invalid M15 ATR")
+        htf_setup = self._find_htf_setup(h1, s_cfg)
+        if not htf_setup:
+            return self._no("No H1 unmitigated trend zone")
+
+        direction = str(htf_setup["direction"])
+        entry = ask if direction == "BUY" else bid
+        zone = dict(htf_setup["zone"])
+        zone_tolerance = max(
+            float(s_cfg.get("htf_zone_touch_pts", 0.35) or 0.35),
+            _atr(m5) * float(s_cfg.get("htf_zone_touch_atr_mult", 0.08) or 0.08),
+        )
+
+        if not self._htf_zone_is_active(entry, m5, zone, zone_tolerance):
+            return self._no("Price has not tapped the H1 zone")
+
+        breaker = self._find_m5_breaker_confirmation(m5, direction, zone, s_cfg)
+        if not breaker:
+            return self._no("No M5 structure-shift breaker confirmation")
+
+        micro_ok, micro_reason, velocity, burst, pressure = _micro_ok(direction, data, s_cfg)
+        if not micro_ok:
+            return self._no(micro_reason)
+
+        entry_tolerance = max(
+            float(s_cfg.get("breaker_entry_tolerance_pts", 0.20) or 0.20),
+            _atr(m5) * float(s_cfg.get("breaker_entry_tolerance_atr_mult", 0.04) or 0.04),
+        )
+        if not _price_in_zone(entry, breaker["zone_low"], breaker["zone_high"], entry_tolerance):
+            return self._no("Price not retraced into breaker block")
 
         pip = max(0.01, float(s_cfg.get("pip_size", 0.1) or 0.1))
-        tp_min_dist = float(s_cfg.get("tp_min_pips", 28) or 28) * pip
-        tp_max_dist = float(s_cfg.get("tp_max_pips", 60) or 60) * pip
-        target_rr = float(s_cfg.get("target_rr", 1.3) or 1.3)
-        min_rr = float(s_cfg.get("min_rr", 1.15) or 1.15)
+        sl = self._compute_stop(entry, direction, m5, zone, breaker, s_cfg)
+        if sl is None:
+            return self._no("Cannot compute valid stop")
+        sl_dist = round(abs(entry - sl), 2)
+        if sl_dist <= 0:
+            return self._no("Invalid stop distance")
 
-        proximity = max(
-            float(s_cfg.get("zone_touch_floor_pts", 0.6) or 0.6),
-            atr_m15 * float(s_cfg.get("zone_touch_atr_mult", 0.18) or 0.18),
-        )
-        reaction_zone_buffer = max(
-            float(s_cfg.get("reaction_zone_buffer_pts", 0.25) or 0.25),
-            atr_m15 * float(s_cfg.get("reaction_zone_buffer_atr_mult", 0.10) or 0.10),
-        )
-
-        zd = ZoneDetector(
-            eps=float(s_cfg.get("zone_detector_eps", 1.0) or 1.0),
-            min_samples=int(s_cfg.get("zone_detector_min_samples", 2) or 2),
-            max_width=float(s_cfg.get("zone_detector_max_width", 4.0) or 4.0),
-        )
-        frame = m15.copy()
-        frame.columns = [str(c).lower() for c in frame.columns]
-        clusters = zd.scored_clusters(frame)
-        if not clusters:
-            return self._no("No M15 zones")
-
-        min_strength = float(s_cfg.get("min_zone_strength", 0.55) or 0.55)
-        max_zone_width = atr_m15 * float(s_cfg.get("max_zone_width_atr_mult", 0.85) or 0.85)
-
-        zones_by_direction = {
-            "BUY": _pick_zone("BUY", bid, clusters, proximity, min_strength),
-            "SELL": _pick_zone("SELL", bid, clusters, proximity, min_strength),
-        }
-
-        candidates: List[Tuple[float, str, Tuple[int, Dict], str, float, float, float | None]] = []
-        closed = frame.iloc[-2]
-        prior = frame.iloc[-3]
-        min_body_ratio = float(s_cfg.get("min_signal_body_ratio", 0.32) or 0.32)
-        rejection_wick = float(s_cfg.get("rejection_wick_ratio", 0.36) or 0.36)
-        displacement_body = float(s_cfg.get("displacement_body_ratio", 0.58) or 0.58)
-        close_near = float(s_cfg.get("close_near_extreme_ratio", 0.68) or 0.68)
-        ema_slope_min = float(s_cfg.get("ema_slope_min", 0.05) or 0.05)
-
-        for direction in ("BUY", "SELL"):
-            active = zones_by_direction[direction]
-            if not active:
-                continue
-            _micro_allowed, micro_reason, velocity, burst, pressure = _micro_ok(direction, data, s_cfg)
-
-            _i, zone = active
-            zone_low = float(zone["zone_low"])
-            zone_high = float(zone["zone_high"])
-            zone_width = max(0.01, zone_high - zone_low)
-            if zone_width > max_zone_width:
-                continue
-
-            htf_ok, note = _strict_htf_alignment(
-                data,
-                direction,
-                float(s_cfg.get("bias_fallback_min_confidence", 0.70) or 0.70),
-            )
-            if not htf_ok:
-                continue
-
-            reaction_ok = _reaction_ok(direction, closed, rejection_wick, displacement_body, close_near)
-            trend_ok, ema_slope, ema_gap = _ema_alignment(frame, direction, ema_slope_min)
-            prior_close = float(prior["close"])
-            closed_close = float(closed["close"])
-            sequence_ok = _sequence_ok(direction, prior_close, closed_close)
-
-            if not reaction_ok or not trend_ok or not sequence_ok:
-                continue
-            if not _closed_candle_hits_zone(direction, closed, zone_low, zone_high, reaction_zone_buffer):
-                continue
-
-            closed_body_ratio = _body_ratio(closed)
-            if closed_body_ratio < min_body_ratio:
-                continue
-            if micro_reason != "MICRO_OK":
-                continue
-
-            strength = float(zone.get("strength", 0.0))
-            quality = strength + min(0.25, abs(ema_gap) * 0.05) + min(0.20, abs(ema_slope) * 0.10)
-            candidates.append((quality, direction, active, note, velocity, burst, pressure))
-
-        if not candidates:
-            return self._no("No deep-confluence M15 zone setup")
-
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        _quality, direction, active, htf_note, velocity, burst, pressure = candidates[0]
-        _zi, zone = active
-
-        zone_low = float(zone["zone_low"])
-        zone_high = float(zone["zone_high"])
-        zone_mid = float(zone.get("zone_mid", (zone_low + zone_high) / 2.0))
-        sl_buffer = atr_m15 * float(s_cfg.get("sl_buffer_atr_mult", 0.25) or 0.25)
-        sl_floor = float(s_cfg.get("sl_floor_pips", 10) or 10) * pip
-        sl_cap = float(s_cfg.get("sl_ceiling_pips", 28) or 28) * pip
-        sign = _side_sign(direction)
-        entry = (ask if ask > 0 else bid) if direction == "BUY" else (bid if bid > 0 else ask)
-        sl_anchor = zone_low if direction == "BUY" else zone_high
-        sl_raw = sl_anchor - (sign * sl_buffer)
-        raw_sl_distance = sign * (entry - sl_raw)
-        sl_dist = max(sl_floor, min(sl_cap, raw_sl_distance))
-        sl = round(entry - (sign * sl_dist), 2)
-        tp_dist = max(tp_min_dist, min(tp_max_dist, sl_dist * target_rr))
-        tp = round(entry + (sign * tp_dist), 2)
-
-        rr = tp_dist / max(sl_dist, 1e-6)
+        tp = self._compute_take_profit(entry, direction, sl_dist, data, htf_setup, s_cfg)
+        rr = round(abs(tp - entry) / sl_dist, 2) if sl_dist > 0 else 0.0
+        min_rr = float(s_cfg.get("min_rr", 1.3) or 1.3)
         if rr < min_rr:
             return self._no(f"RR {rr:.2f} < {min_rr:.2f}")
 
@@ -340,15 +216,15 @@ class M15ScalpDeepStrategy(M15ZoneScalpStrategy):
             risk_amount = balance * (_safe_float(s_cfg.get("risk_pct"), 0.35) / 100.0)
             lot = max(0.01, min(0.05, risk_amount / max(1.0, sl_dist * 100.0)))
 
-        strength = float(zone.get("strength", 0.0))
-        pressure_score = 0.0 if pressure is None else float(pressure)
-        confidence = 0.60 + min(0.24, strength * 0.20) + min(0.10, max(rr - 1.0, 0.0) * 0.15)
-        confidence += min(0.03, max(0.0, sign * pressure_score) * 0.10)
+        strength = float(htf_setup.get("strength", 0.0))
+        pressure_score = float(pressure)
+        confidence = 0.62 + min(0.18, strength * 0.06) + min(0.10, max(rr - 1.0, 0.0) * 0.14)
+        confidence += min(0.05, max(0.0, _side_sign(direction) * pressure_score) * 0.12)
 
-        tp_levels = [tp]
         reason = (
-            f"{direction} M15 scalp deep | {htf_note} | zone_mid:{zone_mid:.2f} "
-            f"[{zone_low:.2f}-{zone_high:.2f}] str:{strength:.2f} touch<={proximity:.2f} "
+            f"{direction} M15 scalp deep | H1 {htf_setup['trend_note']} | "
+            f"zone [{zone['zone_low']:.2f}-{zone['zone_high']:.2f}] | "
+            f"M5 breaker [{breaker['zone_low']:.2f}-{breaker['zone_high']:.2f}] "
             f"| rr {rr:.2f} | vel {velocity:.2f} burst {burst:.2f} pressure {pressure_score:.3f}"
         )
 
@@ -357,13 +233,13 @@ class M15ScalpDeepStrategy(M15ZoneScalpStrategy):
             "entry": round(entry, 2),
             "sl": sl,
             "tp": tp,
-            "tp_levels": tp_levels,
-            "sl_distance": round(sl_dist, 2),
+            "tp_levels": [tp],
+            "sl_distance": sl_dist,
             "lot": round(lot, 2),
             "confidence": min(0.99, round(confidence, 3)),
             "confidence_pct": int(round(min(0.99, confidence) * 100)),
             "reason": reason,
-            "rr": round(rr, 2),
+            "rr": rr,
             "_strategy_name": self.name,
             "strategy": self.name,
             "decision": direction,
@@ -371,14 +247,290 @@ class M15ScalpDeepStrategy(M15ZoneScalpStrategy):
             "_setup_direction": "LONG" if direction == "BUY" else "SHORT",
             "_bias_direction": "LONG" if direction == "BUY" else "SHORT",
             "_sweep_confirmed": False,
-            "_m15_zone_confirmed": True,
+            "_m15_zone_confirmed": False,
+            "_breaker_block_confirmed": True,
             "_candle_confirmation": True,
-            "_body_ratio": round(_body_ratio(closed), 3),
+            "_body_ratio": round(float(breaker.get("body_ratio", 0.0)), 3),
             "_exit_profile": "m15_scalp_deep",
             "_scalp": True,
-            "_tp_levels": tp_levels,
-            "_zone_mid": zone_mid,
-            "_tp_pips": round(tp_dist / pip, 2),
+            "_tp_levels": [tp],
+            "_htf_zone_mid": round((zone["zone_low"] + zone["zone_high"]) / 2.0, 2),
+            "_breaker_mid": round((breaker["zone_low"] + breaker["zone_high"]) / 2.0, 2),
+            "_tp_pips": round(abs(tp - entry) / pip, 2),
             "_pip_size": pip,
             "_session": sess_lbl,
         }
+
+    def _find_htf_setup(self, h1: pd.DataFrame, s_cfg: Dict) -> Optional[Dict]:
+        frame = h1.rename(columns=lambda c: str(c).lower()).copy()
+        highs = frame["high"].astype(float).tolist()
+        lows = frame["low"].astype(float).tolist()
+        closes = frame["close"].astype(float).tolist()
+        window = max(2, int(s_cfg.get("h1_swing_window", 2) or 2))
+        min_bos = max(2, int(s_cfg.get("min_consecutive_bos", 2) or 2))
+        swing_highs, swing_lows = _swing_points(highs, lows, window=window)
+        if len(swing_highs) < min_bos + 1 or len(swing_lows) < min_bos + 1:
+            return None
+
+        direction = self._trend_direction(swing_highs, swing_lows, min_bos)
+        if not direction:
+            return None
+
+        if direction == "BUY":
+            ref_idx, ref_level = swing_highs[-2]
+            bos_idx = self._find_bos_idx(closes, ref_idx, ref_level, "BUY")
+            anchor_idx = max((idx for idx, _ in swing_lows if idx < bos_idx), default=max(0, bos_idx - 8))
+            zone = self._find_origin_zone(frame, anchor_idx, bos_idx, "BUY")
+        else:
+            ref_idx, ref_level = swing_lows[-2]
+            bos_idx = self._find_bos_idx(closes, ref_idx, ref_level, "SELL")
+            anchor_idx = max((idx for idx, _ in swing_highs if idx < bos_idx), default=max(0, bos_idx - 8))
+            zone = self._find_origin_zone(frame, anchor_idx, bos_idx, "SELL")
+
+        if bos_idx is None or not zone:
+            return None
+
+        if not self._zone_is_unmitigated(frame, zone, len(frame) - 2):
+            return None
+
+        atr_h1 = _atr(frame)
+        impulse = abs(closes[bos_idx] - closes[anchor_idx]) if bos_idx > anchor_idx else 0.0
+        min_impulse = atr_h1 * float(s_cfg.get("h1_impulse_atr_mult", 1.2) or 1.2)
+        if impulse < min_impulse:
+            return None
+
+        trend_note = f"{direction} 2x BOS @ {ref_level:.2f}"
+        return {
+            "direction": direction,
+            "zone": zone,
+            "bos_idx": bos_idx,
+            "bos_level": round(float(ref_level), 2),
+            "trend_note": trend_note,
+            "strength": round(impulse / max(atr_h1, 0.01), 2),
+        }
+
+    @staticmethod
+    def _trend_direction(swing_highs: List[Tuple[int, float]], swing_lows: List[Tuple[int, float]], min_bos: int) -> str:
+        highs = [price for _, price in swing_highs[-(min_bos + 1):]]
+        lows = [price for _, price in swing_lows[-(min_bos + 1):]]
+        if all(highs[i] > highs[i - 1] for i in range(1, len(highs))) and all(lows[i] > lows[i - 1] for i in range(1, len(lows))):
+            return "BUY"
+        if all(highs[i] < highs[i - 1] for i in range(1, len(highs))) and all(lows[i] < lows[i - 1] for i in range(1, len(lows))):
+            return "SELL"
+        return ""
+
+    @staticmethod
+    def _find_bos_idx(closes: List[float], ref_idx: int, ref_level: float, direction: str) -> Optional[int]:
+        for idx in range(ref_idx + 1, len(closes)):
+            if direction == "BUY" and float(closes[idx]) > ref_level:
+                return idx
+            if direction == "SELL" and float(closes[idx]) < ref_level:
+                return idx
+        return None
+
+    @staticmethod
+    def _find_origin_zone(frame: pd.DataFrame, anchor_idx: int, bos_idx: int, direction: str) -> Optional[Dict]:
+        start = max(0, anchor_idx)
+        for idx in range(bos_idx - 1, start - 1, -1):
+            candle = frame.iloc[idx]
+            open_price, high, low, close = _ohlc_row(candle)
+            if direction == "BUY" and close < open_price:
+                return {
+                    "idx": idx,
+                    "zone_low": round(low, 2),
+                    "zone_high": round(max(open_price, close), 2),
+                }
+            if direction == "SELL" and close > open_price:
+                return {
+                    "idx": idx,
+                    "zone_low": round(min(open_price, close), 2),
+                    "zone_high": round(high, 2),
+                }
+        return None
+
+    @staticmethod
+    def _zone_is_unmitigated(frame: pd.DataFrame, zone: Dict, last_closed_idx: int) -> bool:
+        zone_low = float(zone["zone_low"])
+        zone_high = float(zone["zone_high"])
+        zone_idx = int(zone["idx"])
+        if last_closed_idx <= zone_idx + 1:
+            return True
+        for idx in range(zone_idx + 1, last_closed_idx + 1):
+            candle = frame.iloc[idx]
+            high = _safe_float(candle.get("high"))
+            low = _safe_float(candle.get("low"))
+            if _zones_overlap(low, high, zone_low, zone_high):
+                return False
+        return True
+
+    @staticmethod
+    def _htf_zone_is_active(entry: float, m5: pd.DataFrame, zone: Dict, tolerance: float) -> bool:
+        zone_low = float(zone["zone_low"])
+        zone_high = float(zone["zone_high"])
+        if _price_in_zone(entry, zone_low, zone_high, tolerance):
+            return True
+        recent = m5.tail(6).rename(columns=lambda c: str(c).lower())
+        for _, candle in recent.iterrows():
+            high = _safe_float(candle.get("high"))
+            low = _safe_float(candle.get("low"))
+            if _zones_overlap(low, high, zone_low, zone_high, tolerance):
+                return True
+        return False
+
+    def _find_m5_breaker_confirmation(self, m5: pd.DataFrame, direction: str, htf_zone: Dict, s_cfg: Dict) -> Optional[Dict]:
+        frame = m5.tail(max(20, int(s_cfg.get("m5_lookback_bars", 24) or 24))).copy()
+        frame = frame.rename(columns=lambda c: str(c).lower()).reset_index(drop=True)
+        zone_low = float(htf_zone["zone_low"])
+        zone_high = float(htf_zone["zone_high"])
+        overlap_tol = max(
+            float(s_cfg.get("breaker_overlap_pts", 0.15) or 0.15),
+            _atr(frame) * float(s_cfg.get("breaker_overlap_atr_mult", 0.03) or 0.03),
+        )
+        for touch_idx in self._touch_indices(frame, zone_low, zone_high, overlap_tol):
+            if touch_idx >= len(frame) - 2:
+                continue
+            pre_start = max(0, touch_idx - int(s_cfg.get("m5_structure_reference_bars", 4) or 4))
+            if direction == "BUY":
+                struct_level = float(frame.iloc[pre_start:touch_idx + 1]["high"].max())
+                shift_idx = self._find_shift_idx(frame, touch_idx, struct_level, "BUY")
+            else:
+                struct_level = float(frame.iloc[pre_start:touch_idx + 1]["low"].min())
+                shift_idx = self._find_shift_idx(frame, touch_idx, struct_level, "SELL")
+            if shift_idx is None:
+                continue
+
+            breaker = self._find_breaker_block(frame, touch_idx, shift_idx, direction, zone_low, zone_high, overlap_tol)
+            if not breaker:
+                continue
+            breaker["shift_idx"] = shift_idx
+            breaker["struct_level"] = round(struct_level, 2)
+            return breaker
+        return None
+
+    @staticmethod
+    def _touch_indices(frame: pd.DataFrame, zone_low: float, zone_high: float, tolerance: float) -> List[int]:
+        indices: List[int] = []
+        for idx in range(len(frame) - 2, max(-1, len(frame) - 16), -1):
+            candle = frame.iloc[idx]
+            high = _safe_float(candle.get("high"))
+            low = _safe_float(candle.get("low"))
+            if _zones_overlap(low, high, zone_low, zone_high, tolerance):
+                indices.append(idx)
+        return indices
+
+    @staticmethod
+    def _find_shift_idx(frame: pd.DataFrame, touch_idx: int, struct_level: float, direction: str) -> Optional[int]:
+        for idx in range(touch_idx + 1, len(frame)):
+            close = _safe_float(frame.iloc[idx].get("close"))
+            if direction == "BUY" and close > struct_level:
+                return idx
+            if direction == "SELL" and close < struct_level:
+                return idx
+        return None
+
+    @staticmethod
+    def _find_breaker_block(
+        frame: pd.DataFrame,
+        touch_idx: int,
+        shift_idx: int,
+        direction: str,
+        zone_low: float,
+        zone_high: float,
+        tolerance: float,
+    ) -> Optional[Dict]:
+        for idx in range(shift_idx - 1, touch_idx - 1, -1):
+            candle = frame.iloc[idx]
+            open_price, high, low, close = _ohlc_row(candle)
+            if direction == "BUY" and close < open_price:
+                breaker_low = round(low, 2)
+                breaker_high = round(max(open_price, close), 2)
+            elif direction == "SELL" and close > open_price:
+                breaker_low = round(min(open_price, close), 2)
+                breaker_high = round(high, 2)
+            else:
+                continue
+            if not _zones_overlap(breaker_low, breaker_high, zone_low, zone_high, tolerance):
+                continue
+            return {
+                "idx": idx,
+                "zone_low": breaker_low,
+                "zone_high": breaker_high,
+                "body_ratio": _body_ratio(candle),
+            }
+        return None
+
+    @staticmethod
+    def _compute_stop(entry: float, direction: str, m5: pd.DataFrame, htf_zone: Dict, breaker: Dict, s_cfg: Dict) -> Optional[float]:
+        recent = m5.tail(max(4, int(s_cfg.get("m5_stop_lookback", 6) or 6))).rename(columns=lambda c: str(c).lower())
+        pip = max(0.01, float(s_cfg.get("pip_size", 0.1) or 0.1))
+        sl_buffer = max(
+            float(s_cfg.get("sl_buffer_atr_mult", 0.20) or 0.20) * max(_atr(m5), 0.01),
+            float(s_cfg.get("sl_buffer_pips", 3) or 3) * pip,
+        )
+        sl_floor = float(s_cfg.get("sl_floor_pips", 12) or 12) * pip
+        sl_cap = float(s_cfg.get("sl_ceiling_pips", 40) or 40) * pip
+
+        if direction == "BUY":
+            anchor = min(
+                float(recent["low"].min()),
+                float(htf_zone["zone_low"]),
+                float(breaker["zone_low"]),
+            ) - sl_buffer
+            sl = round(anchor, 2)
+            sl_dist = entry - sl
+            if sl_dist < sl_floor:
+                sl = round(entry - sl_floor, 2)
+                sl_dist = entry - sl
+        else:
+            anchor = max(
+                float(recent["high"].max()),
+                float(htf_zone["zone_high"]),
+                float(breaker["zone_high"]),
+            ) + sl_buffer
+            sl = round(anchor, 2)
+            sl_dist = sl - entry
+            if sl_dist < sl_floor:
+                sl = round(entry + sl_floor, 2)
+                sl_dist = sl - entry
+
+        if sl_dist <= 0 or sl_dist > sl_cap:
+            return None
+        return sl
+
+    def _compute_take_profit(self, entry: float, direction: str, sl_dist: float, data: Dict, htf_setup: Dict, s_cfg: Dict) -> float:
+        target_rr = float(s_cfg.get("target_rr", 1.8) or 1.8)
+        fallback = entry + (sl_dist * target_rr) if direction == "BUY" else entry - (sl_dist * target_rr)
+
+        levels: List[float] = []
+        key_levels = ((data.get("liquidity") or {}).get("key_levels") or {})
+        for key in ("session_high", "prev_day_high", "session_low", "prev_day_low"):
+            value = _safe_float(key_levels.get(key))
+            if value > 0:
+                levels.append(value)
+        bos_level = _safe_float(htf_setup.get("bos_level"))
+        if bos_level > 0:
+            levels.append(bos_level)
+
+        h1 = data.get("h1_df")
+        if h1 is not None and len(h1) >= 10:
+            rows = h1.rename(columns=lambda c: str(c).lower())
+            highs = rows["high"].astype(float).tolist()
+            lows = rows["low"].astype(float).tolist()
+            swing_highs, swing_lows = _swing_points(highs, lows, window=2)
+            if direction == "BUY":
+                levels.extend(price for _, price in swing_highs if price > entry)
+            else:
+                levels.extend(price for _, price in swing_lows if price < entry)
+
+        min_rr = float(s_cfg.get("min_rr", 1.3) or 1.3)
+        if direction == "BUY":
+            for candidate in sorted(v for v in levels if v > entry):
+                rr = (candidate - entry) / max(sl_dist, 1e-6)
+                if rr >= min_rr:
+                    return round(candidate, 2)
+        else:
+            for candidate in sorted((v for v in levels if v < entry), reverse=True):
+                rr = (entry - candidate) / max(sl_dist, 1e-6)
+                if rr >= min_rr:
+                    return round(candidate, 2)
+        return round(fallback, 2)

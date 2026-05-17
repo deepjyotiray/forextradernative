@@ -6,7 +6,7 @@ SYSTEM STATUS
 ========================================
 
 Account: MetaQuotes-Demo | Balance: ~$560
-Strategies: SMC_CONFLUENCE + SWEEP_SCALPER (AUTO mode)
+Strategies: SMC_CONFLUENCE + M15_SCALP_DEEP / M15_ZONE_SCALP (AUTO mode)
 Performance: 110 trades, 77W/33L (70% WR), +$87 P&L
 XGBoost: Trained on 61 featured trades, spread = #1 predictor
 Branch: tier1-upgrades (committed)

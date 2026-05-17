@@ -180,10 +180,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
               <input type="checkbox" value="SMC_CONFLUENCE" onchange="updateSelectedStrategies()"> SMC
             </label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" value="M15_SUPPORT_RESISTANCE_REJECTION_V1" onchange="updateSelectedStrategies()"> M15 SR
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" value="SWEEP_SCALPER" onchange="updateSelectedStrategies()"> SCALPER
+              <input type="checkbox" value="M15_ZONE_SCALP" onchange="updateSelectedStrategies()"> M15 ZONE SCALP
             </label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input type="checkbox" value="TREND_CHANNEL" onchange="updateSelectedStrategies()"> TREND
@@ -192,7 +189,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
               <input type="checkbox" value="SWING_ENGINE" onchange="updateSelectedStrategies()"> SWING ENGINE
             </label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" value="INTRADAY_ENGINE" onchange="updateSelectedStrategies()"> INTRADAY ENGINE
+              <input type="checkbox" value="M15_SCALP_DEEP" onchange="updateSelectedStrategies()"> M15 SCALP DEEP
             </label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input type="checkbox" value="HTF_LONG" onchange="updateSelectedStrategies()"> HTF LONG
@@ -471,10 +468,10 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
     <div id="tab-intraday" class="tab-content">
       <div class="strategy-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:12px;background:var(--card);border:1px solid var(--border);border-radius:8px">
         <div>
-          <h2 style="font-size:18px;font-weight:700;margin:0">INTRADAY ENGINE</h2>
-          <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">H1+M15 trend alignment → liquidity sweep at Asia/PDH/PDL/EQL → M5 body+volume+close confirmation. SL 1.5–3pts, TP at 1.5R/2R. London+NY only.</p>
+          <h2 style="font-size:18px;font-weight:700;margin:0">M15 SCALP DEEP</h2>
+          <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">Strategy 2: H1 unmitigated origin zone, then M5 structure shift and breaker-block retrace confirmation.</p>
         </div>
-        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'INTRADAY_ENGINE')" style="transform:scale(1.2)"></div>
+        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'M15_SCALP_DEEP')" style="transform:scale(1.2)"></div>
       </div>
 
       <div class="card">
@@ -577,10 +574,10 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
         </div>
         <div style="display:flex;gap:12px">
           <button class="btn btn-reset" onclick="resetStrategyDefaults('intraday')">Reset to Defaults</button>
-          <button class="btn btn-save" onclick="saveStrategyConfig('intraday')">Save INTRADAY Config</button>
+          <button class="btn btn-save" onclick="saveStrategyConfig('intraday')">Save M15 SCALP DEEP Config</button>
         </div>
         <div class="status-text">
-          Open INTRADAY trades: <span id="intradayOpenTrades">0</span>
+          Open M15 SCALP DEEP trades: <span id="intradayOpenTrades">0</span>
         </div>
       </div>
     </div>
@@ -781,221 +778,13 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
       </div>
     </div>
     
-    <div id="tab-scalper" class="tab-content">
-      <div class="strategy-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:12px;background:var(--card);border:1px solid var(--border);border-radius:8px">
-        <div>
-          <h2 style="font-size:18px;font-weight:700;margin:0">SCALPER Configuration</h2>
-          <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">Sweep scalper - liquidity hunt execution</p>
-        </div>
-        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'SWEEP_SCALPER')" style="transform:scale(1.2)"></div>
-      </div>
-
-      <div class="card">
-        <h3>Risk Settings</h3>
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Risk %</label>
-            <input type="number" id="scalper_risk_pct" min="0.1" max="5" step="0.1" value="0.5">
-          </div>
-          <div class="form-group">
-            <label>Fixed Lot <small style="color:var(--dim)">(overrides risk%)</small></label>
-            <input type="number" id="scalper_fixed_lot" min="0.01" max="10" step="0.01" placeholder="blank = use risk%">
-          </div>
-          <div class="form-group">
-            <label>Max Active Trades</label>
-            <input type="number" id="scalper_max_active" min="1" max="10" value="5">
-          </div>
-          <div class="form-group">
-            <label>Max Trades/Day</label>
-            <input type="number" id="scalper_max_trades_day" min="1" max="20" value="5">
-          </div>
-          <div class="form-group">
-            <label>Max Spread</label>
-            <input type="number" id="scalper_spread_max" min="0.1" max="2" step="0.1" value="0.5">
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Levels</h3>
-        <div class="form-grid">
-          <div class="form-group">
-            <label>SL Min</label>
-            <input type="number" id="scalper_sl_min" min="0.1" max="5" step="0.1" value="0.3">
-          </div>
-          <div class="form-group">
-            <label>SL Max</label>
-            <input type="number" id="scalper_sl_max" min="0.5" max="10" step="0.1" value="1.0">
-          </div>
-          <div class="form-group">
-            <label>TP1 R:R</label>
-            <input type="number" id="scalper_tp1_r" min="0.5" max="5" step="0.1" value="1.0">
-          </div>
-          <div class="form-group">
-            <label>TP2 R:R</label>
-            <input type="number" id="scalper_tp2_r" min="1" max="8" step="0.1" value="2.0" disabled>
-            <small style="color:var(--dim);font-size:10px">Disabled in current config</small>
-          </div>
-          <div class="form-group">
-            <label>TP3 R:R</label>
-            <input type="number" id="scalper_tp3_r" min="2" max="15" step="0.1" value="3.0" disabled>
-            <small style="color:var(--dim);font-size:10px">Disabled in current config</small>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Filters</h3>
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Trading Sessions</label>
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px">
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" checked> London
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" checked> Overlap
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" checked> New York
-              </label>
-            </div>
-          </div>
-          <div class="form-group">
-            <label>News Block</label>
-            <div class="toggle-switch enabled" onclick="toggleFilter(this, 'scalper_news_block')"></div>
-          </div>
-          <div class="form-group">
-            <label>Allow Asian Session</label>
-            <div class="toggle-switch" id="scalper_allow_asian_session" onclick="toggleFilter(this)"></div>
-          </div>
-          <div class="form-group">
-            <label>Cooldown (seconds)</label>
-            <input type="number" id="scalper_cooldown" min="0" max="3600" value="60">
-          </div>
-          <div class="form-group">
-            <label>Consecutive Loss Limit</label>
-            <input type="number" id="scalper_loss_limit" min="1" max="10" value="4">
-          </div>
-          <div class="form-group">
-            <label>Loss Pause (seconds)</label>
-            <input type="number" id="scalper_loss_pause" min="0" max="7200" value="300">
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Scalper-Specific Settings</h3>
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Spread Mean Max</label>
-            <input type="number" id="scalper_spread_mean_max" min="0.1" max="1" step="0.01" value="0.5">
-          </div>
-          <div class="form-group">
-            <label>Spread Volatility Max</label>
-            <input type="number" id="scalper_spread_vol_max" min="0.01" max="0.5" step="0.01" value="0.12">
-          </div>
-          <div class="form-group">
-            <label>Spread Percentile Max</label>
-            <input type="number" id="scalper_spread_percentile_max" min="0.1" max="1" step="0.01" value="0.9">
-          </div>
-          <div class="form-group">
-            <label>Spread Delta Max</label>
-            <input type="number" id="scalper_spread_delta_max" min="0.01" max="0.5" step="0.01" value="0.05">
-          </div>
-          <div class="form-group">
-            <label>Quality Threshold</label>
-            <input type="number" id="scalper_quality_threshold" min="0.1" max="1" step="0.01" value="0.55">
-          </div>
-          <div class="form-group">
-            <label>ATR Min</label>
-            <input type="number" id="scalper_atr_min" min="0.1" max="2" step="0.01" value="0.6">
-          </div>
-          <div class="form-group">
-            <label>ATR Max</label>
-            <input type="number" id="scalper_atr_max" min="0.5" max="10" step="0.01" value="4.0">
-          </div>
-          <div class="form-group">
-            <label>EMA20 Slope Min</label>
-            <input type="number" id="scalper_ema20_slope_min" min="0.001" max="0.5" step="0.001" value="0.05">
-          </div>
-          <div class="form-group">
-            <label>Body Ratio Min</label>
-            <input type="number" id="scalper_body_ratio_min" min="0.1" max="1" step="0.01" value="0.6">
-          </div>
-          <div class="form-group">
-            <label>Tick Direction Threshold</label>
-            <input type="number" id="scalper_tick_dir_threshold" min="0.5" max="1" step="0.01" value="0.7">
-          </div>
-          <div class="form-group">
-            <label>Sweep Lookback</label>
-            <input type="number" id="scalper_sweep_lookback" min="1" max="50" value="20">
-          </div>
-          <div class="form-group">
-            <label>Sweep Tolerance</label>
-            <input type="number" id="scalper_sweep_tolerance" min="0.01" max="2" step="0.01" value="0.25">
-          </div>
-          <div class="form-group">
-            <label>Max Trades/Session</label>
-            <input type="number" id="scalper_max_trades_session" min="1" max="20" value="5">
-          </div>
-          <div class="form-group">
-            <label>Level Cooldown (s)</label>
-            <input type="number" id="scalper_level_cooldown" min="0" max="7200" value="1800">
-          </div>
-        </div>
-        <h4 style="margin:16px 0 8px 0;font-size:12px;color:var(--dim)">Gate Overrides (Scalper-specific)</h4>
-        <div class="form-grid">
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:8px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;cursor:pointer">
-            <span style="font-size:11px">Post-Signal Spread</span>
-            <div class="toggle-switch" id="scalper_override_post_signal" onclick="toggleGate(this,'POST_SIGNAL_SPREAD_GATE_OVERRIDE_ENABLED')"></div>
-          </label>
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:8px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;cursor:pointer">
-            <span style="font-size:11px">Execution Quality</span>
-            <div class="toggle-switch" id="scalper_override_execution" onclick="toggleGate(this,'EXECUTION_QUALITY_GATE_OVERRIDE_ENABLED')"></div>
-          </label>
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:8px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;cursor:pointer">
-            <span style="font-size:11px">Tick Direction</span>
-            <div class="toggle-switch" id="scalper_override_tick_dir" onclick="toggleGate(this,'TICK_DIRECTION_GATE_OVERRIDE_ENABLED')"></div>
-          </label>
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:8px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;cursor:pointer">
-            <span style="font-size:11px">ATR Rising</span>
-            <div class="toggle-switch" id="scalper_override_atr" onclick="toggleGate(this,'ATR_RISING_GATE_OVERRIDE_ENABLED')"></div>
-          </label>
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:8px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:4px;cursor:pointer">
-            <span style="font-size:11px">Compression Range</span>
-            <div class="toggle-switch" id="scalper_override_compression" onclick="toggleGate(this,'COMPRESSION_RANGE_GATE_OVERRIDE_ENABLED')"></div>
-          </label>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Notes</h3>
-        <textarea id="scalper_notes" rows="4" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;color:var(--text);font-family:inherit;resize:vertical" placeholder="Strategy-specific notes and observations..."></textarea>
-      </div>
-
-      <div class="footer">
-        <div class="status-text">
-          <span id="scalperSaveStatus"></span>
-          <span id="scalperLastSaved">Last saved: Never</span>
-        </div>
-        <div style="display:flex;gap:12px">
-          <button class="btn btn-reset" onclick="resetStrategyDefaults('scalper')">Reset to Defaults</button>
-          <button class="btn btn-save" onclick="saveStrategyConfig('scalper')">Save SCALPER Config</button>
-        </div>
-        <div class="status-text">
-          Open SCALPER trades: <span id="scalperOpenTrades">0</span>
-        </div>
-      </div>
-    </div>
-    
     <div id="tab-m15sr" class="tab-content">
       <div class="strategy-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:12px;background:var(--card);border:1px solid var(--border);border-radius:8px">
         <div>
-          <h2 style="font-size:18px;font-weight:700;margin:0">M15 SR Configuration</h2>
-          <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">M15 Support/Resistance rejection strategy</p>
+          <h2 style="font-size:18px;font-weight:700;margin:0">M15 ZONE SCALP</h2>
+          <p style="color:var(--dim);margin:4px 0 0 0;font-size:11px">Session scalp around validated M15 supply-demand zones with rejection confirmation.</p>
         </div>
-        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'M15_SUPPORT_RESISTANCE_REJECTION_V1')" style="transform:scale(1.2)"></div>
+        <div class="toggle-switch enabled" onclick="toggleStrategyEnabled(this, 'M15_ZONE_SCALP')" style="transform:scale(1.2)"></div>
       </div>
 
       <div class="card">
@@ -1087,7 +876,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
       </div>
 
       <div class="card">
-        <h3>M15 SR-Specific Settings</h3>
+        <h3>M15 Zone Scalp Settings</h3>
         <div class="form-grid">
           <div class="form-group">
             <label>Lookback Hours</label>
@@ -1139,10 +928,10 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
         </div>
         <div style="display:flex;gap:12px">
           <button class="btn btn-reset" onclick="resetStrategyDefaults('m15sr')">Reset to Defaults</button>
-          <button class="btn btn-save" onclick="saveStrategyConfig('m15sr')">Save M15 SR Config</button>
+          <button class="btn btn-save" onclick="saveStrategyConfig('m15sr')">Save M15 ZONE SCALP Config</button>
         </div>
         <div class="status-text">
-          Open M15 SR trades: <span id="m15srOpenTrades">0</span>
+          Open M15 ZONE SCALP trades: <span id="m15srOpenTrades">0</span>
         </div>
       </div>
     </div>
@@ -1472,21 +1261,19 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 // ── Labels & tab mapping ──────────────────────────────────────────────────
 const STRAT_LABELS = {
   'SMC_CONFLUENCE': 'SMC',
-  'M15_SUPPORT_RESISTANCE_REJECTION_V1': 'M15 SR',
-  'SWEEP_SCALPER': 'SCALPER',
+  'M15_ZONE_SCALP': 'M15 ZONE SCALP',
+  'M15_SCALP_DEEP': 'M15 SCALP DEEP',
   'TREND_CHANNEL': 'TREND',
   'SWING_ENGINE': 'SWING ENGINE',
-  'INTRADAY_ENGINE': 'INTRADAY ENGINE',
   'HTF_LONG': 'HTF LONG',
   'HTF_SHORT': 'HTF SHORT'
 };
 const STRAT_TAB = {
   'SMC_CONFLUENCE': 'smc',
-  'M15_SUPPORT_RESISTANCE_REJECTION_V1': 'm15sr',
-  'SWEEP_SCALPER': 'scalper',
+  'M15_ZONE_SCALP': 'm15sr',
+  'M15_SCALP_DEEP': 'intraday',
   'TREND_CHANNEL': 'trend',
   'SWING_ENGINE': 'swing',
-  'INTRADAY_ENGINE': 'intraday',
   'HTF_LONG': 'htflong',
   'HTF_SHORT': 'htfshort'
 };
@@ -1727,9 +1514,9 @@ function saveGlobalConfig() {
 
 // ── Per-strategy config save/reset ───────────────────────────────────────────
 const STRAT_KEY_MAP = {
-  smc:'SMC_CONFLUENCE', m15sr:'M15_SUPPORT_RESISTANCE_REJECTION_V1',
-  scalper:'SWEEP_SCALPER', trend:'TREND_CHANNEL',
-  swing:'SWING_ENGINE', intraday:'INTRADAY_ENGINE',
+  smc:'SMC_CONFLUENCE', m15sr:'M15_ZONE_SCALP',
+  trend:'TREND_CHANNEL',
+  swing:'SWING_ENGINE', intraday:'M15_SCALP_DEEP',
   htflong:'HTF_LONG', htfshort:'HTF_SHORT'
 };
 function _readTabConfig(key) {
@@ -1792,28 +1579,6 @@ function _readTabConfig(key) {
     override_spread_percentile: tog('smc_override_spread_percentile'),
     override_spread_widening: tog('smc_override_spread_widening'),
     override_execution_quality: tog('smc_override_execution'),
-  });
-  if (key === 'scalper') Object.assign(base, {
-    spread_mean_max: n('scalper_spread_mean_max'),
-    spread_vol_max: n('scalper_spread_vol_max'),
-    spread_percentile_max: n('scalper_spread_percentile_max'),
-    spread_delta_max: n('scalper_spread_delta_max'),
-    quality_threshold: n('scalper_quality_threshold'),
-    atr_min: n('scalper_atr_min'),
-    atr_max: n('scalper_atr_max'),
-    ema20_slope_min: n('scalper_ema20_slope_min'),
-    body_ratio_min: n('scalper_body_ratio_min'),
-    tick_dir_threshold: n('scalper_tick_dir_threshold'),
-    sweep_lookback: ni('scalper_sweep_lookback'),
-    sweep_tolerance: n('scalper_sweep_tolerance'),
-    allow_asian_session: tog('scalper_allow_asian_session'),
-    max_trades_session: ni('scalper_max_trades_session'),
-    level_cooldown: ni('scalper_level_cooldown'),
-    override_post_signal_spread: tog('scalper_override_post_signal'),
-    override_execution_quality: tog('scalper_override_execution'),
-    override_tick_direction: tog('scalper_override_tick_dir'),
-    override_atr_rising: tog('scalper_override_atr'),
-    override_compression: tog('scalper_override_compression'),
   });
   if (key === 'm15sr') Object.assign(base, {
     lookback_hours: ni('m15sr_lookback_hours'),
@@ -1988,22 +1753,6 @@ function loadStrategyConfig(key, cfg) {
     setTog('smc_override_spread_percentile', cfg.override_spread_percentile);
     setTog('smc_override_spread_widening', cfg.override_spread_widening);
     setTog('smc_override_execution', cfg.override_execution_quality);
-  }
-  if (key === 'scalper') {
-    set('scalper_spread_mean_max', cfg.spread_mean_max); set('scalper_spread_vol_max', cfg.spread_vol_max);
-    set('scalper_spread_percentile_max', cfg.spread_percentile_max); set('scalper_spread_delta_max', cfg.spread_delta_max);
-    set('scalper_quality_threshold', cfg.quality_threshold);
-    set('scalper_atr_min', cfg.atr_min); set('scalper_atr_max', cfg.atr_max);
-    set('scalper_ema20_slope_min', cfg.ema20_slope_min);
-    set('scalper_body_ratio_min', cfg.body_ratio_min); set('scalper_tick_dir_threshold', cfg.tick_dir_threshold);
-    set('scalper_sweep_lookback', cfg.sweep_lookback); set('scalper_sweep_tolerance', cfg.sweep_tolerance);
-    setTog('scalper_allow_asian_session', cfg.allow_asian_session);
-    set('scalper_max_trades_session', cfg.max_trades_session); set('scalper_level_cooldown', cfg.level_cooldown);
-    setTog('scalper_override_post_signal', cfg.override_post_signal_spread);
-    setTog('scalper_override_execution', cfg.override_execution_quality);
-    setTog('scalper_override_tick_dir', cfg.override_tick_direction);
-    setTog('scalper_override_atr', cfg.override_atr_rising);
-    setTog('scalper_override_compression', cfg.override_compression);
   }
   if (key === 'm15sr') {
     set('m15sr_lookback_hours', cfg.lookback_hours); set('m15sr_min_touches', cfg.min_touches);

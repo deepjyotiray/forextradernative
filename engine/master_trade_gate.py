@@ -67,7 +67,12 @@ def master_trade_gate(
     tick_snap = signal.get("_tick_snapshot") or market_state.get("tick_snapshot") or {}
     current_rr = float(signal.get("rr", 0.0) or 0.0)
 
-    strategy = signal_family or str(signal.get("strategy") or "")
+    strategy_name = str(
+        signal.get("_strategy_name")
+        or signal.get("strategy")
+        or ""
+    ).upper()
+    strategy = strategy_name or signal_family or "UNKNOWN"
 
     result = {
         "allowed": True,
@@ -100,9 +105,22 @@ def master_trade_gate(
         result["passed_gates"].append(gate_name)
         result["gate_trace"].append({"gate": gate_name, "allowed": True, "reason": reason})
 
+    if bool(getattr(cfg_module, "TEMP_DISABLE_GLOBAL_BLOCKS", False)):
+        result["score"] = 100
+        result["confirmation_count"] = 4
+        result["auto_relax"] = {"active": False, "reason": "GLOBAL_BLOCKS_DISABLED"}
+        result["required_rr"] = current_rr
+        mark_pass("global_bypass", "GLOBAL_BLOCKS_DISABLED")
+        return result
+
     # 1. Risk gate
     if risk_manager is not None:
-        allowed, reason = risk_manager.can_trade(account, len(positions))
+        allowed, reason = risk_manager.can_trade(
+            account,
+            len(positions),
+            strategy_name=strategy_name,
+            strategy_trade_counts=market_state.get("strategy_trade_counts") or {},
+        )
         if not allowed:
             return block("risk", reason)
         mark_pass("risk", "RISK_PASS")

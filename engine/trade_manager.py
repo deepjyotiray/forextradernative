@@ -93,10 +93,8 @@ def _infer_profile_name(strategy: str, scalp: bool, features: Dict[str, Any]) ->
     ).strip().lower()
     if profile_name:
         return profile_name
-    if scalp or strategy == "SWEEP_SCALPER":
+    if scalp:
         return "scalp"
-    if strategy == "M15_SUPPORT_RESISTANCE_REJECTION_V1":
-        return "swing_structured"
     return "swing_fast"
 
 
@@ -116,7 +114,7 @@ def _resolve_exit_profile(
     feature_map = dict(features or {})
     profile_name = _infer_profile_name(strategy, scalp, feature_map)
     profile = cfg.get_exit_profile_config(profile_name)
-    isolated_profile = profile_name in {"intraday_engine", "swing_engine"}
+    isolated_profile = profile_name in {"swing_engine"}
     risk_unit = _risk_unit_dollars(sl_distance, volume)
     legacy_be_trigger_r = (_safe_float(be_trigger, 0.0) / risk_unit) if _safe_float(be_trigger, 0.0) > 0 else 0.0
     be_trigger_override = feature_map["be_trigger_r"] if "be_trigger_r" in feature_map else feature_map.get("_be_trigger_r")
@@ -233,7 +231,7 @@ def _close_reason_category(close_reason: str, trade: "TradeRecord", exit_price: 
 def _uses_isolated_exit_manager(trade: "TradeRecord") -> bool:
     profile_name = str(getattr(trade, "exit_profile", "") or "").strip().lower()
     strategy_name = str(getattr(trade, "strategy", "") or "").strip().upper()
-    return profile_name in {"intraday_engine", "swing_engine"} or strategy_name in {"INTRADAY_ENGINE", "SWING_ENGINE"}
+    return profile_name in {"swing_engine"} or strategy_name in {"SWING_ENGINE"}
 
 
 def _mt5_deal_reason_name(reason_code: Any) -> str:
@@ -637,150 +635,6 @@ class TradeManager:
         self._persist_open_state()
         return True
 
-    def _manage_progressive_engine(
-        self,
-        t: TradeRecord,
-        *,
-        structure_df: pd.DataFrame | None,
-        runner_df: pd.DataFrame | None,
-        candle_df: pd.DataFrame | None,
-        structure_label: str,
-    ):
-        live_r = self._pnl_to_r(t, t.live_pnl)
-        peak_pnl = max(_safe_float(t.peak_pnl, 0.0), _safe_float(t.live_pnl, 0.0))
-        peak_r = self._pnl_to_r(t, peak_pnl)
-        prev_peak_pnl = _safe_float((t.features or {}).get("_prev_peak_pnl"), t.peak_pnl)
-        prev_peak_r = self._pnl_to_r(t, prev_peak_pnl)
-
-        if live_r >= 1.5 and prev_peak_r < 1.5 and not t.partial_closed:
-            close_vol = round(t.initial_volume * 0.5, 2)
-            if close_vol >= cfg.MIN_LOT and (t.volume - close_vol) >= cfg.MIN_LOT:
-                self._partial_close(t, close_vol, f"{structure_label} partial at 1.5R")
-                t.partial_closed = True
-                self.order_db.update_management_flags(
-                    t.ticket,
-                    sl_breakeven=t.sl_breakeven,
-                    partial_closed=True,
-                    trail_active=t.trail_active,
-                )
-                self._persist_open_state()
-
-        if peak_r >= 2.0 and live_r <= 1.2:
-            self._close_early(
-                t,
-                f"{structure_label} hard profit floor breached ({peak_r:.2f}R -> {live_r:.2f}R)",
-                category="profit_floor",
-            )
-            return
-
-        candidate_sls: list[tuple[float, bool]] = []
-        if live_r >= 1.0:
-            candidate_sls.append((round(_safe_float(t.entry), 2), False))
-
-        structure_high, structure_low = self._recent_swing_levels(structure_df)
-        if t.direction == "BUY" and structure_low is not None:
-            candidate_sls.append((structure_low, True))
-        if t.direction == "SELL" and structure_high is not None:
-            candidate_sls.append((structure_high, True))
-
-        if live_r >= 2.5:
-            runner_high, runner_low = self._recent_swing_levels(runner_df)
-            if t.direction == "BUY" and runner_low is not None:
-                candidate_sls.append((runner_low, True))
-            if t.direction == "SELL" and runner_high is not None:
-                candidate_sls.append((runner_high, True))
-
-        if candidate_sls:
-            if t.direction == "BUY":
-                best_sl, trailing = max(candidate_sls, key=lambda item: item[0])
-            else:
-                best_sl, trailing = min(candidate_sls, key=lambda item: item[0])
-            self._apply_forward_stop(t, best_sl, mark_trailing=trailing)
-
-        if candle_df is None or candle_df.empty:
-            return
-        # Skip momentum reversal check if this candle opened after a day break
-        if _is_day_break_candle(candle_df):
-            return
-        last_candle = candle_df.iloc[-1]
-        body_ratio = _candle_body_ratio(last_candle)
-        candle_direction = _candle_direction(last_candle)
-        trade_confidence = _safe_float(
-            (t.features or {}).get("signal_confidence") or t.confidence, 0.0
-        )
-        high_conf_min = _safe_float(
-            getattr(cfg, "INTRADAY_ENGINE_REVERSAL_HIGH_CONF_MIN", 0.80), 0.80
-        )
-        high_conf = trade_confidence >= high_conf_min
-        min_peak_r = _safe_float(
-            getattr(
-                cfg,
-                "INTRADAY_ENGINE_REVERSAL_HIGH_CONF_MIN_PEAK_R"
-                if high_conf else "INTRADAY_ENGINE_REVERSAL_MIN_PEAK_R",
-                0.50 if high_conf else 0.25,
-            ),
-            0.50 if high_conf else 0.25,
-        )
-        body_threshold = _safe_float(
-            getattr(
-                cfg,
-                "INTRADAY_ENGINE_REVERSAL_HIGH_CONF_BODY"
-                if high_conf else "INTRADAY_ENGINE_REVERSAL_BODY_THRESHOLD",
-                0.85 if high_conf else 0.60,
-            ),
-            0.85 if high_conf else 0.60,
-        )
-        candles_required = _safe_int(
-            getattr(
-                cfg,
-                "INTRADAY_ENGINE_REVERSAL_HIGH_CONF_CANDLES_REQUIRED"
-                if high_conf else "INTRADAY_ENGINE_REVERSAL_CANDLES_REQUIRED",
-                2 if high_conf else 1,
-            ),
-            2 if high_conf else 1,
-        )
-
-        if peak_r < min_peak_r or body_ratio < body_threshold:
-            t.features["_reversal_candle_count"] = 0
-            t.features.pop("_reversal_candle_marker", None)
-            return
-
-        is_counter = (
-            (t.direction == "BUY" and candle_direction == "BEARISH") or
-            (t.direction == "SELL" and candle_direction == "BULLISH")
-        )
-        if not is_counter:
-            t.features["_reversal_candle_count"] = 0
-            t.features.pop("_reversal_candle_marker", None)
-            return
-
-        marker = _last_candle_marker(candle_df)
-        last_marker = str((t.features or {}).get("_reversal_candle_marker") or "")
-        count = _safe_int((t.features or {}).get("_reversal_candle_count", 0), 0)
-        if marker and marker != last_marker:
-            count += 1
-            t.features["_reversal_candle_count"] = count
-            t.features["_reversal_candle_marker"] = marker
-
-        if count >= candles_required:
-            direction_label = "bearish" if t.direction == "BUY" else "bullish"
-            if candles_required <= 1:
-                reason = (
-                    f"{structure_label} momentum reversal: strong {direction_label} candle "
-                    f"(body {body_ratio:.2f}, peak {peak_r:.2f}R, conf {trade_confidence:.0%})"
-                )
-            else:
-                reason = (
-                    f"{structure_label} momentum reversal: {count} consecutive strong "
-                    f"{direction_label} candles (body {body_ratio:.2f}, peak {peak_r:.2f}R, "
-                    f"conf {trade_confidence:.0%})"
-                )
-            self._close_early(
-                t,
-                reason,
-                category="momentum_reversal",
-            )
-
     def manage_all(self, live_positions: List[Dict], tick_metrics: Dict = None, market_context: Dict | None = None):
         live_map = {p["ticket"]: p for p in live_positions}
         closed = []
@@ -974,9 +828,6 @@ class TradeManager:
         if not _uses_isolated_exit_manager(t):
             if self._apply_universal_management(t, tick_metrics, market_context):
                 return
-        if t.strategy == "INTRADAY_ENGINE" or t.exit_profile == "intraday_engine":
-            self._manage_intraday_engine(t)
-            return
         if t.strategy == "SWING_ENGINE" or t.exit_profile == "swing_engine":
             self._manage_swing_engine(t, market_context or {})
             return
@@ -1159,16 +1010,6 @@ class TradeManager:
                 category="reversal",
             )
             return
-
-    def _manage_intraday_engine(self, t: TradeRecord):
-        market_context = getattr(self, "_current_market_context", {}) or {}
-        self._manage_progressive_engine(
-            t,
-            structure_df=market_context.get("m15_df"),
-            runner_df=market_context.get("m15_df"),
-            candle_df=market_context.get("m5_df"),
-            structure_label="Intraday",
-        )
 
     def _manage_swing_engine(self, t: TradeRecord, market_context: Dict[str, Any]):
         live_r = self._pnl_to_r(t, t.live_pnl)

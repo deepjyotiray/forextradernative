@@ -26,10 +26,11 @@ from .regime import classify_regime
 from .session_filter import is_market_open, is_session_open_blocked
 from .smc_strategy import SMCStrategy
 from .m15_scalp_deep_strategy import M15ScalpDeepStrategy
-from .m15_sr_strategy import M15SupportResistanceStrategy
 from .m15_zone_scalp_strategy import M15ZoneScalpStrategy
+from .swing_engine_strategy import SwingEngineStrategy
 from .strategy_manager import StrategyManager
-from .sweep_scalper import SweepScalper
+from .strategies.htf_long_strategy import HTFLongStrategy
+from .strategies.htf_short_strategy import HTFShortStrategy
 from .strategies.trend_channel_strategy import TrendChannelStrategy
 from .tick_processor import TickProcessor, analyze_tick_pressure
 from .zones import ZoneDetector
@@ -184,9 +185,9 @@ class SimExecutionEngine:
         if sl_distance <= 0:
             return cfg.MIN_LOT
         strategy_name = str(strategy or "").upper()
-        if strategy_name in {"SWEEP_SCALPER", "M15_SCALP_DEEP"}:
+        if strategy_name in {"M15_SCALP_DEEP", "M15_ZONE_SCALP"}:
             base_risk_pct = float(getattr(cfg, "INTRADAY_RISK_PCT", self._risk_pct))
-        elif strategy_name in {"SMC_CONFLUENCE", "M15_SUPPORT_RESISTANCE_REJECTION_V1", "TREND_CHANNEL"}:
+        elif strategy_name in {"SMC_CONFLUENCE", "TREND_CHANNEL", "SWING_ENGINE", "HTF_LONG", "HTF_SHORT"}:
             base_risk_pct = float(getattr(cfg, "SWING_RISK_PCT", self._risk_pct))
         else:
             base_risk_pct = self._risk_pct
@@ -453,18 +454,20 @@ class BacktestRunner:
     def __init__(self):
         self.zone_detector = ZoneDetector()
         self.smc = SMCStrategy()
-        self.scalper = SweepScalper()
-        self.m15_sr = M15SupportResistanceStrategy()
         self.m15_scalp_deep = M15ScalpDeepStrategy()
         self.m15_zone_scalp = M15ZoneScalpStrategy()
         self.trend_channel = TrendChannelStrategy()
+        self.swing_engine = SwingEngineStrategy()
+        self.htf_long = HTFLongStrategy()
+        self.htf_short = HTFShortStrategy()
         self.strategy_manager = StrategyManager()
         self.strategy_manager.register(self.smc)
-        self.strategy_manager.register(self.scalper)
-        self.strategy_manager.register(self.m15_sr)
         self.strategy_manager.register(self.m15_scalp_deep)
         self.strategy_manager.register(self.m15_zone_scalp)
         self.strategy_manager.register(self.trend_channel)
+        self.strategy_manager.register(self.swing_engine)
+        self.strategy_manager.register(self.htf_long)
+        self.strategy_manager.register(self.htf_short)
         self._decision_entries: List[Dict] = []
 
     def run(

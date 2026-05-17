@@ -8,7 +8,6 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _STRATEGY_LOG_FILES = {
     "SWING_ENGINE": _BASE_DIR / "swing_trades.json",
-    "INTRADAY_ENGINE": _BASE_DIR / "intraday_trades.json",
 }
 
 

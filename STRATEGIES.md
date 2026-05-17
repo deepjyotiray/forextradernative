@@ -2,7 +2,7 @@
 
 ## Overview
 
-Three modes: **AUTO** (evaluates all, picks highest confidence), **SMC_CONFLUENCE**, **SWEEP_SCALPER**.
+Three modes: **AUTO** (evaluates all, picks highest confidence), **SMC_CONFLUENCE**, **M15_SCALP_DEEP** / **M15_ZONE_SCALP**.
 
 Default on startup: `AUTO` (configurable via `config.DEFAULT_STRATEGY`).
 
@@ -58,7 +58,7 @@ Default on startup: `AUTO` (configurable via `config.DEFAULT_STRATEGY`).
 
 ---
 
-## 2. SWEEP_SCALPER — Liquidity Sweep Scalp Strategy
+## 2. M15_SCALP_DEEP — H1 Origin Zone + M5 Breaker Strategy
 
 **Goal:** Quick $3-$6 scalps on liquidity sweeps at London/NY open.
 
@@ -149,7 +149,7 @@ These run **after** a strategy returns BUY/SELL, before execution:
 
 | Timeframe | Refresh Interval (cycles) | Used By |
 |-----------|--------------------------|---------|
-| M1 | Every 1 cycle | Indicators, Sweep Scalper |
+| M1 | Every 1 cycle | Indicators, M15 scalp execution |
 | M5 | Every 2 cycles | Zones, Liquidity sweeps, SMC |
 | M15 | Every 10 cycles | Regime, Bias, Order blocks, FVG |
 | H1 | Every 60 cycles | Regime, Bias, Key levels |
