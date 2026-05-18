@@ -21,6 +21,7 @@ from . import trend_channel
 from . import htf_long
 from . import htf_short
 from . import m15_zone_scalp
+from . import m15_zone_scalp_inverse
 
 # Registry: strategy name → definition module
 _REGISTRY = {
@@ -28,6 +29,7 @@ _REGISTRY = {
     smc_confluence.NAME: smc_confluence,
     m15_scalp_deep.NAME: m15_scalp_deep,
     m15_zone_scalp.NAME: m15_zone_scalp,
+    m15_zone_scalp_inverse.NAME: m15_zone_scalp_inverse,
     trend_channel.NAME: trend_channel,
     htf_long.NAME: htf_long,
     htf_short.NAME: htf_short,

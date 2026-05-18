@@ -1,8 +1,9 @@
-"""Unit tests for M15ZoneScalpStrategy zone geometry and reaction helpers."""
+"""Unit tests for M15 zone scalp strategies."""
 import unittest
 from datetime import datetime, timezone
 
 import pandas as pd
+from unittest.mock import patch
 
 from engine.m15_zone_scalp_strategy import (
     M15ZoneScalpStrategy,
@@ -11,6 +12,7 @@ from engine.m15_zone_scalp_strategy import (
     _bullish_htf_ok,
     _bearish_htf_ok,
 )
+from engine.m15_zone_scalp_inverse_strategy import M15ZoneScalpInverseStrategy
 from engine.master_trade_gate import _family_bucket
 from config import get_exit_profile_config
 
@@ -57,6 +59,45 @@ class M15ZoneScalpLogicTests(unittest.TestCase):
         profile = get_exit_profile_config("m15_zone_scalp")
         self.assertEqual(profile["profile_name"], "m15_zone_scalp")
         self.assertGreater(profile["be_trigger_r"], 0)
+
+    def test_inverse_strategy_flips_valid_base_signal(self):
+        strat = M15ZoneScalpInverseStrategy()
+        data = {
+            "tick": {"bid": 100.0, "ask": 100.2},
+            "account": {"balance": 10000.0},
+        }
+
+        with patch(
+            "engine.m15_zone_scalp_strategy.M15ZoneScalpStrategy.generate_signal",
+            return_value={
+                "signal": "BUY",
+                "entry": 100.0,
+                "sl": 98.0,
+                "tp": 104.0,
+                "confidence": 0.8,
+                "reason": "BUY M15 zone scalp | demand touch",
+                "_bias_direction": "LONG",
+                "_body_ratio": 0.75,
+                "_exit_profile": "m15_zone_scalp",
+                "_scalp": True,
+                "_m15_zone_confirmed": True,
+                "_candle_confirmation": True,
+                "_zone_mid": 99.5,
+                "_pip_size": 0.1,
+                "_session": "LONDON",
+            },
+        ):
+            signal = strat.generate_signal(data)
+
+        self.assertEqual(signal["signal"], "SELL")
+        self.assertEqual(signal["sl"], 104.0)
+        self.assertEqual(signal["tp"], 98.0)
+        self.assertEqual(signal["entry"], 100.0)
+        self.assertEqual(signal["_strategy_name"], "M15_ZONE_SCALP_INVERSE")
+        self.assertEqual(signal["_source_strategy_name"], "M15_ZONE_SCALP")
+        self.assertEqual(signal["_source_signal"], "BUY")
+        self.assertEqual(signal["_bias_direction"], "LONG")
+        self.assertGreater(signal["rr"], 0)
 
 
 if __name__ == "__main__":

@@ -79,6 +79,7 @@ class BacktestCoreTests(unittest.TestCase):
                 "SMC_CONFLUENCE",
                 "M15_SCALP_DEEP",
                 "M15_ZONE_SCALP",
+                "M15_ZONE_SCALP_INVERSE",
                 "TREND_CHANNEL",
                 "SWING_ENGINE",
                 "HTF_LONG",

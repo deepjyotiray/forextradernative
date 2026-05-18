@@ -52,6 +52,15 @@ def _m15_atr(m15: pd.DataFrame) -> float:
     return v if np.isfinite(v) and v > 0 else 0.0
 
 
+def _calc_scalp_lot(balance: float, s_cfg: Dict, sl_dist: float) -> float:
+    fl_raw = s_cfg.get("fixed_lot")
+    fixed_lot = _safe_float(fl_raw) if fl_raw not in (None, "", False) else 0.0
+    if fixed_lot >= 0.01:
+        return min(0.1, fixed_lot)
+    risk_amount = balance * (_safe_float(s_cfg.get("risk_pct"), 0.5) / 100.0)
+    return max(0.01, min(0.05, risk_amount / max(1.0, sl_dist * 100.0)))
+
+
 def _session_allowed(now_utc: datetime, allowed: List[str]) -> Tuple[bool, str]:
     if now_utc.tzinfo is None:
         now_utc = now_utc.replace(tzinfo=_UTC)
@@ -315,13 +324,7 @@ class M15ZoneScalpStrategy(BaseStrategy):
         if balance <= 0:
             return self._no("Account balance unavailable")
 
-        fl_raw = s_cfg.get("fixed_lot")
-        fixed_lot = _safe_float(fl_raw) if fl_raw not in (None, "", False) else 0.0
-        if fixed_lot >= 0.01:
-            lot = min(0.1, fixed_lot)
-        else:
-            risk_amount = balance * (_safe_float(s_cfg.get("risk_pct"), 0.5) / 100.0)
-            lot = max(0.01, min(0.05, risk_amount / max(1.0, sl_dist * 100.0)))
+        lot = _calc_scalp_lot(balance, s_cfg, sl_dist)
 
         tp_levels = [tp]
         ms = data.get("market_state") or {}

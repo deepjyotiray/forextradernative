@@ -81,6 +81,27 @@ Current order amount basis:
 Current config:
 - [engine/strategy_configs/data/M15_ZONE_SCALP.json](/c:/Users/deepjyotiray/source/repos/CTF/forextradernative/engine/strategy_configs/data/M15_ZONE_SCALP.json:1)
 
+### `M15_ZONE_SCALP_INVERSE`
+Code:
+- [engine/m15_zone_scalp_inverse_strategy.py](/c:/Users/deepjyotiray/source/repos/CTF/forextradernative/engine/m15_zone_scalp_inverse_strategy.py:1)
+
+Setup:
+- Uses the same trigger as `M15_ZONE_SCALP`
+- Flips the trade direction
+- Mirrors SL and TP from the base setup
+
+Current order amount basis:
+- Config `risk_pct = 0.5`
+- Config `fixed_lot = null`
+- If `fixed_lot` stays null, the strategy computes:
+- `risk_amount = balance * 0.5%`
+- `lot = max(0.01, min(0.05, risk_amount / max(1.0, sl_dist * 100.0)))`
+- If `fixed_lot` is set, internal cap is `0.10`
+- Live execution uses the strategy-computed `lot` as-is
+
+Current config:
+- [engine/strategy_configs/data/M15_ZONE_SCALP_INVERSE.json](/c:/Users/deepjyotiray/source/repos/CTF/forextradernative/engine/strategy_configs/data/M15_ZONE_SCALP_INVERSE.json:1)
+
 ### `TREND_CHANNEL`
 Code:
 - [engine/strategies/trend_channel_strategy.py](/c:/Users/deepjyotiray/source/repos/CTF/forextradernative/engine/strategies/trend_channel_strategy.py:27)
@@ -182,6 +203,12 @@ Current config:
 - Valid M15 ATR and detected zones
 - HTF bias alignment
 - Rejection / displacement candle
+
+`M15_ZONE_SCALP_INVERSE`
+- Gold symbol only
+- Needs a valid `M15_ZONE_SCALP` setup first
+- Same session, spread, ATR, zone, and candle requirements as base strategy
+- Flips direction and mirrors stop/target
 
 `TREND_CHANNEL`
 - Stable supertrend

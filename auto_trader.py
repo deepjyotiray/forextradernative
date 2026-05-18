@@ -6,6 +6,7 @@ Strategies:
   SMC_CONFLUENCE   — swing / SMC confluence
   M15_SCALP_DEEP   — H1 origin zone into M5 breaker confirmation
   M15_ZONE_SCALP   — M15 zone touch and rejection execution
+  M15_ZONE_SCALP_INVERSE — exact opposite execution of M15 zone scalp
   TREND_CHANNEL    — trend-following channel continuation
 """
 import time
@@ -42,6 +43,7 @@ from engine.m15_scalp_deep_strategy import M15ScalpDeepStrategy
 from engine.strategies.trend_channel_strategy import TrendChannelStrategy
 from engine.swing_engine_strategy import SwingEngineStrategy
 from engine.m15_zone_scalp_strategy import M15ZoneScalpStrategy
+from engine.m15_zone_scalp_inverse_strategy import M15ZoneScalpInverseStrategy
 from engine.strategies.htf_long_strategy import HTFLongStrategy
 from engine.strategies.htf_short_strategy import HTFShortStrategy
 from engine.calendar import calendar as eco_calendar
@@ -153,6 +155,7 @@ class AutoTrader:
             ("SWING_ENGINE", SwingEngineStrategy),
             ("M15_SCALP_DEEP", M15ScalpDeepStrategy),
             ("M15_ZONE_SCALP", M15ZoneScalpStrategy),
+            ("M15_ZONE_SCALP_INVERSE", M15ZoneScalpInverseStrategy),
             ("HTF_LONG", HTFLongStrategy),
             ("HTF_SHORT", HTFShortStrategy),
         ]

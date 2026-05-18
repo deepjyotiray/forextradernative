@@ -123,6 +123,23 @@ class BacktestJobsTests(unittest.TestCase):
 
         self.assertEqual(job.request.strategy, "M15_ZONE_SCALP")
 
+    def test_create_job_accepts_m15_zone_scalp_inverse(self):
+        mgr = BacktestJobManager()
+        req = BacktestRequest.from_payload(
+            {
+                "symbol": "XAUUSD",
+                "strategy": "M15_ZONE_SCALP_INVERSE",
+                "start_utc": "2026-01-01T00:00:00Z",
+                "end_utc": "2026-01-02T00:00:00Z",
+                "initial_balance": 10000,
+            }
+        )
+
+        with patch.object(mgr._executor, "submit", return_value=None):
+            job = mgr.create_job(req)
+
+        self.assertEqual(job.request.strategy, "M15_ZONE_SCALP_INVERSE")
+
     def test_create_job_accepts_m15_scalp_deep(self):
         mgr = BacktestJobManager()
         req = BacktestRequest.from_payload(

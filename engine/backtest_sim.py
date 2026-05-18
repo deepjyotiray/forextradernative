@@ -27,6 +27,7 @@ from .session_filter import is_market_open, is_session_open_blocked
 from .smc_strategy import SMCStrategy
 from .m15_scalp_deep_strategy import M15ScalpDeepStrategy
 from .m15_zone_scalp_strategy import M15ZoneScalpStrategy
+from .m15_zone_scalp_inverse_strategy import M15ZoneScalpInverseStrategy
 from .swing_engine_strategy import SwingEngineStrategy
 from .strategy_manager import StrategyManager
 from .strategies.htf_long_strategy import HTFLongStrategy
@@ -185,7 +186,7 @@ class SimExecutionEngine:
         if sl_distance <= 0:
             return cfg.MIN_LOT
         strategy_name = str(strategy or "").upper()
-        if strategy_name in {"M15_SCALP_DEEP", "M15_ZONE_SCALP"}:
+        if strategy_name in {"M15_SCALP_DEEP", "M15_ZONE_SCALP", "M15_ZONE_SCALP_INVERSE"}:
             base_risk_pct = float(getattr(cfg, "INTRADAY_RISK_PCT", self._risk_pct))
         elif strategy_name in {"SMC_CONFLUENCE", "TREND_CHANNEL", "SWING_ENGINE", "HTF_LONG", "HTF_SHORT"}:
             base_risk_pct = float(getattr(cfg, "SWING_RISK_PCT", self._risk_pct))
@@ -456,6 +457,7 @@ class BacktestRunner:
         self.smc = SMCStrategy()
         self.m15_scalp_deep = M15ScalpDeepStrategy()
         self.m15_zone_scalp = M15ZoneScalpStrategy()
+        self.m15_zone_scalp_inverse = M15ZoneScalpInverseStrategy()
         self.trend_channel = TrendChannelStrategy()
         self.swing_engine = SwingEngineStrategy()
         self.htf_long = HTFLongStrategy()
@@ -464,6 +466,7 @@ class BacktestRunner:
         self.strategy_manager.register(self.smc)
         self.strategy_manager.register(self.m15_scalp_deep)
         self.strategy_manager.register(self.m15_zone_scalp)
+        self.strategy_manager.register(self.m15_zone_scalp_inverse)
         self.strategy_manager.register(self.trend_channel)
         self.strategy_manager.register(self.swing_engine)
         self.strategy_manager.register(self.htf_long)

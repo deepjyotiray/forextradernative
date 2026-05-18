@@ -264,7 +264,7 @@ class RiskManager:
             if base_risk_pct <= 0:
                 raise ValueError
         except Exception:
-            intraday_strategies = {"M15_SCALP_DEEP", "M15_ZONE_SCALP"}
+            intraday_strategies = {"M15_SCALP_DEEP", "M15_ZONE_SCALP", "M15_ZONE_SCALP_INVERSE"}
             swing_strategies = {"SMC_CONFLUENCE", "TREND_CHANNEL", "SWING_ENGINE", "HTF_LONG", "HTF_SHORT"}
             if strategy_name in intraday_strategies:
                 base_risk_pct = float(getattr(cfg, "INTRADAY_RISK_PCT", cfg.MAX_RISK_PCT))

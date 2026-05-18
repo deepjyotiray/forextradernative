@@ -31,6 +31,7 @@ from engine.strategies.htf_short_strategy import HTFShortStrategy
 from engine.swing_engine_strategy import SwingEngineStrategy
 from engine.m15_scalp_deep_strategy import M15ScalpDeepStrategy
 from engine.m15_zone_scalp_strategy import M15ZoneScalpStrategy
+from engine.m15_zone_scalp_inverse_strategy import M15ZoneScalpInverseStrategy
 from engine.calendar import calendar as eco_calendar
 from engine.correlation import correlation as corr_engine
 from engine.xgb_model import xgb_model, xgb_bypass_enabled, xgb_training_enabled
@@ -65,6 +66,7 @@ class AutoTrader:
             ("SWING_ENGINE", SwingEngineStrategy),
             ("M15_SCALP_DEEP", M15ScalpDeepStrategy),
             ("M15_ZONE_SCALP", M15ZoneScalpStrategy),
+            ("M15_ZONE_SCALP_INVERSE", M15ZoneScalpInverseStrategy),
         ]
         for label, cls in _strategy_classes:
             try:

@@ -22,6 +22,7 @@ _STRATEGY_SCOPE_PATHS = [
     "engine/liquidity_sweep_ob_strategy.py",
     "engine/m15_scalp_deep_strategy.py",
     "engine/m15_zone_scalp_strategy.py",
+    "engine/m15_zone_scalp_inverse_strategy.py",
     "engine/swing_engine_strategy.py",
     "engine/strategies",
     "engine/strategy_configs/__init__.py",
@@ -31,6 +32,7 @@ _STRATEGY_SCOPE_PATHS = [
     "engine/strategy_configs/smc_confluence.py",
     "engine/strategy_configs/m15_scalp_deep.py",
     "engine/strategy_configs/m15_zone_scalp.py",
+    "engine/strategy_configs/m15_zone_scalp_inverse.py",
     "engine/strategy_configs/htf_short.py",
     "engine/strategy_configs/htf_long.py",
 ]

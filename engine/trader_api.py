@@ -360,6 +360,7 @@ _STRATEGY_LABELS = {
     "SMC_CONFLUENCE": "SMC",
     "M15_SCALP_DEEP": "M15 Scalp Deep",
     "M15_ZONE_SCALP": "M15 Zone Scalp",
+    "M15_ZONE_SCALP_INVERSE": "M15 Zone Scalp Inverse",
     "TREND_CHANNEL": "Trend Channel",
     "SWING_ENGINE": "Swing Engine",
     "HTF_LONG": "HTF Long",
@@ -370,6 +371,7 @@ _STRATEGY_TRIGGER_HINTS = {
     "SMC_CONFLUENCE": "Needs a fresh HTF liquidity sweep, a confirmed break of structure, a retest into the originating order block, and an LTF IFVG reclaim.",
     "M15_SCALP_DEEP": "Needs an H1 unmitigated supply-demand origin, a fresh M5 structure shift, a breaker block retrace, and clean execution pressure.",
     "M15_ZONE_SCALP": "Needs price to tap a validated M15 supply-demand zone and print a clean rejection inside session with tight execution.",
+    "M15_ZONE_SCALP_INVERSE": "Needs the normal M15 zone scalp setup first, then it takes the opposite side with mirrored stop and target.",
     "TREND_CHANNEL": "Needs price to touch a valid trend channel boundary in supertrend direction with enough room to the opposite wall.",
     "SWING_ENGINE": "Needs D1 and H4 to align, price to be near a key swing level, and an H4 rejection or strong directional candle.",
     "HTF_LONG": "Needs DXY and US10Y both trending down (macro bullish), weekly bias STRONG_BULLISH or EARLY_BULLISH, pullback 20-50% into the weekly range, and H1 structure UP.",
@@ -380,6 +382,7 @@ _STRATEGY_RECHECK_SECONDS = {
     "SMC_CONFLUENCE": 180,
     "M15_SCALP_DEEP": 240,
     "M15_ZONE_SCALP": 300,
+    "M15_ZONE_SCALP_INVERSE": 300,
     "TREND_CHANNEL": 900,
     "SWING_ENGINE": 3600,
     "HTF_LONG": 14400,
@@ -981,7 +984,7 @@ def _build_config_dict() -> dict:
 
 def _build_sl_streak_guard_status() -> dict:
     from engine.sl_streak_guard import sl_streak_guard
-    strategies = ["SWING_ENGINE", "SMC_CONFLUENCE", "M15_SCALP_DEEP", "M15_ZONE_SCALP"]
+    strategies = ["SWING_ENGINE", "SMC_CONFLUENCE", "M15_SCALP_DEEP", "M15_ZONE_SCALP", "M15_ZONE_SCALP_INVERSE"]
     return {s: sl_streak_guard.status(s) for s in strategies
             if sl_streak_guard.status(s)["consecutive_sl_hits"] > 0}
 

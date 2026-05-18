@@ -2,7 +2,7 @@
 
 ## Overview
 
-Three modes: **AUTO** (evaluates all, picks highest confidence), **SMC_CONFLUENCE**, **M15_SCALP_DEEP** / **M15_ZONE_SCALP**.
+Three modes: **AUTO** (evaluates all, picks highest confidence), **SMC_CONFLUENCE**, **M15_SCALP_DEEP** / **M15_ZONE_SCALP** / **M15_ZONE_SCALP_INVERSE**.
 
 Default on startup: `AUTO` (configurable via `config.DEFAULT_STRATEGY`).
 
