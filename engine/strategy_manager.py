@@ -25,6 +25,9 @@ _SIGNAL_FAMILY_BY_STRATEGY = {
     "M15_ZONE_SCALP_INVERSE": "M15",
     "TREND_CHANNEL": "TREND",
 }
+_PAIRED_EXECUTION_FOLLOWERS = {
+    "M15_ZONE_SCALP": "M15_ZONE_SCALP_INVERSE",
+}
 
 
 
@@ -277,6 +280,16 @@ class StrategyManager:
         )
 
         enabled = list(strategy_names or self._strategies.keys())
+        suppressed_rows = {}
+        for leader, follower in _PAIRED_EXECUTION_FOLLOWERS.items():
+            if leader in enabled and follower in enabled:
+                enabled = [name for name in enabled if name != follower]
+                suppressed_rows[follower] = {
+                    "signal": "NO_TRADE",
+                    "confidence": 0.0,
+                    "reason": f"PAIRED_WITH_{leader}",
+                    "price": None,
+                }
         tick = data.get("tick") or {}
         _log_price = _safe_float(tick.get("bid"), 0.0)
         for name in enabled:
@@ -358,6 +371,8 @@ class StrategyManager:
                 else:
                     row["reason"] = candidate["gate_reason"][:120]
             results[name] = row
+
+        results.update(suppressed_rows)
 
         allowed_candidates = [candidate for candidate in candidates if candidate.get("gate_allowed")]
         if allowed_candidates:

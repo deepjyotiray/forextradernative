@@ -72,6 +72,9 @@ from engine.deployment_metadata import capture_code_snapshot
 
 _TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120, "D1": 720}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PAIRED_EXECUTION_FOLLOWERS = {
+    "M15_ZONE_SCALP": "M15_ZONE_SCALP_INVERSE",
+}
 
 
 def _safe_dict(value):
@@ -645,105 +648,44 @@ class AutoTrader:
             # Build results summary for dashboard
             self._last_strategy_results = {r["strategy"]: {"signal": r["signal"].get("signal", "NO_TRADE"), "reason": str(r["signal"].get("reason", ""))[:120]} for r in signals_to_execute}
 
+        handled_cycle_strategies = set()
+
         for item in signals_to_execute:
             strat_name = item["strategy"]
             sig = item["signal"]
-            action = sig.get("signal", "NO_TRADE")
-
-            if action not in ("BUY", "SELL"):
-                self._log_strategy_skip(strat_name, str(sig.get("reason") or "No signal")[:120])
+            if strat_name in handled_cycle_strategies:
                 continue
 
-            if self._strategy_open_count(strat_name) > 0:
-                self._log_strategy_skip(strat_name, "Open trade already exists for this strategy")
+            prepared, reason = self._prepare_execution_order(strat_name, sig, tick, account, strat_data)
+            if not prepared:
+                self._log_strategy_skip(strat_name, reason)
                 continue
 
-            self._stats["signals"] += 1
-            sl, tp = sig.get("sl"), sig.get("tp")
-            if not sl or not tp:
-                self._log_strategy_skip(strat_name, "Execution blocked: missing SL/TP")
-                continue
-
-            signal_entry = _safe_float(sig.get("entry"), 0.0)
-            entry = self._market_entry_price(action, tick, fallback=signal_entry)
-            sl_distance = abs(entry - _safe_float(sl))
-            if sl_distance <= 0:
-                self._log_strategy_skip(strat_name, "Execution blocked: invalid stop distance")
-                continue
-
-            lot = _safe_float(sig.get("lot", sig.get("lot_size")), 0.0)
-            if lot <= 0:
-                lot = self.risk.calculate_lot(
+            paired_prepared = None
+            paired_name = _PAIRED_EXECUTION_FOLLOWERS.get(str(strat_name or "").upper())
+            if paired_name:
+                paired_sig = self._build_forced_paired_signal(paired_name, strat_data)
+                if not paired_sig:
+                    self._log_strategy_skip(strat_name, f"Execution blocked: paired {paired_name} unavailable")
+                    continue
+                paired_prepared, pair_reason = self._prepare_execution_order(
+                    paired_name,
+                    paired_sig,
+                    tick,
                     account,
-                    sl_distance,
-                    high_conf=bool(sig.get("_high_conf", False)),
-                    strategy=strat_name,
+                    strat_data,
                 )
-            if lot <= 0:
-                self._log_strategy_skip(strat_name, "Execution blocked: invalid lot")
-                continue
-
-            strategy_obj = self.strat_mgr.get(strat_name)
-            if strategy_obj is not None and hasattr(strategy_obj, "pre_send_revalidate"):
-                pre_send = strategy_obj.pre_send_revalidate(sig, strat_data)
-                if not pre_send.get("allowed", True):
-                    self._log_strategy_skip(strat_name, f"Execution blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}")
+                if not paired_prepared:
+                    self._log_strategy_skip(strat_name, f"Execution blocked: paired {paired_name} unavailable ({pair_reason})")
                     continue
 
-            comment = sig.get("_comment") or f"FT_{strat_name[:8]}"
-            result = None
-            for _ in range(3):
-                result = self.bridge.open_trade(action, lot, sl, tp, comment=comment)
-                if result.get("success"):
-                    break
-                time.sleep(0.1)
-
-            if result and result.get("success"):
-                t = result["ticket"]
-                fp = result["price"]
-                live_tick_metrics = self.tick_proc.snapshot() or {}
-                self.trades.register_trade(
-                    t, action, lot, fp, sl, tp, sl_distance,
-                    strategy=strat_name, confidence=sig.get("confidence", 0),
-                    reason=sig.get("reason", ""),
-                    scalp=bool(sig.get("_scalp", False)),
-                    features={
-                        "atr": self._indicators.get("atr", 0),
-                        "atr_ratio": self._indicators.get("atr_ratio", 1),
-                        "rsi": self._indicators.get("rsi", 50),
-                        "ema_slope": self._indicators.get("ema9_slope", 0),
-                        "body_ratio": self._indicators.get("body_ratio", 0),
-                        "spread": (tick or {}).get("spread", 0),
-                        "signal_confidence": sig.get("confidence", 0),
-                        "entry_tick_velocity": live_tick_metrics.get("velocity", 0),
-                        "entry_tick_count": live_tick_metrics.get("tick_count", 0),
-                        "entry_tick_pressure_score": self._tick_pressure.get("pressure_score"),
-                        "entry_tick_pressure_bias": self._tick_pressure.get("directional_bias"),
-                        "entry_tick_burst_rate": self._tick_pressure.get("burst_rate"),
-                        "regime": self._regime.get("state", ""),
-                        "bias_conf": self._bias.get("confidence", 0),
-                        "session": get_session(),
-                        "profile_name": sig.get("_exit_profile"),
-                        "tp_levels": sig.get("tp_levels") or sig.get("_tp_levels") or [],
-                        "macro_bias": sig.get("_macro_bias"),
-                        "news": sig.get("_news"),
-                        "entry_volume_ratio": sig.get("_entry_volume_ratio"),
-                        "signal_family": sig.get("_signal_family"),
-                        "context_hash": sig.get("_context_hash"),
-                        "signal_id": sig.get("_signal_id"),
-                        "ttl_seconds": sig.get("_ttl_seconds"),
-                    },
-                )
-                record_trade_taken()
-                record_pacing_trade()
-                record_session_trade()
-                self.risk.record_trade_opened()
-                self._confirm_strategy_execution(strat_name, sig)
-                self._stats["trades"] += 1
-                self.log("TRADE", f"[{strat_name}] {action} {lot:.2f} lot @ {fp} | "
-                          f"SL:{sl} TP:{tp} | {sig.get('reason','')[:80]}")
-            elif result:
-                self.log("TRADE", f"[{strat_name}] FAILED: {result.get('error')}")
+            self._stats["signals"] += 1
+            if self._execute_prepared_order(prepared, tick):
+                handled_cycle_strategies.add(strat_name)
+                if paired_prepared:
+                    self._stats["signals"] += 1
+                    if self._execute_prepared_order(paired_prepared, tick):
+                        handled_cycle_strategies.add(paired_name)
 
         self._last_signal = {"strategy": signals_to_execute[0]["strategy"] if signals_to_execute else "AUTO", **(signals_to_execute[0]["signal"] if signals_to_execute else {})}
         if self._last_strategy_results:
@@ -887,6 +829,133 @@ class AutoTrader:
         strategy = self.strat_mgr.get(strat_name)
         if strategy and hasattr(strategy, "confirm_trade_executed"):
             strategy.confirm_trade_executed(sig)
+
+    def _build_forced_paired_signal(self, strategy_name: str, strat_data: Dict) -> Dict:
+        strategy = self.strat_mgr.get(strategy_name)
+        if strategy is None:
+            return {}
+        try:
+            sig = strategy.generate_signal(strat_data) or {}
+        except Exception as e:
+            self.log("PAIR", f"[{strategy_name}] Pair signal generation failed: {e}")
+            return {}
+        if str(sig.get("signal") or "").upper() not in ("BUY", "SELL"):
+            return {}
+        return sig
+
+    def _prepare_execution_order(self, strategy_name: str, sig: Dict, tick: Dict, account: Dict, strat_data: Dict):
+        action = str(sig.get("signal") or "NO_TRADE").upper()
+        if action not in ("BUY", "SELL"):
+            return None, str(sig.get("reason") or "No signal")[:120]
+
+        if self._strategy_open_count(strategy_name) > 0:
+            return None, "Open trade already exists for this strategy"
+
+        sl, tp = sig.get("sl"), sig.get("tp")
+        if not sl or not tp:
+            return None, "Execution blocked: missing SL/TP"
+
+        signal_entry = _safe_float(sig.get("entry"), 0.0)
+        entry = self._market_entry_price(action, tick, fallback=signal_entry)
+        sl_distance = abs(entry - _safe_float(sl))
+        if sl_distance <= 0:
+            return None, "Execution blocked: invalid stop distance"
+
+        lot = _safe_float(sig.get("lot", sig.get("lot_size")), 0.0)
+        if lot <= 0:
+            lot = self.risk.calculate_lot(
+                account,
+                sl_distance,
+                high_conf=bool(sig.get("_high_conf", False)),
+                strategy=strategy_name,
+            )
+        if lot <= 0:
+            return None, "Execution blocked: invalid lot"
+
+        strategy_obj = self.strat_mgr.get(strategy_name)
+        if strategy_obj is not None and hasattr(strategy_obj, "pre_send_revalidate"):
+            pre_send = strategy_obj.pre_send_revalidate(sig, strat_data)
+            if not pre_send.get("allowed", True):
+                return None, f"Execution blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}"
+
+        return {
+            "strategy": strategy_name,
+            "signal": sig,
+            "action": action,
+            "sl": sl,
+            "tp": tp,
+            "entry": entry,
+            "sl_distance": sl_distance,
+            "lot": lot,
+            "comment": sig.get("_comment") or f"FT_{strategy_name[:8]}",
+        }, ""
+
+    def _execute_prepared_order(self, prepared: Dict, tick: Dict) -> bool:
+        strat_name = str(prepared.get("strategy") or "")
+        sig = prepared.get("signal") or {}
+        action = str(prepared.get("action") or "").upper()
+        lot = _safe_float(prepared.get("lot"), 0.0)
+        sl = prepared.get("sl")
+        tp = prepared.get("tp")
+        sl_distance = _safe_float(prepared.get("sl_distance"), 0.0)
+        comment = str(prepared.get("comment") or f"FT_{strat_name[:8]}")
+
+        result = None
+        for _ in range(3):
+            result = self.bridge.open_trade(action, lot, sl, tp, comment=comment)
+            if result.get("success"):
+                break
+            time.sleep(0.1)
+
+        if result and result.get("success"):
+            t = result["ticket"]
+            fp = result["price"]
+            live_tick_metrics = self.tick_proc.snapshot() or {}
+            self.trades.register_trade(
+                t, action, lot, fp, sl, tp, sl_distance,
+                strategy=strat_name, confidence=sig.get("confidence", 0),
+                reason=sig.get("reason", ""),
+                scalp=bool(sig.get("_scalp", False)),
+                features={
+                    "atr": self._indicators.get("atr", 0),
+                    "atr_ratio": self._indicators.get("atr_ratio", 1),
+                    "rsi": self._indicators.get("rsi", 50),
+                    "ema_slope": self._indicators.get("ema9_slope", 0),
+                    "body_ratio": self._indicators.get("body_ratio", 0),
+                    "spread": (tick or {}).get("spread", 0),
+                    "signal_confidence": sig.get("confidence", 0),
+                    "entry_tick_velocity": live_tick_metrics.get("velocity", 0),
+                    "entry_tick_count": live_tick_metrics.get("tick_count", 0),
+                    "entry_tick_pressure_score": self._tick_pressure.get("pressure_score"),
+                    "entry_tick_pressure_bias": self._tick_pressure.get("directional_bias"),
+                    "entry_tick_burst_rate": self._tick_pressure.get("burst_rate"),
+                    "regime": self._regime.get("state", ""),
+                    "bias_conf": self._bias.get("confidence", 0),
+                    "session": get_session(),
+                    "profile_name": sig.get("_exit_profile"),
+                    "tp_levels": sig.get("tp_levels") or sig.get("_tp_levels") or [],
+                    "macro_bias": sig.get("_macro_bias"),
+                    "news": sig.get("_news"),
+                    "entry_volume_ratio": sig.get("_entry_volume_ratio"),
+                    "signal_family": sig.get("_signal_family"),
+                    "context_hash": sig.get("_context_hash"),
+                    "signal_id": sig.get("_signal_id"),
+                    "ttl_seconds": sig.get("_ttl_seconds"),
+                },
+            )
+            record_trade_taken()
+            record_pacing_trade()
+            record_session_trade()
+            self.risk.record_trade_opened()
+            self._confirm_strategy_execution(strat_name, sig)
+            self._stats["trades"] += 1
+            self.log("TRADE", f"[{strat_name}] {action} {lot:.2f} lot @ {fp} | "
+                      f"SL:{sl} TP:{tp} | {sig.get('reason','')[:80]}")
+            return True
+
+        if result:
+            self.log("TRADE", f"[{strat_name}] FAILED: {result.get('error')}")
+        return False
 
     def _strategy_trade_counts(self) -> Dict[str, int]:
         names = [name for name in getattr(self.strat_mgr, "available", []) if name and name != "AUTO"]

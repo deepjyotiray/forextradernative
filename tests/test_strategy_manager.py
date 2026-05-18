@@ -42,6 +42,29 @@ def test_normalize_signal_marks_inverse_zone_scalp_as_m15_family():
     assert signal["_candle_confirmation"] is True
 
 
+def test_auto_mode_suppresses_inverse_zone_scalp_when_base_is_present():
+    manager = StrategyManager()
+    manager.register(_StubStrategy("M15_ZONE_SCALP", {"signal": "BUY", "entry": 100.0, "confidence": 0.70, "rr": 1.8}))
+    manager.register(_StubStrategy("M15_ZONE_SCALP_INVERSE", {"signal": "SELL", "entry": 100.0, "confidence": 0.95, "rr": 2.4}))
+
+    def fake_gate(signal, market_state, risk_manager=None, m15_context_provider=None):
+        return {
+            "allowed": True,
+            "reason": "MASTER_GATE_PASS",
+            "score": 80,
+            "confirmation_count": 3,
+            "counter_trend": False,
+        }
+
+    with patch("engine.strategy_manager.master_trade_gate", side_effect=fake_gate):
+        result = manager.evaluate_all({"bias": {"direction": "LONG"}})
+
+    assert result["strategy"] == "M15_ZONE_SCALP"
+    assert result["signal"]["signal"] == "BUY"
+    assert result["all_results"]["M15_ZONE_SCALP_INVERSE"]["signal"] == "NO_TRADE"
+    assert result["all_results"]["M15_ZONE_SCALP_INVERSE"]["reason"] == "PAIRED_WITH_M15_ZONE_SCALP"
+
+
 def test_normalize_signal_marks_m15_scalp_deep_as_m15_family():
     signal = _normalize_signal({"signal": "BUY", "entry": 100.0}, "M15_SCALP_DEEP")
 
