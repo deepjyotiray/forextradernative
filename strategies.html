@@ -1008,6 +1008,10 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
             <label>Loss Pause (seconds)</label>
             <input type="number" id="htflong_loss_pause" min="0" max="14400" value="3600">
           </div>
+          <div class="form-group">
+            <label>Manual Bias Override</label>
+            <div class="toggle-switch" id="htflong_manual_bias" onclick="toggleFilter(this)"></div>
+          </div>
         </div>
       </div>
 
@@ -1097,6 +1101,10 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
           <div class="form-group">
             <label>Loss Pause (seconds)</label>
             <input type="number" id="htfshort_loss_pause" min="0" max="14400" value="3600">
+          </div>
+          <div class="form-group">
+            <label>Manual Bias Override</label>
+            <div class="toggle-switch" id="htfshort_manual_bias" onclick="toggleFilter(this)"></div>
           </div>
         </div>
       </div>
@@ -1599,8 +1607,14 @@ function _readTabConfig(key) {
   if (key === 'intraday') Object.assign(base, {
     sessions: sessionList('intraday'),
   });
-  if (key === 'htflong') Object.assign(base, { min_rr: n('htflong_min_rr') });
-  if (key === 'htfshort') Object.assign(base, { min_rr: n('htfshort_min_rr') });
+  if (key === 'htflong') Object.assign(base, {
+    min_rr: n('htflong_min_rr'),
+    manual_bias_enabled: tog('htflong_manual_bias'),
+  });
+  if (key === 'htfshort') Object.assign(base, {
+    min_rr: n('htfshort_min_rr'),
+    manual_bias_enabled: tog('htfshort_manual_bias'),
+  });
   return Object.fromEntries(Object.entries(base).filter(([,val])=>val!==undefined));
 }
 function saveStrategyConfig(key) {
@@ -1776,8 +1790,14 @@ function loadStrategyConfig(key, cfg) {
     if (london) london.checked = sessions.has('LONDON');
     if (newYork) newYork.checked = sessions.has('NEW_YORK');
   }
-  if (key === 'htflong') { set('htflong_min_rr', cfg.min_rr); }
-  if (key === 'htfshort') { set('htfshort_min_rr', cfg.min_rr); }
+  if (key === 'htflong') {
+    set('htflong_min_rr', cfg.min_rr);
+    setTog('htflong_manual_bias', cfg.manual_bias_enabled);
+  }
+  if (key === 'htfshort') {
+    set('htfshort_min_rr', cfg.min_rr);
+    setTog('htfshort_manual_bias', cfg.manual_bias_enabled);
+  }
 }
 
 // ── Unused stubs kept for HTML onclick compatibility ──────────────────────────

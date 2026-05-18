@@ -185,11 +185,49 @@ def _daily_entry(data: Dict) -> Optional[Dict[str, Any]]:
     }
 
 
+def _manual_long_entry(data: Dict) -> Optional[Dict[str, Any]]:
+    """
+    Operator-assisted fallback for cases where the trader has manually confirmed
+    a bullish trend but the weekly path is still too restrictive.
+    """
+    d1 = _structure(data, "D1")
+    h4 = _structure(data, "H4")
+    h1 = _structure(data, "H1")
+
+    bullish_structure = (d1 == "UP" and h4 == "UP") or (h4 == "UP" and h1 == "UP")
+    if not bullish_structure:
+        return None
+
+    pullback_pct = float(data.get("pullback", {}).get("depth_pct", 0.0))
+    if not (0.10 <= pullback_pct <= 0.55):
+        return None
+
+    d1_body = float(data.get("momentum", {}).get("D1_body_ratio", 0.0))
+    h4_body = float(data.get("momentum", {}).get("H4_body_ratio", 0.0))
+    if max(d1_body, h4_body) < 0.45:
+        return None
+
+    price = float(data.get("price", 0.0))
+    entry = price
+    sl_distance = 14.0
+    sl = round(entry - sl_distance, 2)
+    tp1 = round(entry + sl_distance * 1.5, 2)
+    tp2 = round(entry + sl_distance * 2.5, 2)
+
+    return {
+        "strategy": "MANUAL_LONG_TREND",
+        "entry_zone": round(entry, 2),
+        "sl": sl,
+        "tp": [tp1, tp2],
+        "sl_distance": sl_distance,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 5 — Hard filters
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _hard_filter(data: Dict, macro: str) -> Optional[str]:
+def _hard_filter(data: Dict, macro: str, *, manual_long_bias: bool = False) -> Optional[str]:
     news = data.get("news", {})
     if news.get("high_impact_soon"):
         return "High-impact news imminent"
@@ -209,9 +247,10 @@ def _hard_filter(data: Dict, macro: str) -> Optional[str]:
     if high_7d > 0 and price >= high_7d * 0.998:
         return "Price at extreme weekly high — overextended"
 
-    macro_block = _long_macro_block_reason(data, macro)
-    if macro_block:
-        return macro_block
+    if not manual_long_bias:
+        macro_block = _long_macro_block_reason(data, macro)
+        if macro_block:
+            return macro_block
 
     return None
 
@@ -266,9 +305,10 @@ def evaluate(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     # Step 1
     macro = _macro_bias(data)
+    manual_long_bias = bool(data.get("manual_long_bias"))
 
     # Step 5 — hard filters run before any entry logic
-    block = _hard_filter(data, macro)
+    block = _hard_filter(data, macro, manual_long_bias=manual_long_bias)
     if block:
         return _no(block)
 
@@ -278,6 +318,21 @@ def evaluate(data: Dict[str, Any]) -> Dict[str, Any]:
     pullback_pct = float(data.get("pullback", {}).get("depth_pct", 0.0))
     h1 = _structure(data, "H1")
     conf = _confidence(w_bias, macro, pullback_pct, h1)
+
+    if manual_long_bias:
+        entry = _manual_long_entry(data)
+        if entry:
+            d1 = _structure(data, "D1")
+            h4 = _structure(data, "H4")
+            return {
+                **entry,
+                "decision": "BUY",
+                "confidence": max(conf, 60),
+                "reason": (
+                    f"Manual long bias override | macro={macro} | "
+                    f"pullback={pullback_pct:.0%} | D1={d1} H4={h4} H1={h1}"
+                ),
+            }
 
     # Step 3 — weekly path
     if w_bias != "UNCLEAR" and macro != "NEUTRAL_OR_SELL":

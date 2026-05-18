@@ -65,6 +65,7 @@ class HTFLongStrategy(BaseStrategy):
         # ── News from engine calendar ───────────────────────────────────────
         cal = data.get("calendar") or {}
         high_impact_soon = bool(cal.get("blocked"))
+        manual_long_bias = bool(getattr(cfg, "HTF_LONG_MANUAL_BIAS_ENABLED", False))
 
         htf_data: Dict[str, Any] = {
             "price": price,
@@ -79,6 +80,7 @@ class HTFLongStrategy(BaseStrategy):
             "news": {"recent_events_bias": "NEUTRAL", "high_impact_soon": high_impact_soon},
             "pullback": {"depth_pct": pullback_pct},
             "account": {"balance": float(account.get("balance", 0.0))},
+            "manual_long_bias": manual_long_bias,
         }
 
         result = htf_evaluate(htf_data)
@@ -124,6 +126,7 @@ class HTFLongStrategy(BaseStrategy):
             "_htf_us10y_trend":            us10y_trend,
             "_htf_macro_source":           macro_source,
             "_htf_macro_fetched_at":       "",
+            "_htf_manual_long_bias":       manual_long_bias,
             "_be_trigger_r":               cfg.EXIT_PROFILE_TREND_BE_TRIGGER_R,
             "_breakeven_min_hold_seconds": cfg.EXIT_PROFILE_TREND_BREAKEVEN_MIN_HOLD_SECONDS,
             "_breakeven_volume_hold_ratio":cfg.EXIT_PROFILE_TREND_BREAKEVEN_VOLUME_HOLD_RATIO,

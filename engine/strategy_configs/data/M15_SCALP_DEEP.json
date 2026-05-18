@@ -32,6 +32,7 @@
   "opposing_bias_pressure_threshold": 0.05,
   "allow_ranging": false,
   "sessions": [
+    "ASIAN",
     "LONDON",
     "NEW_YORK"
   ],

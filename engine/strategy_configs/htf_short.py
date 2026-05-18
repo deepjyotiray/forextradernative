@@ -10,6 +10,7 @@ DEFAULTS = {
     "sl_min": 15.0,
     "sl_max": 30.0,
     "min_rr": 1.8,
+    "manual_bias_enabled": False,
     "sessions": ["LONDON", "NEW_YORK", "ASIAN"],
     "news_block": True,
     "cooldown_seconds": 3600,
@@ -28,4 +29,5 @@ CFG_MAP = {
     "enabled":    "HTF_SHORT_ENABLED",
     "spread_max": "HTF_SHORT_MAX_SPREAD",
     "min_rr":     "HTF_SHORT_MIN_RR",
+    "manual_bias_enabled": "HTF_SHORT_MANUAL_BIAS_ENABLED",
 }

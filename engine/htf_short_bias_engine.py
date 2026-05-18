@@ -168,8 +168,46 @@ def _daily_entry(data: Dict) -> Optional[Dict[str, Any]]:
     }
 
 
+def _manual_short_entry(data: Dict) -> Optional[Dict[str, Any]]:
+    """
+    Operator-assisted fallback for cases where the trader has manually confirmed
+    a bearish trend but the weekly path is still too restrictive.
+    """
+    d1 = _structure(data, "D1")
+    h4 = _structure(data, "H4")
+    h1 = _structure(data, "H1")
+
+    bearish_structure = (d1 == "DOWN" and h4 == "DOWN") or (h4 == "DOWN" and h1 == "DOWN")
+    if not bearish_structure:
+        return None
+
+    pullback_pct = float(data.get("pullback", {}).get("depth_pct", 0.0))
+    if not (0.10 <= pullback_pct <= 0.55):
+        return None
+
+    d1_body = float(data.get("momentum", {}).get("D1_body_ratio", 0.0))
+    h4_body = float(data.get("momentum", {}).get("H4_body_ratio", 0.0))
+    if max(d1_body, h4_body) < 0.45:
+        return None
+
+    price = float(data.get("price", 0.0))
+    entry = price
+    sl_distance = 14.0
+    sl = round(entry + sl_distance, 2)
+    tp1 = round(entry - sl_distance * 1.5, 2)
+    tp2 = round(entry - sl_distance * 2.5, 2)
+
+    return {
+        "strategy": "MANUAL_SHORT_TREND",
+        "entry_zone": round(entry, 2),
+        "sl": sl,
+        "tp": [tp1, tp2],
+        "sl_distance": sl_distance,
+    }
+
+
 # Step 5 — Hard filters (inverted)
-def _hard_filter(data: Dict, macro: str) -> Optional[str]:
+def _hard_filter(data: Dict, macro: str, *, manual_short_bias: bool = False) -> Optional[str]:
     news = data.get("news", {})
     if news.get("high_impact_soon"):
         return "High-impact news imminent"
@@ -189,9 +227,10 @@ def _hard_filter(data: Dict, macro: str) -> Optional[str]:
     if low_7d > 0 and price <= low_7d * 1.002:
         return "Price at extreme weekly low — overextended"
 
-    macro_block = _short_macro_block_reason(data, macro)
-    if macro_block:
-        return macro_block
+    if not manual_short_bias:
+        macro_block = _short_macro_block_reason(data, macro)
+        if macro_block:
+            return macro_block
 
     return None
 
@@ -225,8 +264,9 @@ def evaluate(data: Dict[str, Any]) -> Dict[str, Any]:
     Run all 6 steps and return a structured decision dict for SHORT.
     """
     macro = _macro_bias(data)
+    manual_short_bias = bool(data.get("manual_short_bias"))
 
-    block = _hard_filter(data, macro)
+    block = _hard_filter(data, macro, manual_short_bias=manual_short_bias)
     if block:
         return _no(block)
 
@@ -235,6 +275,21 @@ def evaluate(data: Dict[str, Any]) -> Dict[str, Any]:
     pullback_pct = float(data.get("pullback", {}).get("depth_pct", 0.0))
     h1 = _structure(data, "H1")
     conf = _confidence(w_bias, macro, pullback_pct, h1)
+
+    if manual_short_bias:
+        entry = _manual_short_entry(data)
+        if entry:
+            d1 = _structure(data, "D1")
+            h4 = _structure(data, "H4")
+            return {
+                **entry,
+                "decision": "SELL",
+                "confidence": max(conf, 60),
+                "reason": (
+                    f"Manual short bias override | macro={macro} | "
+                    f"pullback={pullback_pct:.0%} | D1={d1} H4={h4} H1={h1}"
+                ),
+            }
 
     # Weekly path
     if w_bias != "UNCLEAR" and macro != "NEUTRAL_OR_BUY":
