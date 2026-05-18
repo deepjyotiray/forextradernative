@@ -8,7 +8,7 @@
   "sl_min": 15,
   "sl_max": 30,
   "min_rr": 1.8,
-  "manual_bias_enabled": false,
+  "manual_bias_enabled": true,
   "sessions": [
     "LONDON",
     "NEW_YORK",
