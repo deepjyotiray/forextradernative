@@ -1289,7 +1289,7 @@ def _build_status_sync() -> dict:
         pass  # no groups to strip anymore
     for persistent_key in (
         "tier1_enabled", "session_override_enabled", "daily_target_enabled",
-        "daily_target", "available_symbols", "strategies", "risk_config", "gate_config"
+        "daily_target", "available_symbols", "risk_config", "gate_config"
     ):
         status.pop(persistent_key, None)
     for heavy_key in (

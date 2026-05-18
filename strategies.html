@@ -1703,15 +1703,17 @@ function loadInitialData() {
 
   setInterval(() => {
     fetch('/status').then(r=>r.json()).then(status => {
-      const strats = status.strategies || {};
-      const newEnabled = strats.enabled || [];
-      // Only update toggle states, never re-render sidebar from poll
-      // (available list from running process may still have legacy aliases)
-      _enabled = newEnabled;
-      _available.forEach(n => syncStrategyUI(n, _enabled.includes(n)));
-      syncManualStrategySelectors(strats.selected || newEnabled || [], !!strats.is_auto);
-      document.getElementById('currentStrategy').textContent =
-        strats.is_auto ? 'AUTO' : newEnabled.filter(s => _available.includes(s)).join(' + ');
+      const strats = status.strategies || null;
+      if (strats) {
+        const newEnabled = strats.enabled || [];
+        // Only update toggle states, never re-render sidebar from poll
+        // (available list from running process may still have legacy aliases)
+        _enabled = newEnabled;
+        _available.forEach(n => syncStrategyUI(n, _enabled.includes(n)));
+        syncManualStrategySelectors(strats.selected || newEnabled || [], !!strats.is_auto);
+        document.getElementById('currentStrategy').textContent =
+          strats.is_auto ? 'AUTO' : newEnabled.filter(s => _available.includes(s)).join(' + ');
+      }
       renderDeployment(status);
       document.getElementById('openTrades').textContent = (status.mt5_positions||[]).length;
     }).catch(()=>{});
