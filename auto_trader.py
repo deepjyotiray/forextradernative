@@ -72,9 +72,7 @@ from engine.deployment_metadata import capture_code_snapshot
 
 _TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120, "D1": 720}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_PAIRED_EXECUTION_FOLLOWERS = {
-    "M15_ZONE_SCALP": "M15_ZONE_SCALP_INVERSE",
-}
+_PAIRED_EXECUTION_FOLLOWERS = {}
 
 
 def _safe_dict(value):
@@ -938,6 +936,18 @@ class AutoTrader:
                     "news": sig.get("_news"),
                     "entry_volume_ratio": sig.get("_entry_volume_ratio"),
                     "signal_family": sig.get("_signal_family"),
+                    "base_setup_direction": sig.get("_base_setup_direction") or sig.get("_source_setup_direction") or sig.get("_setup_direction"),
+                    "zone_type": sig.get("_zone_type"),
+                    "route_type": sig.get("_route_type"),
+                    "micro_bias_direction": sig.get("_micro_bias_direction"),
+                    "micro_bias_score": sig.get("_micro_bias_score"),
+                    "micro_bias_confidence": sig.get("_micro_bias_confidence"),
+                    "micro_bias_action": sig.get("_micro_bias_action"),
+                    "micro_bias_reasons": sig.get("_micro_bias_reasons") or [],
+                    "pressure_bias": sig.get("_pressure_bias") or sig.get("_entry_tick_pressure_bias"),
+                    "pressure_score": sig.get("_pressure_score") if sig.get("_pressure_score") is not None else sig.get("_entry_tick_pressure_score"),
+                    "pressure_burst_rate": sig.get("_pressure_burst_rate") if sig.get("_pressure_burst_rate") is not None else sig.get("_entry_tick_burst_rate"),
+                    "htf_state": sig.get("_htf_state") or {},
                     "context_hash": sig.get("_context_hash"),
                     "signal_id": sig.get("_signal_id"),
                     "ttl_seconds": sig.get("_ttl_seconds"),

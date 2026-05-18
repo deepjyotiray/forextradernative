@@ -1,19 +1,21 @@
 """
 M15 zone scalp inverse — exact opposite execution of M15_ZONE_SCALP.
 
-Uses the same setup detection as M15_ZONE_SCALP, but flips the final trade
-direction and mirrors the stop/target so the trade thesis is the opposite of
-the base strategy's thesis.
+Uses the same setup detection and micro-bias resolution as M15_ZONE_SCALP.
+It only activates when the shared resolver says the opposite side has the
+stronger real-time entry bias.
 """
 from __future__ import annotations
 
 from typing import Dict
 
-from engine import strategy_configs as _scfg
 from engine.m15_zone_scalp_strategy import (
     M15ZoneScalpStrategy,
-    _calc_scalp_lot,
     _safe_float,
+)
+from engine.m15_zone_micro_bias import (
+    build_m15_zone_decision_reason,
+    mirror_zone_signal,
 )
 
 
@@ -21,77 +23,46 @@ class M15ZoneScalpInverseStrategy(M15ZoneScalpStrategy):
     name = "M15_ZONE_SCALP_INVERSE"
 
     def generate_signal(self, data: Dict) -> Dict:
-        source = super().generate_signal(data)
-        source_signal = str(source.get("signal") or "").upper()
-        if source_signal not in ("BUY", "SELL"):
-            return source
+        candidates, blocked = self._family_candidates(data)
+        if blocked is not None:
+            return blocked
 
-        tick = data.get("tick") or {}
-        bid = _safe_float(tick.get("bid"))
-        ask = _safe_float(tick.get("ask") or tick.get("bid"))
-        if bid <= 0:
-            return self._no("No tick data")
+        best_signal = None
+        best_weight = float("-inf")
+        best_blocked = None
+        best_block_weight = float("-inf")
 
-        direction = "SELL" if source_signal == "BUY" else "BUY"
-        entry = bid if direction == "SELL" else (ask if ask > 0 else bid)
-        sl = round(_safe_float(source.get("tp")), 2)
-        tp = round(_safe_float(source.get("sl")), 2)
+        for candidate in candidates:
+            resolver = self._resolve_micro_bias(data, candidate)
+            candidate_weight = abs(_safe_float(resolver.get("micro_bias_score"))) + float(candidate.get("_zone_strength", 0.0)) * 20.0
+            expected_inverse_dir = "SELL" if str(candidate.get("signal") or "").upper() == "BUY" else "BUY"
+            if (
+                resolver.get("recommended_action") == "ROUTE_TO_INVERSE"
+                and resolver.get("final_direction") == expected_inverse_dir
+            ):
+                routed = mirror_zone_signal(candidate, data, self.name)
+                routed = self._attach_micro_bias(routed, resolver)
+                routed["_route_type"] = "ROUTED_TO_INVERSE"
+                routed["reason"] = build_m15_zone_decision_reason("M15 zone scalp inverse", candidate.get("signal"), resolver, routed)
+                if candidate_weight > best_weight:
+                    best_signal = routed
+                    best_weight = candidate_weight
+            else:
+                blocked_sig = self._no(
+                    build_m15_zone_decision_reason("M15 zone scalp inverse", candidate.get("signal"), resolver, candidate),
+                    _micro_bias_direction=resolver.get("micro_bias_direction"),
+                    _micro_bias_score=resolver.get("micro_bias_score"),
+                    _micro_bias_confidence=resolver.get("micro_bias_confidence"),
+                    _micro_bias_action=resolver.get("recommended_action"),
+                    _micro_bias_reasons=list(resolver.get("reasons") or []),
+                    _pressure_bias=resolver.get("pressure_bias"),
+                    _pressure_score=resolver.get("pressure_score"),
+                    _route_type="BLOCKED_BASE_WON" if resolver.get("recommended_action") == "ALLOW_BASE_TRADE" else "BLOCKED_NEUTRAL_OR_WEAK",
+                    _base_setup_direction="LONG" if candidate.get("signal") == "BUY" else "SHORT",
+                    _zone_type=candidate.get("_zone_type"),
+                )
+                if candidate_weight > best_block_weight:
+                    best_blocked = blocked_sig
+                    best_block_weight = candidate_weight
 
-        if direction == "BUY":
-            if not (sl < entry < tp):
-                return self._no("Inverse BUY produced invalid levels")
-        else:
-            if not (tp < entry < sl):
-                return self._no("Inverse SELL produced invalid levels")
-
-        sl_dist = abs(entry - sl)
-        tp_dist = abs(tp - entry)
-        rr = tp_dist / max(sl_dist, 1e-6)
-
-        s_cfg = _scfg.get(self.name)
-        balance = _safe_float((data.get("account") or {}).get("balance"))
-        if balance <= 0:
-            return self._no("Account balance unavailable")
-        lot = _calc_scalp_lot(balance, s_cfg, sl_dist)
-
-        confidence = min(0.99, _safe_float(source.get("confidence"), 0.0))
-        pip = max(0.01, _safe_float(source.get("_pip_size"), _safe_float(s_cfg.get("pip_size"), 0.1)))
-        setup_direction = "LONG" if direction == "BUY" else "SHORT"
-        source_setup = "LONG" if source_signal == "BUY" else "SHORT"
-        source_reason = str(source.get("reason") or "").strip()
-        reason = f"{direction} M15 zone scalp inverse | opposite of {source_signal} setup | {source_reason}"
-        tp_levels = [tp]
-
-        return {
-            "signal": direction,
-            "entry": round(entry, 2),
-            "sl": sl,
-            "tp": tp,
-            "tp_levels": tp_levels,
-            "sl_distance": round(sl_dist, 2),
-            "lot": round(lot, 2),
-            "confidence": confidence,
-            "confidence_pct": int(round(confidence * 100)),
-            "reason": reason,
-            "rr": round(rr, 2),
-            "_strategy_name": self.name,
-            "strategy": self.name,
-            "decision": direction,
-            "_signal_family": "M15",
-            "_setup_direction": setup_direction,
-            "_bias_direction": str(source.get("_bias_direction") or source_setup).upper(),
-            "_source_strategy_name": "M15_ZONE_SCALP",
-            "_source_signal": source_signal,
-            "_source_setup_direction": source_setup,
-            "_sweep_confirmed": bool(source.get("_sweep_confirmed", False)),
-            "_m15_zone_confirmed": bool(source.get("_m15_zone_confirmed", True)),
-            "_candle_confirmation": bool(source.get("_candle_confirmation", True)),
-            "_body_ratio": round(_safe_float(source.get("_body_ratio")), 3),
-            "_exit_profile": str(source.get("_exit_profile") or "m15_zone_scalp"),
-            "_scalp": bool(source.get("_scalp", True)),
-            "_tp_levels": tp_levels,
-            "_zone_mid": _safe_float(source.get("_zone_mid")),
-            "_tp_pips": round(tp_dist / pip, 2),
-            "_pip_size": pip,
-            "_session": source.get("_session"),
-        }
+        return best_signal or best_blocked or self._no("No actionable inverse M15 zone family candidate")

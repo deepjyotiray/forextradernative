@@ -42,7 +42,7 @@ def test_normalize_signal_marks_inverse_zone_scalp_as_m15_family():
     assert signal["_candle_confirmation"] is True
 
 
-def test_auto_mode_suppresses_inverse_zone_scalp_when_base_is_present():
+def test_auto_mode_evaluates_inverse_zone_scalp_independently():
     manager = StrategyManager()
     manager.register(_StubStrategy("M15_ZONE_SCALP", {"signal": "BUY", "entry": 100.0, "confidence": 0.70, "rr": 1.8}))
     manager.register(_StubStrategy("M15_ZONE_SCALP_INVERSE", {"signal": "SELL", "entry": 100.0, "confidence": 0.95, "rr": 2.4}))
@@ -61,8 +61,9 @@ def test_auto_mode_suppresses_inverse_zone_scalp_when_base_is_present():
 
     assert result["strategy"] == "M15_ZONE_SCALP"
     assert result["signal"]["signal"] == "BUY"
-    assert result["all_results"]["M15_ZONE_SCALP_INVERSE"]["signal"] == "NO_TRADE"
-    assert result["all_results"]["M15_ZONE_SCALP_INVERSE"]["reason"] == "PAIRED_WITH_M15_ZONE_SCALP"
+    assert result["all_results"]["M15_ZONE_SCALP"]["signal"] == "BUY"
+    assert result["all_results"]["M15_ZONE_SCALP_INVERSE"]["signal"] == "SELL"
+    assert result["all_results"]["M15_ZONE_SCALP_INVERSE"]["arb_score"] > 0
 
 
 def test_normalize_signal_marks_m15_scalp_deep_as_m15_family():
@@ -204,7 +205,7 @@ def test_auto_selection_enables_all_registered_strategies():
     assert status["enabled"] == ["SMC_CONFLUENCE", "M15_SCALP_DEEP"]
 
 
-def test_group_selection_expands_swing_and_intraday_tokens():
+def test_group_selection_accepts_explicit_strategy_names():
     manager = StrategyManager()
     manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "NO_TRADE", "reason": "smc"}))
     manager.register(_StubStrategy("M15_ZONE_SCALP", {"signal": "NO_TRADE", "reason": "m15"}))
@@ -212,35 +213,32 @@ def test_group_selection_expands_swing_and_intraday_tokens():
     manager.register(_StubStrategy("TREND_CHANNEL", {"signal": "NO_TRADE", "reason": "trend"}))
     manager.register(_StubStrategy("SWING_ENGINE", {"signal": "NO_TRADE", "reason": "swing"}))
 
-    assert manager.set_selection(["SWING", "INTRADAY"]) is True
+    assert manager.set_selection(["SWING_ENGINE", "SMC_CONFLUENCE", "M15_ZONE_SCALP", "M15_SCALP_DEEP", "TREND_CHANNEL"]) is True
 
     status = manager.status()
-    assert status["selected"] == ["SWING", "INTRADAY"]
+    assert status["selected"] == ["SWING_ENGINE", "SMC_CONFLUENCE", "M15_ZONE_SCALP", "M15_SCALP_DEEP", "TREND_CHANNEL"]
     assert status["enabled"] == [
+        "SWING_ENGINE",
         "SMC_CONFLUENCE",
         "M15_ZONE_SCALP",
-        "TREND_CHANNEL",
-        "SWING_ENGINE",
         "M15_SCALP_DEEP",
+        "TREND_CHANNEL",
     ]
-    assert manager.active_name == "SWING,INTRADAY"
+    assert manager.active_name == "SWING_ENGINE,SMC_CONFLUENCE,M15_ZONE_SCALP,M15_SCALP_DEEP,TREND_CHANNEL"
 
 
-def test_set_active_accepts_group_alias():
+def test_set_active_accepts_direct_strategy_name():
     manager = StrategyManager()
     manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "NO_TRADE", "reason": "smc"}))
     manager.register(_StubStrategy("M15_ZONE_SCALP", {"signal": "NO_TRADE", "reason": "m15"}))
     manager.register(_StubStrategy("TREND_CHANNEL", {"signal": "NO_TRADE", "reason": "trend"}))
     manager.register(_StubStrategy("SWING_ENGINE", {"signal": "NO_TRADE", "reason": "swing"}))
 
-    assert manager.set_active("SWING") is True
+    assert manager.set_active("SWING_ENGINE") is True
 
     status = manager.status()
-    assert status["selected"] == ["SWING"]
+    assert status["selected"] == ["SWING_ENGINE"]
     assert status["enabled"] == [
-        "SMC_CONFLUENCE",
-        "M15_ZONE_SCALP",
-        "TREND_CHANNEL",
         "SWING_ENGINE",
     ]
 

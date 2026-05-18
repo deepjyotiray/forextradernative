@@ -20,6 +20,10 @@ from engine.indicators import atr as atr_np
 from engine.session_filter import get_session_at
 from engine.strategies.base_strategy import BaseStrategy
 from engine import strategy_configs as _scfg
+from engine.m15_zone_micro_bias import (
+    build_m15_zone_decision_reason,
+    resolve_m15_zone_micro_bias,
+)
 from engine.zones import ZoneDetector
 
 _UTC = timezone.utc
@@ -181,24 +185,88 @@ class M15ZoneScalpStrategy(BaseStrategy):
     name = "M15_ZONE_SCALP"
 
     def generate_signal(self, data: Dict) -> Dict:
+        candidates, blocked = self._family_candidates(data)
+        if blocked is not None:
+            return blocked
+
+        best_signal: Optional[Dict] = None
+        best_weight = float("-inf")
+        best_blocked: Optional[Dict] = None
+        best_block_weight = float("-inf")
+
+        for candidate in candidates:
+            resolver = self._resolve_micro_bias(data, candidate)
+            candidate_weight = abs(_safe_float(resolver.get("micro_bias_score"))) + float(candidate.get("_zone_strength", 0.0)) * 20.0
+            if (
+                resolver.get("recommended_action") == "ALLOW_BASE_TRADE"
+                and resolver.get("final_direction") == candidate.get("signal")
+            ):
+                accepted = self._attach_micro_bias(candidate, resolver)
+                accepted["reason"] = build_m15_zone_decision_reason("M15 zone scalp", candidate.get("signal"), resolver, accepted)
+                if candidate_weight > best_weight:
+                    best_signal = accepted
+                    best_weight = candidate_weight
+            else:
+                blocked_sig = self._no(
+                    build_m15_zone_decision_reason("M15 zone scalp", candidate.get("signal"), resolver, candidate),
+                    _micro_bias_direction=resolver.get("micro_bias_direction"),
+                    _micro_bias_score=resolver.get("micro_bias_score"),
+                    _micro_bias_confidence=resolver.get("micro_bias_confidence"),
+                    _micro_bias_action=resolver.get("recommended_action"),
+                    _micro_bias_reasons=list(resolver.get("reasons") or []),
+                    _pressure_bias=resolver.get("pressure_bias"),
+                    _pressure_score=resolver.get("pressure_score"),
+                    _route_type="BLOCKED_CONFLICTING_BIAS" if resolver.get("recommended_action") != "BLOCK" else "BLOCKED_NEUTRAL_OR_WEAK",
+                    _base_setup_direction="LONG" if candidate.get("signal") == "BUY" else "SHORT",
+                    _zone_type=candidate.get("_zone_type"),
+                )
+                if candidate_weight > best_block_weight:
+                    best_blocked = blocked_sig
+                    best_block_weight = candidate_weight
+
+        return best_signal or best_blocked or self._no("No actionable M15 zone family candidate")
+
+    def _resolve_micro_bias(self, data: Dict, candidate: Dict) -> Dict:
+        return resolve_m15_zone_micro_bias(
+            {"data": data, "signal": candidate},
+            setup_direction=str(candidate.get("signal") or "").upper(),
+            zone_type=str(candidate.get("_zone_type") or ""),
+            cfg_module=cfg,
+        )
+
+    def _attach_micro_bias(self, signal: Dict, resolver: Dict) -> Dict:
+        attached = dict(signal)
+        attached["_micro_bias_direction"] = resolver.get("micro_bias_direction")
+        attached["_micro_bias_score"] = resolver.get("micro_bias_score")
+        attached["_micro_bias_confidence"] = resolver.get("micro_bias_confidence")
+        attached["_micro_bias_action"] = resolver.get("recommended_action")
+        attached["_micro_bias_reasons"] = list(resolver.get("reasons") or [])
+        attached["_pressure_bias"] = resolver.get("pressure_bias")
+        attached["_pressure_score"] = resolver.get("pressure_score")
+        attached["_pressure_burst_rate"] = resolver.get("burst_rate")
+        attached["_htf_state"] = dict(resolver.get("htf_state") or {})
+        attached["_route_type"] = "ALLOW_BASE"
+        return attached
+
+    def _family_candidates(self, data: Dict) -> Tuple[List[Dict], Optional[Dict]]:
         symbol = str(data.get("symbol") or getattr(cfg, "SYMBOL", "XAUUSD")).upper()
         if "XAU" not in symbol:
-            return self._no(f"Strategy tuned for gold (got {symbol})")
+            return [], self._no(f"Strategy tuned for gold (got {symbol})")
 
         tick = data.get("tick") or {}
         bid = _safe_float(tick.get("bid"))
         ask = _safe_float(tick.get("ask") or tick.get("bid"))
         spread = _safe_float(tick.get("spread"))
         if bid <= 0:
-            return self._no("No tick data")
+            return [], self._no("No tick data")
 
         m15 = data.get("m15_df")
         if m15 is None or len(m15) < 24:
-            return self._no("Insufficient M15 data")
+            return [], self._no("Insufficient M15 data")
 
         s_cfg = _scfg.get(self.name)
         if spread > float(s_cfg.get("spread_max", 0.5) or 0.5):
-            return self._no(f"Spread {spread:.2f} > {s_cfg.get('spread_max', 0.5)}")
+            return [], self._no(f"Spread {spread:.2f} > {s_cfg.get('spread_max', 0.5)}")
 
         now_utc = data.get("now_utc")
         if not isinstance(now_utc, datetime):
@@ -208,24 +276,28 @@ class M15ZoneScalpStrategy(BaseStrategy):
 
         sess_ok, sess_lbl = _session_allowed(now_utc, list(s_cfg.get("sessions") or ["LONDON", "NEW_YORK"]))
         if not sess_ok:
-            return self._no(f"Session {sess_lbl} not allowed")
+            return [], self._no(f"Session {sess_lbl} not allowed")
 
         if bool(s_cfg.get("news_block", True)):
             cal = data.get("calendar") or {}
             if bool(cal.get("blocked")):
-                return self._no("High-impact news (calendar blocked)")
+                return [], self._no("High-impact news (calendar blocked)")
 
         open_count = int((data.get("strategy_trade_counts") or {}).get(self.name, 0) or 0)
         if open_count >= int(s_cfg.get("max_active_trades", 1) or 1):
-            return self._no(f"Max {s_cfg.get('max_active_trades', 1)} active scalp(s)")
+            return [], self._no(f"Max {s_cfg.get('max_active_trades', 1)} active scalp(s)")
 
         atr_m15 = _m15_atr(m15)
         if atr_m15 <= 0:
-            return self._no("Invalid M15 ATR")
+            return [], self._no("Invalid M15 ATR")
+
+        balance = _safe_float((data.get("account") or {}).get("balance"))
+        if balance <= 0:
+            return [], self._no("Account balance unavailable")
 
         pip = max(0.01, float(s_cfg.get("pip_size", 0.1) or 0.1))
         tp_pips = float(s_cfg.get("tp_pips", 25) or 25)
-
+        tp_dist = tp_pips * pip
         proximity = max(
             float(s_cfg.get("zone_touch_floor_pts", 0.8) or 0.8),
             atr_m15 * float(s_cfg.get("zone_touch_atr_mult", 0.25) or 0.25),
@@ -240,41 +312,13 @@ class M15ZoneScalpStrategy(BaseStrategy):
         frame.columns = [str(c).lower() for c in frame.columns]
         clusters = zd.scored_clusters(frame)
         if not clusters:
-            return self._no("No M15 zones")
+            return [], self._no("No M15 zones")
 
         min_str = float(s_cfg.get("min_zone_strength", 0.15) or 0.15)
-
         buy_zone = self._pick_demand_zone(bid, clusters, proximity, min_str)
         sell_zone = self._pick_supply_zone(bid, clusters, proximity, min_str)
-
-        direction: Optional[str] = None
-        active: Optional[Tuple[int, Dict]] = None
-
-        demand_htf = buy_zone is not None and _bullish_htf_ok(data, s_cfg)
-        supply_htf = sell_zone is not None and _bearish_htf_ok(data, s_cfg)
-
-        if buy_zone and demand_htf and not (sell_zone and supply_htf):
-            direction, active = "BUY", buy_zone
-        elif sell_zone and supply_htf and not (buy_zone and demand_htf):
-            direction, active = "SELL", sell_zone
-        elif buy_zone and demand_htf and sell_zone and supply_htf:
-            bd = buy_zone[1]
-            sd = sell_zone[1]
-            q_buy = float(bd.get("strength", 0)) + max(0.0, proximity - _dist_to_interval(bid, bd["zone_low"], bd["zone_high"]))
-            q_sel = float(sd.get("strength", 0)) + max(0.0, proximity - _dist_to_interval(bid, sd["zone_low"], sd["zone_high"]))
-            if q_buy >= q_sel:
-                direction, active = "BUY", buy_zone
-            else:
-                direction, active = "SELL", sell_zone
-
-        if not direction or not active:
-            if buy_zone and not demand_htf:
-                return self._no("Demand touch but HTF / bias not bullish")
-            if sell_zone and not supply_htf:
-                return self._no("Supply touch but HTF / bias not bearish")
-            return self._no("No qualifying demand/supply touch with HTF alignment")
-
-        _zi, zn = active
+        if not buy_zone and not sell_zone:
+            return [], self._no("No qualifying demand/supply touch")
 
         rej = float(s_cfg.get("rejection_wick_ratio", 0.32) or 0.32)
         body_min = float(s_cfg.get("displacement_body_ratio", 0.52) or 0.52)
@@ -282,88 +326,98 @@ class M15ZoneScalpStrategy(BaseStrategy):
 
         closed = frame.iloc[-2] if len(frame) >= 2 else frame.iloc[-1]
         body_ratio = 0.0
-        if direction == "BUY":
-            if not _bullish_reaction(closed, rej, body_min, close_near):
-                return self._no("No bullish rejection/displacement on last closed M15")
-        else:
-            if not _bearish_reaction(closed, rej, body_min, close_near):
-                return self._no("No bearish rejection/displacement on last closed M15")
         try:
             o, h, l, cl = _ohlc_row(closed)
             body_ratio = abs(cl - o) / max(0.01, h - l)
         except Exception:
             body_ratio = 0.0
 
-        zl = float(zn["zone_low"])
-        zh = float(zn["zone_high"])
-        zm = float(zn["zone_mid"])
+        bullish_reaction = _bullish_reaction(closed, rej, body_min, close_near)
+        bearish_reaction = _bearish_reaction(closed, rej, body_min, close_near)
+        if not bullish_reaction and not bearish_reaction:
+            return [], self._no("No bullish or bearish rejection/displacement on last closed M15")
 
-        sl_buf = atr_m15 * float(s_cfg.get("sl_buffer_atr_mult", 0.35) or 0.35)
-        sl_floor = float(s_cfg.get("sl_floor_pips", 12) or 12) * pip
-        sl_cap = float(s_cfg.get("sl_ceiling_pips", 35) or 35) * pip
-
-        if direction == "BUY":
-            entry = bid
-            sl_raw = zl - sl_buf
-            sl_dist = max(sl_floor, min(sl_cap, entry - sl_raw))
-            sl = round(entry - sl_dist, 2)
-            tp_dist = tp_pips * pip
-            tp = round(entry + tp_dist, 2)
-        else:
-            entry = ask if ask > 0 else bid
-            sl_raw = zh + sl_buf
-            sl_dist = max(sl_floor, min(sl_cap, sl_raw - entry))
-            sl = round(entry + sl_dist, 2)
-            tp_dist = tp_pips * pip
-            tp = round(entry - tp_dist, 2)
-
-        rr = tp_dist / max(sl_dist, 1e-6)
-        confidence = round(0.55 + float(zn.get("strength", 0.0)) * 0.35, 2)
-
-        balance = _safe_float((data.get("account") or {}).get("balance"))
-        if balance <= 0:
-            return self._no("Account balance unavailable")
-
-        lot = _calc_scalp_lot(balance, s_cfg, sl_dist)
-
-        tp_levels = [tp]
         ms = data.get("market_state") or {}
-        htf_note = f"D1:{_resolve_htf_tf(ms,'D1')} H4:{_resolve_htf_tf(ms,'H4')}" if ms else "bias-only"
-        reason = (
-            f"{direction} M15 zone scalp | demand/supply | {htf_note} | zone_mid:{zm} [{zl}-{zh}] "
-            f"str:{zn.get('strength')} touch≤{proximity:.2f} | TP {tp_pips} pips ({tp_dist:.2f})"
-        )
+        htf_note = f"D1:{_resolve_htf_tf(ms,'D1')} H4:{_resolve_htf_tf(ms,'H4')} H1:{_resolve_htf_tf(ms,'H1')}"
 
-        return {
-            "signal": direction,
-            "entry": round(entry, 2),
-            "sl": sl,
-            "tp": tp,
-            "tp_levels": tp_levels,
-            "sl_distance": round(sl_dist, 2),
-            "lot": round(lot, 2),
-            "confidence": min(0.99, confidence),
-            "confidence_pct": int(round(confidence * 100)),
-            "reason": reason,
-            "rr": round(rr, 2),
-            "_strategy_name": self.name,
-            "strategy": self.name,
-            "decision": direction,
-            "_signal_family": "M15",
-            "_setup_direction": "LONG" if direction == "BUY" else "SHORT",
-            "_bias_direction": "LONG" if direction == "BUY" else "SHORT",
-            "_sweep_confirmed": False,
-            "_m15_zone_confirmed": True,
-            "_candle_confirmation": True,
-            "_body_ratio": round(body_ratio, 3),
-            "_exit_profile": "m15_zone_scalp",
-            "_scalp": True,
-            "_tp_levels": tp_levels,
-            "_zone_mid": zm,
-            "_tp_pips": tp_pips,
-            "_pip_size": pip,
-            "_session": sess_lbl,
-        }
+        candidates: List[Dict] = []
+        for direction, active in (("BUY", buy_zone), ("SELL", sell_zone)):
+            if not active:
+                continue
+            _zi, zn = active
+            zl = float(zn["zone_low"])
+            zh = float(zn["zone_high"])
+            zm = float(zn["zone_mid"])
+            sl_buf = atr_m15 * float(s_cfg.get("sl_buffer_atr_mult", 0.35) or 0.35)
+            sl_floor = float(s_cfg.get("sl_floor_pips", 12) or 12) * pip
+            sl_cap = float(s_cfg.get("sl_ceiling_pips", 35) or 35) * pip
+
+            if direction == "BUY":
+                entry = bid
+                sl_raw = zl - sl_buf
+                sl_dist = max(sl_floor, min(sl_cap, entry - sl_raw))
+                sl = round(entry - sl_dist, 2)
+                tp = round(entry + tp_dist, 2)
+                zone_type = "DEMAND"
+            else:
+                entry = ask if ask > 0 else bid
+                sl_raw = zh + sl_buf
+                sl_dist = max(sl_floor, min(sl_cap, sl_raw - entry))
+                sl = round(entry + sl_dist, 2)
+                tp = round(entry - tp_dist, 2)
+                zone_type = "SUPPLY"
+
+            rr = tp_dist / max(sl_dist, 1e-6)
+            confidence = round(0.55 + float(zn.get("strength", 0.0)) * 0.35, 2)
+            lot = _calc_scalp_lot(balance, s_cfg, sl_dist)
+
+            candidates.append(
+                {
+                    "signal": direction,
+                    "entry": round(entry, 2),
+                    "sl": sl,
+                    "tp": tp,
+                    "tp_levels": [tp],
+                    "sl_distance": round(sl_dist, 2),
+                    "lot": round(lot, 2),
+                    "confidence": min(0.99, confidence),
+                    "confidence_pct": int(round(confidence * 100)),
+                    "reason": (
+                        f"{direction} M15 zone scalp | demand/supply | {htf_note} | zone_mid:{zm} [{zl}-{zh}] "
+                        f"str:{zn.get('strength')} touch≤{proximity:.2f} | TP {tp_pips} pips ({tp_dist:.2f})"
+                    ),
+                    "rr": round(rr, 2),
+                    "_strategy_name": self.name,
+                    "strategy": self.name,
+                    "decision": direction,
+                    "_signal_family": "M15",
+                    "_setup_direction": "LONG" if direction == "BUY" else "SHORT",
+                    "_bias_direction": "LONG" if direction == "BUY" else "SHORT",
+                    "_sweep_confirmed": False,
+                    "_m15_zone_confirmed": True,
+                    "_candle_confirmation": bullish_reaction if direction == "BUY" else bearish_reaction,
+                    "_body_ratio": round(body_ratio, 3),
+                    "_bullish_reaction": bullish_reaction,
+                    "_bearish_reaction": bearish_reaction,
+                    "_exit_profile": "m15_zone_scalp",
+                    "_scalp": True,
+                    "_tp_levels": [tp],
+                    "_zone_mid": zm,
+                    "_zone_low": zl,
+                    "_zone_high": zh,
+                    "_zone_strength": float(zn.get("strength", 0.0)),
+                    "_zone_type": zone_type,
+                    "_tp_pips": tp_pips,
+                    "_pip_size": pip,
+                    "_session": sess_lbl,
+                    "_htf_note": htf_note,
+                    "_entry_tick_pressure_score": _safe_float((data.get("tick_pressure") or {}).get("pressure_score")),
+                    "_entry_tick_pressure_bias": str((data.get("tick_pressure") or {}).get("directional_bias") or "NEUTRAL").upper(),
+                    "_entry_tick_burst_rate": _safe_float((data.get("tick_pressure") or {}).get("burst_rate")),
+                }
+            )
+
+        return candidates, None
 
     @staticmethod
     def _pick_demand_zone(
@@ -426,5 +480,7 @@ class M15ZoneScalpStrategy(BaseStrategy):
         return best[0], best[1]
 
     @staticmethod
-    def _no(reason: str) -> Dict:
-        return {"signal": "NO_TRADE", "reason": reason, "confidence": 0.0}
+    def _no(reason: str, **extra) -> Dict:
+        payload = {"signal": "NO_TRADE", "reason": reason, "confidence": 0.0}
+        payload.update(extra)
+        return payload
