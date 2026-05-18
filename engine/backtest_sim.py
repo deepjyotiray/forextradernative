@@ -114,6 +114,7 @@ class SimTrade:
     realized_partial_pnl: float = 0.0
     remaining_volume: float = 0.0
     current_price: float = 0.0
+    exit_profile: str = ""
 
     def __post_init__(self):
         if self.remaining_volume <= 0:
@@ -240,6 +241,7 @@ class SimExecutionEngine:
             entry_tick_velocity=float(signal.get("_entry_tick_velocity", 0.0)),
             high_conf=bool(signal.get("_high_conf", False)),
             entry_tick_count=tick_count,
+            exit_profile=str(signal.get("_exit_profile") or ""),
         )
         self.open_trades[t.ticket] = t
         self._last_open_ts = now_utc.timestamp()
@@ -284,6 +286,19 @@ class SimExecutionEngine:
                 and points_move <= -early_fail
             ):
                 to_close.append((ticket, current_px, f"EARLY_FAIL_{ticks_since_entry}"))
+                continue
+
+            fixed_target = float(getattr(cfg, "M15_SCALP_FIXED_USD_TP", 1.5) or 0.0)
+            if (
+                bool(getattr(cfg, "M15_SCALP_FIXED_USD_TP_ENABLED", True))
+                and fixed_target > 0.0
+                and (
+                    str(t.exit_profile or "").strip().lower() in {"m15_zone_scalp", "m15_scalp_deep", "m15_mean_reversion_fast"}
+                    or str(t.strategy or "").strip().upper() in {"M15_ZONE_SCALP", "M15_ZONE_SCALP_INVERSE", "M15_SCALP_DEEP"}
+                )
+                and t.live_pnl >= fixed_target
+            ):
+                to_close.append((ticket, current_px, "M15_SCALP_FIXED_USD_TP"))
                 continue
 
             if t.be_trigger_price > 0 and not t.sl_breakeven and t.live_pnl >= t.be_trigger_price:

@@ -208,6 +208,8 @@ def _resolve_exit_profile(
 def _close_reason_category(close_reason: str, trade: "TradeRecord", exit_price: float = 0.0) -> str:
     reason = str(close_reason or "").strip()
     lower = reason.lower()
+    if lower.startswith("m15 scalp fixed profit target"):
+        return "profit_target"
     if reason.startswith("TIER1_EXIT"):
         return "tier1_fail"
     if lower.startswith("speed exit") or lower.startswith("time exit"):
@@ -232,6 +234,18 @@ def _uses_isolated_exit_manager(trade: "TradeRecord") -> bool:
     profile_name = str(getattr(trade, "exit_profile", "") or "").strip().lower()
     strategy_name = str(getattr(trade, "strategy", "") or "").strip().upper()
     return profile_name in {"swing_engine"} or strategy_name in {"SWING_ENGINE"}
+
+
+def _uses_m15_scalp_fixed_profit_target(trade: "TradeRecord") -> bool:
+    if not _safe_bool(getattr(cfg, "M15_SCALP_FIXED_USD_TP_ENABLED", True), True):
+        return False
+    profile_name = str(getattr(trade, "exit_profile", "") or "").strip().lower()
+    strategy_name = str(getattr(trade, "strategy", "") or "").strip().upper()
+    return profile_name in {"m15_zone_scalp", "m15_scalp_deep", "m15_mean_reversion_fast"} or strategy_name in {
+        "M15_ZONE_SCALP",
+        "M15_ZONE_SCALP_INVERSE",
+        "M15_SCALP_DEEP",
+    }
 
 
 def _mt5_deal_reason_name(reason_code: Any) -> str:
@@ -891,6 +905,15 @@ class TradeManager:
                 t,
                 f"TIER1_EXIT: Early fail protection triggered ({points_move:.2f} pts at tick {ticks_since_entry}, window {t.tier1_min_ticks}-{t.tier1_max_ticks})",
                 category="tier1_fail",
+            )
+            return True
+
+        fixed_target = _safe_float(getattr(cfg, "M15_SCALP_FIXED_USD_TP", 1.5), 1.5)
+        if _uses_m15_scalp_fixed_profit_target(t) and fixed_target > 0 and _safe_float(t.live_pnl, 0.0) >= fixed_target:
+            self._close_early(
+                t,
+                f"M15 scalp fixed profit target hit (${_safe_float(t.live_pnl, 0.0):.2f} >= ${fixed_target:.2f})",
+                category="profit_target",
             )
             return True
 

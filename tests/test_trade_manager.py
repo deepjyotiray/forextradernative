@@ -53,6 +53,30 @@ class TradeManagerTests(unittest.TestCase):
             "velocity_drop_enabled": True,
         }
 
+    def _m15_zone_features(self):
+        return {
+            "profile_name": "m15_zone_scalp",
+            "be_trigger_r": 0.22,
+            "breakeven_min_hold_seconds": 15,
+            "breakeven_volume_hold_ratio": 0.0,
+            "min_hold_seconds": 15,
+            "early_fail_points": 0.12,
+            "early_fail_min_ticks": 2,
+            "early_fail_max_ticks": 12,
+            "reversal_arm_r": 0.80,
+            "reversal_drawdown_pct": 0.60,
+            "reversal_floor_r": 0.10,
+            "profit_lock_1_arm_r": 0.55,
+            "profit_lock_1_r": 0.12,
+            "profit_lock_2_arm_r": 0.80,
+            "profit_lock_2_r": 0.22,
+            "timeout_seconds": 3600,
+            "timeout_min_progress_r": 0.05,
+            "trail_activate_r": 0.90,
+            "trail_lock_r": 0.20,
+            "velocity_drop_enabled": True,
+        }
+
     def _swing_features(self):
         return {
             "profile_name": "swing_fast",
@@ -225,6 +249,38 @@ class TradeManagerTests(unittest.TestCase):
         manager.bridge.modify_trade.assert_called_once_with(1003, 4579.0, 4582.4)
         self.assertTrue(trade.sl_breakeven)
         manager.order_db.update_management_flags.assert_called()
+
+    def test_m15_zone_scalp_fixed_profit_target_closes_trade(self):
+        manager = self._build_manager()
+        trade = TradeRecord(
+            10034, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
+            strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+            early_fail=0.12, features=self._m15_zone_features(),
+        )
+        trade.fill_ts = time.time() - 5
+        trade.live_pnl = 1.62
+
+        handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
+
+        self.assertTrue(handled)
+        manager.bridge.close_trade.assert_called_once_with(10034)
+        self.assertEqual(manager._pending_close_reasons[10034]["category"], "profit_target")
+        self.assertEqual(manager._pending_close_reasons[10034]["close_signal_live_pnl"], 1.62)
+
+    def test_non_m15_profiles_ignore_fixed_profit_target_rule(self):
+        manager = self._build_manager()
+        trade = TradeRecord(
+            10035, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
+            strategy="SMC_CONFLUENCE", scalp=False, be_trigger=0.30, timeout=60,
+            early_fail=0.20, features=self._swing_features(),
+        )
+        trade.fill_ts = time.time() - 5
+        trade.live_pnl = 1.62
+
+        handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
+
+        self.assertFalse(handled)
+        manager.bridge.close_trade.assert_not_called()
 
     def test_breakeven_waits_for_min_hold(self):
         manager = self._build_manager()
