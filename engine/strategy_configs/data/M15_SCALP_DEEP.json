@@ -30,7 +30,7 @@
   "min_entry_burst_rate": 3.0,
   "min_signed_pressure": -0.02,
   "opposing_bias_pressure_threshold": 0.05,
-  "allow_ranging": false,
+  "allow_ranging": true,
   "sessions": [
     "ASIAN",
     "LONDON",

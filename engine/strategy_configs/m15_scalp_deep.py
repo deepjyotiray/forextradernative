@@ -32,7 +32,7 @@ DEFAULTS = {
     "min_entry_burst_rate": 3.0,
     "min_signed_pressure": -0.02,
     "opposing_bias_pressure_threshold": 0.05,
-    "allow_ranging": False,
+    "allow_ranging": True,
     "sessions": ["LONDON", "NEW_YORK"],
     "news_block": True,
     "notes": "Strategy 2: H1 unmitigated supply/demand origin with M5 structure-shift and breaker-block confirmation.",
