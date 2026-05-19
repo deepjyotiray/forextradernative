@@ -522,6 +522,7 @@ class TradeManager:
         self.closed_trades: List[Dict] = []  # Deprecated - use MT5 history instead
         self._closing_tickets: set = set()
         self._pending_close_reasons: Dict[int, Dict[str, Any]] = {}
+        self._strategy_lockouts: Dict[str, Dict[str, Any]] = {}
         self.order_db = OrderDatabase()
         self.pnl_validator = PnLValidator(mt5_bridge)
         self._pending_reentry_check: str | None = None
@@ -554,7 +555,10 @@ class TradeManager:
             strategy, confidence, reason, scalp, be_trigger, timeout, early_fail, feature_snapshot,
             tier1_min_ticks, tier1_max_ticks,
         )
-        
+        strategy_key = str(strategy or "").strip().upper()
+        if strategy_key:
+            self._strategy_lockouts.pop(strategy_key, None)
+
         # Store in database for permanent record
         self.order_db.store_order(
             ticket, direction, volume, entry, sl, tp, sl_distance,
@@ -583,6 +587,55 @@ class TradeManager:
             self._save_state()
         except Exception:
             pass
+
+    def _set_post_tier1_lockout(self, trade: TradeRecord, reason: str) -> None:
+        strategy_key = str(getattr(trade, "strategy", "") or "").strip().upper()
+        if not strategy_key:
+            return
+        cooldown = max(
+            0.0,
+            _safe_float(
+                getattr(cfg, "POST_TIER1_REENTRY_COOLDOWN_SECONDS", 180.0),
+                180.0,
+            ),
+        )
+        features = dict(getattr(trade, "features", {}) or {})
+        setup_signature = str(features.get("context_hash") or features.get("signal_id") or "").strip()
+        if cooldown <= 0 and not setup_signature:
+            return
+        self._strategy_lockouts[strategy_key] = {
+            "expires_at": time.time() + cooldown if cooldown > 0 else 0.0,
+            "setup_signature": setup_signature,
+            "reason": str(reason or "TIER1_EXIT"),
+            "source_ticket": getattr(trade, "ticket", 0),
+            "created_at": time.time(),
+        }
+
+    def get_strategy_entry_lockout_reason(self, strategy_name: str, *, setup_signature: str = "") -> str:
+        strategy_key = str(strategy_name or "").strip().upper()
+        if not strategy_key:
+            return ""
+        lockout = self._strategy_lockouts.get(strategy_key)
+        if not lockout:
+            return ""
+
+        now_ts = time.time()
+        expires_at = _safe_float(lockout.get("expires_at"), 0.0)
+        stored_signature = str(lockout.get("setup_signature") or "").strip()
+        incoming_signature = str(setup_signature or "").strip()
+        same_setup = bool(incoming_signature and stored_signature and incoming_signature == stored_signature)
+        source_ticket = _safe_int(lockout.get("source_ticket"), 0)
+
+        if expires_at > now_ts:
+            remaining = max(0.0, expires_at - now_ts)
+            suffix = " for same setup" if same_setup else ""
+            return f"post-TIER1 cooldown active ({remaining:.0f}s remaining{suffix}, source #{source_ticket})"
+
+        if same_setup:
+            return f"same setup locked after recent TIER1 exit (source #{source_ticket})"
+
+        self._strategy_lockouts.pop(strategy_key, None)
+        return ""
 
     def _r_milestone_bucket(self, pnl: float, trade: TradeRecord) -> int:
         live_r = self._pnl_to_r(trade, pnl)
@@ -1196,10 +1249,13 @@ class TradeManager:
         if not res.get("success"):
             self._closing_tickets.discard(t.ticket)
         else:
+            resolved_category = category or _close_reason_category(reason, t)
+            if resolved_category == "tier1_fail":
+                self._set_post_tier1_lockout(t, reason)
             # Store close-signal state; manage_all will write authoritative MT5 settlement.
             self._pending_close_reasons[t.ticket] = {
                 "reason": reason,
-                "category": category or _close_reason_category(reason, t),
+                "category": resolved_category,
                 "close_signal_live_pnl": round(t.live_pnl, 2),
                 "close_signal_live_r": self._pnl_to_r(t, t.live_pnl),
                 "peak_r": self._pnl_to_r(t, t.peak_pnl),

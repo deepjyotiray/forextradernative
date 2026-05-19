@@ -2198,6 +2198,7 @@ async def get_config():
             "MIN_TRADE_COOLDOWN": editable_value("MIN_TRADE_COOLDOWN"),
             "LOSS_STREAK_PAUSE": editable_value("LOSS_STREAK_PAUSE"),
             "SESSION_MAX_TRADES": editable_value("SESSION_MAX_TRADES"),
+            "POST_TIER1_REENTRY_COOLDOWN_SECONDS": editable_value("POST_TIER1_REENTRY_COOLDOWN_SECONDS"),
         }
     }
 
@@ -2379,6 +2380,7 @@ async def update_config(request: Request):
         'MIN_TRADE_COOLDOWN': float, 'LOSS_STREAK_PAUSE': int,
         'SESSION_MAX_TRADES': int, 'MAX_OPEN_TRADES': int, 'MAX_TRADES_PER_DAY': int,
         'STOP_AFTER_CONSECUTIVE_LOSSES': int, 'DAILY_PROFIT_LOCK_AFTER': float,
+        'POST_TIER1_REENTRY_COOLDOWN_SECONDS': float,
         'DAILY_MAX_LOSS': float, 'DAILY_MAX_LOSS_PCT_OF_ACCOUNT': float
     }
     _GATE_FLOAT_KEYS = {
@@ -2439,7 +2441,8 @@ async def update_config(request: Request):
         'AUTO_RELAX_BLOCK_AFTER_LOSS', 'AUTO_RELAX_BLOCK_DRAWDOWN',
         'AUTO_RELAX_REQUIRE_STABLE_SPREAD', 'XGB_BYPASS_ENABLED',
         'XGB_TRAINING_ENABLED', 'XGB_BLOCKING_ENABLED',
-        'XGB_BLEND_CONFIDENCE_ENABLED', 'XGB_LOG_CONFIDENCE_ENABLED'
+        'XGB_BLEND_CONFIDENCE_ENABLED', 'XGB_LOG_CONFIDENCE_ENABLED',
+        'M15_ZONE_ENFORCE_SIBLING_MUTEX'
     }
     
     updated = {}

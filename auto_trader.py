@@ -73,6 +73,10 @@ from engine.deployment_metadata import capture_code_snapshot
 _TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120, "D1": 720}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PAIRED_EXECUTION_FOLLOWERS = {}
+_M15_ZONE_SIBLING_MAP = {
+    "M15_ZONE_SCALP": "M15_ZONE_SCALP_INVERSE",
+    "M15_ZONE_SCALP_INVERSE": "M15_ZONE_SCALP",
+}
 
 
 def _safe_dict(value):
@@ -85,6 +89,64 @@ def _safe_float(value, default=0.0):
         return float(value) if value is not None else default
     except (ValueError, TypeError):
         return default
+
+
+def _last_closed_candle_marker(df) -> str:
+    try:
+        if df is None or len(df) < 1:
+            return ""
+        row_index = -2 if len(df) >= 2 else -1
+        row = df.iloc[row_index]
+        if hasattr(df, "columns") and "time" in df.columns:
+            raw_time = df["time"].iloc[row_index]
+        else:
+            raw_time = df.index[row_index]
+        return (
+            f"{raw_time}|"
+            f"{_safe_float(row.get('open')):.2f}|"
+            f"{_safe_float(row.get('high')):.2f}|"
+            f"{_safe_float(row.get('low')):.2f}|"
+            f"{_safe_float(row.get('close')):.2f}"
+        )
+    except Exception:
+        return ""
+
+
+def _build_strategy_setup_signature(strategy_name: str, sig: Dict, strat_data: Dict) -> str:
+    existing = str(sig.get("_context_hash") or sig.get("_signal_id") or "").strip()
+    if existing:
+        return existing
+
+    direction = str(sig.get("signal") or "NO_TRADE").upper()
+    base_setup_direction = str(
+        sig.get("_source_setup_direction")
+        or sig.get("_base_setup_direction")
+        or sig.get("_setup_direction")
+        or ""
+    ).upper()
+    zone_type = str(sig.get("_zone_type") or "").upper()
+    zone_low = _safe_float(sig.get("_zone_low"), 0.0)
+    zone_mid = _safe_float(sig.get("_zone_mid"), 0.0)
+    zone_high = _safe_float(sig.get("_zone_high"), 0.0)
+    entry = round(_safe_float(sig.get("entry"), 0.0), 2)
+    sl = round(_safe_float(sig.get("sl"), 0.0), 2)
+    tp = round(_safe_float(sig.get("tp"), 0.0), 2)
+    candle_marker = _last_closed_candle_marker((strat_data or {}).get("m15_df"))
+    return "|".join(
+        [
+            str(strategy_name or "").strip().upper(),
+            direction,
+            base_setup_direction,
+            zone_type,
+            f"{zone_low:.2f}",
+            f"{zone_mid:.2f}",
+            f"{zone_high:.2f}",
+            f"{entry:.2f}",
+            f"{sl:.2f}",
+            f"{tp:.2f}",
+            candle_marker,
+        ]
+    ).strip("|")
 
 
 class AutoTrader:
@@ -849,6 +911,23 @@ class AutoTrader:
         if self._strategy_open_count(strategy_name) > 0:
             return None, "Open trade already exists for this strategy"
 
+        sibling_strategy = _M15_ZONE_SIBLING_MAP.get(str(strategy_name or "").upper())
+        if (
+            bool(getattr(cfg, "M15_ZONE_ENFORCE_SIBLING_MUTEX", True))
+            and sibling_strategy
+            and self._strategy_open_count(sibling_strategy) > 0
+        ):
+            return None, f"Paired strategy {sibling_strategy} already has an open trade"
+
+        setup_signature = _build_strategy_setup_signature(strategy_name, sig, strat_data)
+        if self.trades:
+            lock_reason = self.trades.get_strategy_entry_lockout_reason(
+                strategy_name,
+                setup_signature=setup_signature,
+            )
+            if lock_reason:
+                return None, f"Execution blocked: {lock_reason}"
+
         sl, tp = sig.get("sl"), sig.get("tp")
         if not sl or not tp:
             return None, "Execution blocked: missing SL/TP"
@@ -886,6 +965,7 @@ class AutoTrader:
             "sl_distance": sl_distance,
             "lot": lot,
             "comment": sig.get("_comment") or f"FT_{strategy_name[:8]}",
+            "setup_signature": setup_signature,
         }, ""
 
     def _execute_prepared_order(self, prepared: Dict, tick: Dict) -> bool:
@@ -897,6 +977,7 @@ class AutoTrader:
         tp = prepared.get("tp")
         sl_distance = _safe_float(prepared.get("sl_distance"), 0.0)
         comment = str(prepared.get("comment") or f"FT_{strat_name[:8]}")
+        setup_signature = str(prepared.get("setup_signature") or "")
 
         result = None
         for _ in range(3):
@@ -948,8 +1029,9 @@ class AutoTrader:
                     "pressure_score": sig.get("_pressure_score") if sig.get("_pressure_score") is not None else sig.get("_entry_tick_pressure_score"),
                     "pressure_burst_rate": sig.get("_pressure_burst_rate") if sig.get("_pressure_burst_rate") is not None else sig.get("_entry_tick_burst_rate"),
                     "htf_state": sig.get("_htf_state") or {},
-                    "context_hash": sig.get("_context_hash"),
-                    "signal_id": sig.get("_signal_id"),
+                    "context_hash": sig.get("_context_hash") or setup_signature,
+                    "signal_id": sig.get("_signal_id") or setup_signature,
+                    "setup_signature": setup_signature,
                     "ttl_seconds": sig.get("_ttl_seconds"),
                 },
             )

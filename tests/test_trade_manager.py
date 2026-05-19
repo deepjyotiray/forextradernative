@@ -23,6 +23,7 @@ class TradeManagerTests(unittest.TestCase):
         manager.closed_trades = []
         manager._closing_tickets = set()
         manager._pending_close_reasons = {}
+        manager._strategy_lockouts = {}
         manager.order_db = Mock()
         manager.pnl_validator = Mock()
         manager._save_state = Mock()
@@ -266,6 +267,29 @@ class TradeManagerTests(unittest.TestCase):
         manager.bridge.close_trade.assert_called_once_with(10034)
         self.assertEqual(manager._pending_close_reasons[10034]["category"], "profit_target")
         self.assertEqual(manager._pending_close_reasons[10034]["close_signal_live_pnl"], 1.62)
+
+    def test_tier1_exit_sets_strategy_reentry_lockout(self):
+        manager = self._build_manager()
+        features = self._m15_zone_features()
+        features["context_hash"] = "m15-zone|buy|same-candle"
+        features["entry_tick_count"] = 10
+        trade = TradeRecord(
+            10036, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
+            strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+            early_fail=0.12, features=features,
+        )
+        trade.current_price = 4578.80
+
+        handled = manager._apply_universal_management(trade, {"tick_count": 14, "velocity": 9.0})
+
+        self.assertTrue(handled)
+        manager.bridge.close_trade.assert_called_once_with(10036)
+        self.assertIn("M15_ZONE_SCALP", manager._strategy_lockouts)
+        same_setup_reason = manager.get_strategy_entry_lockout_reason(
+            "M15_ZONE_SCALP",
+            setup_signature="m15-zone|buy|same-candle",
+        )
+        self.assertIn("post-TIER1 cooldown active", same_setup_reason)
 
     def test_non_m15_profiles_ignore_fixed_profit_target_rule(self):
         manager = self._build_manager()
