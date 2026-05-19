@@ -93,6 +93,33 @@ def _build_m5_breaker_frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _build_h1_no_bos_frame() -> pd.DataFrame:
+    rows = [
+        {"open": 100.0, "high": 100.5, "low": 99.7, "close": 100.2},
+        {"open": 100.2, "high": 100.7, "low": 99.9, "close": 100.4},
+        {"open": 100.4, "high": 100.6, "low": 100.0, "close": 100.1},
+        {"open": 100.1, "high": 100.8, "low": 99.8, "close": 100.5},
+        {"open": 100.5, "high": 100.7, "low": 100.1, "close": 100.3},
+        {"open": 100.3, "high": 100.9, "low": 100.0, "close": 100.6},
+        {"open": 100.6, "high": 100.8, "low": 100.2, "close": 100.4},
+        {"open": 100.4, "high": 100.95, "low": 100.1, "close": 100.55},
+        {"open": 100.55, "high": 100.75, "low": 100.15, "close": 100.35},
+        {"open": 100.35, "high": 100.85, "low": 100.05, "close": 100.45},
+        {"open": 100.45, "high": 100.70, "low": 100.10, "close": 100.30},
+        {"open": 100.30, "high": 100.90, "low": 100.00, "close": 100.50},
+        {"open": 100.50, "high": 100.72, "low": 100.12, "close": 100.32},
+        {"open": 100.32, "high": 100.88, "low": 100.02, "close": 100.48},
+        {"open": 100.48, "high": 100.74, "low": 100.14, "close": 100.36},
+        {"open": 100.36, "high": 100.86, "low": 100.06, "close": 100.44},
+        {"open": 100.44, "high": 100.71, "low": 100.13, "close": 100.33},
+        {"open": 100.33, "high": 100.84, "low": 100.04, "close": 100.42},
+    ]
+    start = datetime(2026, 5, 15, 0, 0, tzinfo=timezone.utc)
+    for i, row in enumerate(rows):
+        row["datetime"] = start + pd.Timedelta(hours=i)
+    return pd.DataFrame(rows)
+
+
 class M15ScalpDeepStrategyTests(unittest.TestCase):
     def test_find_h1_unmitigated_bullish_zone(self):
         strat = M15ScalpDeepStrategy()
@@ -152,6 +179,29 @@ class M15ScalpDeepStrategyTests(unittest.TestCase):
 
         self.assertEqual(profile["profile_name"], "m15_scalp_deep")
         self.assertGreater(profile["be_trigger_r"], 0)
+
+    def test_generate_signal_handles_missing_bos_without_exception(self):
+        strat = M15ScalpDeepStrategy()
+        data = {
+            "symbol": "XAUUSD",
+            "tick": {"bid": 100.45, "ask": 100.53, "spread": 0.08},
+            "h1_df": _build_h1_no_bos_frame(),
+            "m5_df": _build_m5_breaker_frame(),
+            "account": {"balance": 10000.0},
+            "calendar": {},
+            "regime": {"state": "TRENDING"},
+            "liquidity": {"key_levels": {}},
+            "tick_snapshot": {"velocity": 6.2},
+            "tick_pressure": {"pressure_score": 0.18, "directional_bias": "LONG", "burst_rate": 5.4},
+            "strategy_trade_counts": {},
+            "now_utc": datetime(2026, 5, 15, 8, 45, tzinfo=timezone.utc),
+        }
+
+        with patch("engine.m15_scalp_deep_strategy._scfg.get", return_value=_cfg()):
+            signal = strat.generate_signal(data)
+
+        self.assertEqual(signal["signal"], "NO_TRADE")
+        self.assertIn("No H1 unmitigated trend zone", signal["reason"])
 
 
 if __name__ == "__main__":

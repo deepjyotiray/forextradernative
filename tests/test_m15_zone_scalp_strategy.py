@@ -1,6 +1,7 @@
 """Unit tests for M15 zone scalp strategies."""
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pandas as pd
 from unittest.mock import patch
@@ -226,6 +227,57 @@ class M15ZoneScalpLogicTests(unittest.TestCase):
         self.assertEqual(resolver["micro_bias_direction"], "LONG")
         self.assertEqual(resolver["recommended_action"], "ALLOW_BASE_TRADE")
         self.assertEqual(resolver["final_direction"], "BUY")
+
+    def test_resolver_blocks_medium_bias_when_score_floor_is_higher(self):
+        cfg_module = SimpleNamespace(
+            M15_ZONE_MICRO_BIAS_MIN_CONFIDENCE="MEDIUM",
+            M15_ZONE_MICRO_BIAS_MIN_SCORE=60.0,
+            M15_ZONE_ROUTE_AGAINST_BIAS_TO_INVERSE=True,
+            M15_ZONE_BLOCK_NEUTRAL_BIAS=True,
+            M15_ZONE_SELL_REQUIRE_SHORT_PRESSURE=True,
+            M15_ZONE_SELL_MIN_NEGATIVE_PRESSURE_SCORE=-0.15,
+            M15_ZONE_SELL_MIN_BODY_RATIO_IF_D1_UP=0.85,
+            M15_ZONE_SELL_BLOCK_IF_PRESSURE_LONG=True,
+            M15_ZONE_BUY_REQUIRE_LONG_PRESSURE=False,
+            M15_ZONE_BUY_MIN_BODY_RATIO_IF_D1_DOWN=0.85,
+            M15_ZONE_BUY_BLOCK_IF_PRESSURE_SHORT=True,
+        )
+        resolver = resolve_m15_zone_micro_bias(
+            _micro_bias_context(
+                d1="UP",
+                h4="DOWN",
+                h1="RANGE",
+                tick_bias="LONG",
+                pressure_score=0.05,
+                favorable_long=False,
+                favorable_short=False,
+                body_ratio=0.45,
+                bullish_reaction=False,
+                bearish_reaction=False,
+                zone_type="DEMAND",
+                zone_low=99.0,
+                zone_mid=99.5,
+                zone_high=100.0,
+                bid=100.2,
+                ask=100.4,
+                m15_rows=[
+                    {"open": 99.8, "high": 100.1, "low": 99.7, "close": 100.0},
+                    {"open": 100.0, "high": 100.2, "low": 99.9, "close": 100.05},
+                    {"open": 100.05, "high": 100.15, "low": 99.95, "close": 100.00},
+                    {"open": 100.00, "high": 100.10, "low": 99.90, "close": 100.02},
+                    {"open": 100.02, "high": 100.12, "low": 99.92, "close": 100.01},
+                ],
+            ),
+            setup_direction="BUY",
+            zone_type="DEMAND",
+            cfg_module=cfg_module,
+        )
+
+        self.assertEqual(resolver["micro_bias_direction"], "LONG")
+        self.assertEqual(resolver["micro_bias_confidence"], "MEDIUM")
+        self.assertEqual(resolver["recommended_action"], "BLOCK")
+        self.assertEqual(resolver["final_direction"], "NONE")
+        self.assertIn("blocked: score below configured minimum", resolver["reasons"])
 
     def test_base_strategy_blocks_conflicted_sell_and_inverse_routes_it(self):
         data = _micro_bias_context()["data"]

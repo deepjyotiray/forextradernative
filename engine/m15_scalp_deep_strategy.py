@@ -279,15 +279,19 @@ class M15ScalpDeepStrategy(M15ZoneScalpStrategy):
         if direction == "BUY":
             ref_idx, ref_level = swing_highs[-2]
             bos_idx = self._find_bos_idx(closes, ref_idx, ref_level, "BUY")
+            if bos_idx is None:
+                return None
             anchor_idx = max((idx for idx, _ in swing_lows if idx < bos_idx), default=max(0, bos_idx - 8))
             zone = self._find_origin_zone(frame, anchor_idx, bos_idx, "BUY")
         else:
             ref_idx, ref_level = swing_lows[-2]
             bos_idx = self._find_bos_idx(closes, ref_idx, ref_level, "SELL")
+            if bos_idx is None:
+                return None
             anchor_idx = max((idx for idx, _ in swing_highs if idx < bos_idx), default=max(0, bos_idx - 8))
             zone = self._find_origin_zone(frame, anchor_idx, bos_idx, "SELL")
 
-        if bos_idx is None or not zone:
+        if not zone:
             return None
 
         if not self._zone_is_unmitigated(frame, zone, len(frame) - 2):

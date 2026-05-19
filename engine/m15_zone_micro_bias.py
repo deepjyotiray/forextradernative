@@ -123,11 +123,15 @@ def _zone_reclaim_breakdown_score(zone_type: str, zone_low: float, zone_high: fl
 def _final_action_from_bias(
     setup_direction: str,
     bias_direction: str,
+    score: float,
     confidence_label: str,
     cfg_module,
 ) -> tuple[str, str]:
     min_conf = str(getattr(cfg_module, "M15_ZONE_MICRO_BIAS_MIN_CONFIDENCE", "MEDIUM") or "MEDIUM").upper()
+    min_score = max(0.0, _safe_float(getattr(cfg_module, "M15_ZONE_MICRO_BIAS_MIN_SCORE", 30.0), 30.0))
     if bias_direction == "NEUTRAL":
+        return "BLOCK", "NONE"
+    if abs(_safe_float(score, 0.0)) < min_score:
         return "BLOCK", "NONE"
     if _confidence_rank(confidence_label) < _confidence_rank(min_conf):
         return "BLOCK", "NONE"
@@ -294,6 +298,7 @@ def resolve_m15_zone_micro_bias(
     recommended_action, final_direction = _final_action_from_bias(
         setup_direction=setup_direction,
         bias_direction=micro_bias_direction,
+        score=score,
         confidence_label=micro_bias_confidence,
         cfg_module=cfg_module,
     )
@@ -301,6 +306,8 @@ def resolve_m15_zone_micro_bias(
     if recommended_action == "BLOCK":
         if micro_bias_direction == "NEUTRAL":
             reasons.append("blocked: neutral micro bias")
+        elif abs(_safe_float(score, 0.0)) < max(0.0, _safe_float(getattr(cfg_module, "M15_ZONE_MICRO_BIAS_MIN_SCORE", 30.0), 30.0)):
+            reasons.append("blocked: score below configured minimum")
         else:
             reasons.append("blocked: confidence below configured minimum")
 
