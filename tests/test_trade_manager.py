@@ -145,6 +145,24 @@ class TradeManagerTests(unittest.TestCase):
         self.assertEqual(trade.exit_profile, "m15_scalp_deep")
         self.assertEqual(trade.be_trigger_r, cfg.get_exit_profile_config("m15_scalp_deep")["be_trigger_r"])
 
+    def test_register_trade_caps_m15_scalp_tp_to_fixed_profit_target(self):
+        manager = self._build_manager()
+
+        manager.register_trade(
+            22335, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
+            strategy="M15_ZONE_SCALP",
+            confidence=0.85,
+            reason="fixed target tp clamp",
+            scalp=True,
+            features=self._m15_zone_features(),
+        )
+
+        trade = manager.open_trades[22335]
+        self.assertEqual(trade.tp, 4579.75)
+        manager.bridge.modify_trade.assert_called_once_with(22335, 4576.98, 4579.75)
+        args = manager.order_db.store_order.call_args[0]
+        self.assertEqual(args[5], 4579.75)
+
     def test_scalp_reversal_waits_for_min_hold(self):
         manager = self._build_manager()
         trade = TradeRecord(
@@ -267,6 +285,25 @@ class TradeManagerTests(unittest.TestCase):
         manager.bridge.close_trade.assert_called_once_with(10034)
         self.assertEqual(manager._pending_close_reasons[10034]["category"], "profit_target")
         self.assertEqual(manager._pending_close_reasons[10034]["close_signal_live_pnl"], 1.62)
+
+    def test_m15_zone_scalp_fixed_profit_target_latches_sampled_peak_touch(self):
+        manager = self._build_manager()
+        trade = TradeRecord(
+            10037, "BUY", 0.01, 4538.89, 4535.23, 4541.23, 3.67,
+            strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+            early_fail=0.12, features=self._m15_zone_features(),
+        )
+        trade.fill_ts = time.time() - 20
+        trade.live_pnl = 1.46
+        trade.peak_pnl = 1.52
+
+        handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
+
+        self.assertTrue(handled)
+        manager.bridge.close_trade.assert_called_once_with(10037)
+        self.assertEqual(manager._pending_close_reasons[10037]["category"], "profit_target")
+        self.assertEqual(manager._pending_close_reasons[10037]["close_signal_live_pnl"], 1.46)
+        self.assertIn("latched from peak", manager._pending_close_reasons[10037]["reason"])
 
     def test_tier1_exit_sets_strategy_reentry_lockout(self):
         manager = self._build_manager()

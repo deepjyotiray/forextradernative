@@ -248,6 +248,30 @@ def _uses_m15_scalp_fixed_profit_target(trade: "TradeRecord") -> bool:
     }
 
 
+def _fixed_profit_target_price(direction: str, entry: float, volume: float, target_usd: float) -> float | None:
+    per_point_value = _safe_float(volume, 0.0) * _safe_float(getattr(cfg, "PIP_VALUE_PER_LOT", 0.0), 0.0)
+    if per_point_value <= 0 or _safe_float(target_usd, 0.0) <= 0:
+        return None
+    target_points = _safe_float(target_usd, 0.0) / per_point_value
+    if target_points <= 0:
+        return None
+    entry_price = _safe_float(entry, 0.0)
+    if str(direction or "").strip().upper() == "SELL":
+        return round(entry_price - target_points, 2)
+    return round(entry_price + target_points, 2)
+
+
+def _should_tighten_take_profit(direction: str, current_tp: float, candidate_tp: float | None) -> bool:
+    if candidate_tp is None or candidate_tp <= 0:
+        return False
+    current = _safe_float(current_tp, 0.0)
+    if current <= 0:
+        return True
+    if str(direction or "").strip().upper() == "SELL":
+        return candidate_tp > current
+    return candidate_tp < current
+
+
 def _mt5_deal_reason_name(reason_code: Any) -> str:
     mapping = {
         getattr(mt5, "DEAL_REASON_CLIENT", None): "client",
@@ -549,19 +573,27 @@ class TradeManager:
             )
         )
 
-        # Store in memory for active management
-        self.open_trades[ticket] = TradeRecord(
+        trade = TradeRecord(
             ticket, direction, volume, entry, sl, tp, sl_distance,
             strategy, confidence, reason, scalp, be_trigger, timeout, early_fail, feature_snapshot,
             tier1_min_ticks, tier1_max_ticks,
         )
+        fixed_target = _safe_float(getattr(cfg, "M15_SCALP_FIXED_USD_TP", 1.5), 1.5)
+        fixed_target_tp = _fixed_profit_target_price(direction, entry, volume, fixed_target)
+        if _uses_m15_scalp_fixed_profit_target(trade) and _should_tighten_take_profit(direction, tp, fixed_target_tp):
+            res = self.bridge.modify_trade(ticket, sl, fixed_target_tp)
+            if res.get("success"):
+                trade.tp = fixed_target_tp
+
+        # Store in memory for active management
+        self.open_trades[ticket] = trade
         strategy_key = str(strategy or "").strip().upper()
         if strategy_key:
             self._strategy_lockouts.pop(strategy_key, None)
 
         # Store in database for permanent record
         self.order_db.store_order(
-            ticket, direction, volume, entry, sl, tp, sl_distance,
+            ticket, direction, volume, entry, sl, trade.tp, sl_distance,
             strategy, confidence, reason, scalp, be_trigger, timeout,
             feature_snapshot, session_type, market_phase
         )
@@ -575,7 +607,7 @@ class TradeManager:
                 "volume": round(_safe_float(volume), 2),
                 "entry_price": round(_safe_float(entry), 2),
                 "sl": round(_safe_float(sl), 2),
-                "tp": round(_safe_float(tp), 2),
+                "tp": round(_safe_float(trade.tp), 2),
                 "reason": reason,
             },
         )
@@ -962,10 +994,18 @@ class TradeManager:
             return True
 
         fixed_target = _safe_float(getattr(cfg, "M15_SCALP_FIXED_USD_TP", 1.5), 1.5)
-        if _uses_m15_scalp_fixed_profit_target(t) and fixed_target > 0 and _safe_float(t.live_pnl, 0.0) >= fixed_target:
+        live_pnl = _safe_float(t.live_pnl, 0.0)
+        peak_pnl = max(_safe_float(t.peak_pnl, 0.0), live_pnl)
+        if _uses_m15_scalp_fixed_profit_target(t) and fixed_target > 0 and peak_pnl >= fixed_target:
+            reason = f"M15 scalp fixed profit target hit (${live_pnl:.2f} >= ${fixed_target:.2f})"
+            if peak_pnl > live_pnl:
+                reason = (
+                    f"M15 scalp fixed profit target latched from peak "
+                    f"(${peak_pnl:.2f} >= ${fixed_target:.2f}; live ${live_pnl:.2f})"
+                )
             self._close_early(
                 t,
-                f"M15 scalp fixed profit target hit (${_safe_float(t.live_pnl, 0.0):.2f} >= ${fixed_target:.2f})",
+                reason,
                 category="profit_target",
             )
             return True
