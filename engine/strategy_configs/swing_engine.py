@@ -3,7 +3,7 @@ NAME = "SWING_ENGINE"
 DEFAULTS = {
     # Base
     "enabled": True,
-    "risk_pct": 1.0,
+    "risk_pct": 0.5,
     "fixed_lot": None,
     "max_active_trades": 1,
     "max_trades_day": 5,

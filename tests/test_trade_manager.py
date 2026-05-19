@@ -57,8 +57,8 @@ class TradeManagerTests(unittest.TestCase):
     def _m15_zone_features(self):
         return {
             "profile_name": "m15_zone_scalp",
-            "be_trigger_r": 0.22,
-            "breakeven_min_hold_seconds": 15,
+            "be_trigger_r": 0.12,
+            "breakeven_min_hold_seconds": 8,
             "breakeven_volume_hold_ratio": 0.0,
             "min_hold_seconds": 15,
             "early_fail_points": 0.12,
@@ -145,7 +145,7 @@ class TradeManagerTests(unittest.TestCase):
         self.assertEqual(trade.exit_profile, "m15_scalp_deep")
         self.assertEqual(trade.be_trigger_r, cfg.get_exit_profile_config("m15_scalp_deep")["be_trigger_r"])
 
-    def test_register_trade_caps_m15_scalp_tp_to_fixed_profit_target(self):
+    def test_register_trade_keeps_m15_scalp_tp_when_fixed_profit_target_disabled(self):
         manager = self._build_manager()
 
         manager.register_trade(
@@ -158,10 +158,10 @@ class TradeManagerTests(unittest.TestCase):
         )
 
         trade = manager.open_trades[22335]
-        self.assertEqual(trade.tp, 4579.75)
-        manager.bridge.modify_trade.assert_called_once_with(22335, 4576.98, 4579.75)
+        self.assertEqual(trade.tp, 4582.4)
+        manager.bridge.modify_trade.assert_not_called()
         args = manager.order_db.store_order.call_args[0]
-        self.assertEqual(args[5], 4579.75)
+        self.assertEqual(args[5], 4582.4)
 
     def test_scalp_reversal_waits_for_min_hold(self):
         manager = self._build_manager()
@@ -269,7 +269,7 @@ class TradeManagerTests(unittest.TestCase):
         self.assertTrue(trade.sl_breakeven)
         manager.order_db.update_management_flags.assert_called()
 
-    def test_m15_zone_scalp_fixed_profit_target_closes_trade(self):
+    def test_m15_zone_scalp_does_not_force_close_before_earlier_breakeven_window(self):
         manager = self._build_manager()
         trade = TradeRecord(
             10034, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
@@ -281,12 +281,12 @@ class TradeManagerTests(unittest.TestCase):
 
         handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
 
-        self.assertTrue(handled)
-        manager.bridge.close_trade.assert_called_once_with(10034)
-        self.assertEqual(manager._pending_close_reasons[10034]["category"], "profit_target")
-        self.assertEqual(manager._pending_close_reasons[10034]["close_signal_live_pnl"], 1.62)
+        self.assertFalse(handled)
+        manager.bridge.close_trade.assert_not_called()
+        manager.bridge.modify_trade.assert_not_called()
+        self.assertEqual(manager._pending_close_reasons, {})
 
-    def test_m15_zone_scalp_fixed_profit_target_latches_sampled_peak_touch(self):
+    def test_m15_zone_scalp_moves_to_breakeven_instead_of_fixed_profit_target_close(self):
         manager = self._build_manager()
         trade = TradeRecord(
             10037, "BUY", 0.01, 4538.89, 4535.23, 4541.23, 3.67,
@@ -300,10 +300,9 @@ class TradeManagerTests(unittest.TestCase):
         handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
 
         self.assertTrue(handled)
-        manager.bridge.close_trade.assert_called_once_with(10037)
-        self.assertEqual(manager._pending_close_reasons[10037]["category"], "profit_target")
-        self.assertEqual(manager._pending_close_reasons[10037]["close_signal_live_pnl"], 1.46)
-        self.assertIn("latched from peak", manager._pending_close_reasons[10037]["reason"])
+        manager.bridge.modify_trade.assert_called_once_with(10037, 4538.89, 4541.23)
+        self.assertTrue(trade.sl_breakeven)
+        self.assertEqual(manager._pending_close_reasons, {})
 
     def test_tier1_exit_sets_strategy_reentry_lockout(self):
         manager = self._build_manager()
@@ -601,8 +600,8 @@ class TradeManagerTests(unittest.TestCase):
 
         manager._manage_swing_engine(trade, {"h1_df": h1_df})
         manager._partial_close.assert_not_called()
-        manager.bridge.modify_trade.assert_called_once_with(2002, 4506.0, 4536.0)
-        self.assertEqual(trade.sl, 4506.0)
+        manager.bridge.modify_trade.assert_called_once_with(2002, 4512.6, 4536.0)
+        self.assertEqual(trade.sl, 4512.6)
         self.assertTrue(trade.trail_active)
 
         manager.bridge.modify_trade.reset_mock()
@@ -635,7 +634,7 @@ class TradeManagerTests(unittest.TestCase):
         manager._manage_swing_engine(trade, {"h1_df": pd.DataFrame({"open": [1]*6, "high": [1]*6, "low": [1]*6, "close": [1]*6})})
 
         manager._close_early.assert_not_called()
-        manager.bridge.modify_trade.assert_called_once_with(20022, 4512.0, 4536.0)
+        manager.bridge.modify_trade.assert_called_once_with(20022, 4516.8, 4536.0)
 
     def test_swing_engine_giveback_closes_after_large_retracement(self):
         manager = self._build_manager()

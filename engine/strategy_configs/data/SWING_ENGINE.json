@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "risk_pct": 1,
+  "risk_pct": 0.5,
   "fixed_lot": null,
   "max_active_trades": 1,
   "max_trades_day": 100,
