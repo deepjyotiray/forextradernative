@@ -124,6 +124,67 @@ def test_auto_mode_prefers_gate_allowed_signal_over_higher_confidence_blocked_si
     assert "SPREAD_BLOCK" in result["all_results"]["M15_SCALP_DEEP"]["reason"]
 
 
+def test_auto_mode_prefers_recently_working_setup_when_other_inputs_are_similar():
+    manager = StrategyManager()
+    manager.register(_StubStrategy("M15_SCALP_DEEP", {"signal": "BUY", "entry": 100.0, "confidence": 0.80, "rr": 1.6}))
+    manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "BUY", "entry": 100.0, "confidence": 0.80, "rr": 1.6}))
+
+    def fake_gate(signal, market_state, risk_manager=None, m15_context_provider=None):
+        return {
+            "allowed": True,
+            "reason": "MASTER_GATE_PASS",
+            "score": 84,
+            "confirmation_count": 4,
+            "counter_trend": False,
+        }
+
+    def fake_recent(signal, market_state):
+        if signal["_strategy_name"] == "SMC_CONFLUENCE":
+            return {"enabled": True, "scope": "strategy_only", "sample_size": 14, "score_bonus": 5.0}
+        return {"enabled": True, "scope": "strategy_only", "sample_size": 14, "score_bonus": -1.0}
+
+    with patch("engine.strategy_manager.master_trade_gate", side_effect=fake_gate), \
+         patch("engine.strategy_manager.assess_recent_setup", side_effect=fake_recent):
+        result = manager.evaluate_all({"bias": {"direction": "LONG"}, "tick_pressure": {"pressure_score": 0.1}})
+
+    assert result["strategy"] == "SMC_CONFLUENCE"
+    assert result["signal"]["_arb_log"]["recent_setup_bonus"] == 5.0
+    assert result["all_results"]["SMC_CONFLUENCE"]["recent_setup_bonus"] > result["all_results"]["M15_SCALP_DEEP"]["recent_setup_bonus"]
+
+
+def test_auto_mode_uses_xgb_probability_in_arbitration():
+    manager = StrategyManager()
+    manager.register(_StubStrategy("M15_SCALP_DEEP", {"signal": "BUY", "entry": 100.0, "confidence": 0.78, "rr": 1.6}))
+    manager.register(_StubStrategy("SMC_CONFLUENCE", {"signal": "BUY", "entry": 100.0, "confidence": 0.78, "rr": 1.6}))
+
+    def fake_gate(signal, market_state, risk_manager=None, m15_context_provider=None):
+        return {
+            "allowed": True,
+            "reason": "MASTER_GATE_PASS",
+            "score": 84,
+            "confirmation_count": 4,
+            "counter_trend": False,
+        }
+
+    with patch("engine.strategy_manager.master_trade_gate", side_effect=fake_gate), \
+         patch("engine.strategy_manager.xgb_bypass_enabled", return_value=False), \
+         patch.object(__import__("engine.strategy_manager", fromlist=["xgb_model"]).xgb_model, "is_trained", True), \
+         patch.object(__import__("engine.strategy_manager", fromlist=["xgb_model"]).xgb_model, "predict_win_prob", side_effect=[0.35, 0.72]), \
+         patch("engine.strategy_manager.assess_recent_setup", return_value={"enabled": True, "scope": "strategy_only", "sample_size": 10, "score_bonus": 0.0}):
+        result = manager.evaluate_all(
+            {
+                "bias": {"direction": "LONG"},
+                "tick_pressure": {"pressure_score": 0.1},
+                "indicators": {},
+                "regime": {},
+                "tick": {"spread": 0.2},
+            }
+        )
+
+    assert result["strategy"] == "SMC_CONFLUENCE"
+    assert result["signal"]["_arb_log"]["xgb_prob"] == 0.72
+
+
 def test_auto_mode_prefers_bias_aligned_signal_when_gate_quality_is_similar():
     manager = StrategyManager()
     manager.register(

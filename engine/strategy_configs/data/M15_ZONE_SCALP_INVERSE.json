@@ -7,6 +7,7 @@
   "spread_max": 0.5,
   "pip_size": 0.1,
   "tp_pips": 25,
+  "min_rr": 1.1,
   "sl_buffer_atr_mult": 0.35,
   "sl_floor_pips": 12,
   "sl_ceiling_pips": 35,

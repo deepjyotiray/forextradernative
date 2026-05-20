@@ -13,6 +13,8 @@ from engine.master_control import pre_trade_validation, log_trade_decision_compr
 from engine.master_trade_gate import master_trade_gate
 from engine import strategy_configs
 from engine.decision_logger import log_decision
+from engine.recent_setup_learner import assess_signal as assess_recent_setup
+from engine.xgb_model import xgb_model, xgb_bypass_enabled
 
 _NO_TRADE_LOG_INTERVAL = 60.0  # seconds between logging same NO_TRADE reason
 _no_trade_log_times: Dict[str, float] = {}
@@ -127,6 +129,9 @@ def _summarize_auto_candidate(signal: Dict, strategy_name: str, gate_result: Opt
     gate_score = _safe_int((gate_result or {}).get("score"), 0)
     confirmations = _safe_int((gate_result or {}).get("confirmation_count"), 0)
     counter_trend = bool((gate_result or {}).get("counter_trend"))
+    xgb_prob = _safe_float(signal.get("_xgb_prob"), 0.5)
+    recent_setup = dict(signal.get("_recent_setup_learning") or {})
+    recent_setup_bonus = _safe_float(recent_setup.get("score_bonus"), 0.0)
 
     arbitration_score = float(gate_score)
     arbitration_score += min(max(confidence, 0.0), 1.0) * 20.0
@@ -134,6 +139,8 @@ def _summarize_auto_candidate(signal: Dict, strategy_name: str, gate_result: Opt
     arbitration_score += min(max(confirmations, 0), 4) * 5.0
     arbitration_score += max(0.0, min(volume_ratio - 1.0, 1.0)) * 10.0
     arbitration_score += _pressure_bonus(trade_dir, pressure_score)
+    arbitration_score += (xgb_prob - 0.5) * 16.0
+    arbitration_score += recent_setup_bonus
     if trade_dir in ("LONG", "SHORT"):
         if bias_dir == trade_dir:
             arbitration_score += 8.0
@@ -154,6 +161,10 @@ def _summarize_auto_candidate(signal: Dict, strategy_name: str, gate_result: Opt
         "rr": round(rr, 2),
         "volume_ratio": round(volume_ratio, 3),
         "pressure_score": round(pressure_score, 3),
+        "xgb_prob": round(xgb_prob, 3),
+        "recent_setup_bonus": round(recent_setup_bonus, 3),
+        "recent_setup_scope": recent_setup.get("scope"),
+        "recent_setup_sample_size": _safe_int(recent_setup.get("sample_size"), 0),
         "arbitration_score": round(arbitration_score, 3),
     }
 
@@ -338,6 +349,23 @@ class StrategyManager:
                         "confirmation_count": 0,
                         "counter_trend": False,
                     }
+                if not xgb_bypass_enabled() and xgb_model.is_trained:
+                    try:
+                        indicators = data.get("indicators") or {}
+                        regime = data.get("regime") or {}
+                        bias = data.get("bias") or {}
+                        tick_snapshot = data.get("tick") or {}
+                        xgb_prob = xgb_model.predict_win_prob(sig, indicators, regime, bias, tick_snapshot)
+                        sig["_xgb_prob"] = xgb_prob
+                        sig["xgb_prob"] = xgb_prob
+                        sig["_xgb_trained"] = True
+                    except Exception:
+                        sig["_xgb_prob"] = 0.5
+                        sig["_xgb_trained"] = False
+                try:
+                    sig["_recent_setup_learning"] = assess_recent_setup(sig, market_state)
+                except Exception:
+                    sig["_recent_setup_learning"] = {"enabled": False, "score_bonus": 0.0}
                 sig["_master_gate_preview"] = gate_result
                 candidate = _summarize_auto_candidate(sig, name, gate_result, market_state)
                 candidates.append(candidate)
@@ -351,6 +379,10 @@ class StrategyManager:
                         "rr": candidate["rr"],
                         "volume_ratio": candidate["volume_ratio"],
                         "pressure_score": candidate["pressure_score"],
+                        "xgb_prob": candidate["xgb_prob"],
+                        "recent_setup_bonus": candidate["recent_setup_bonus"],
+                        "recent_setup_scope": candidate["recent_setup_scope"],
+                        "recent_setup_sample_size": candidate["recent_setup_sample_size"],
                         "arb_score": candidate["arbitration_score"],
                     }
                 )
@@ -377,6 +409,10 @@ class StrategyManager:
                 "arb_score": winner["arbitration_score"],
                 "volume_ratio": winner["volume_ratio"],
                 "pressure_score": winner["pressure_score"],
+                "xgb_prob": winner["xgb_prob"],
+                "recent_setup_bonus": winner["recent_setup_bonus"],
+                "recent_setup_scope": winner["recent_setup_scope"],
+                "recent_setup_sample_size": winner["recent_setup_sample_size"],
             }
             best_sig["_master_gate_preview"] = best_sig.get("_master_gate_preview") or winner["signal"].get("_master_gate_preview")
             selected_signal = best_sig
