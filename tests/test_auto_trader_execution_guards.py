@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import config as cfg
+
 from auto_trader import AutoTrader
 
 
@@ -20,6 +22,30 @@ class _StubRisk:
 class _StubStrategyManager:
     def get(self, name: str):
         return None
+
+
+class _SelectableStrategyManager:
+    def __init__(self):
+        self._auto = True
+        self._selected = ["AUTO"]
+
+    @property
+    def is_auto(self):
+        return self._auto
+
+    @property
+    def selected(self):
+        return [] if self._auto else list(self._selected)
+
+    def set_selection(self, names):
+        cleaned = [str(name or "").upper() for name in names or [] if str(name or "").strip()]
+        if cleaned == ["AUTO"] or not cleaned:
+            self._auto = True
+            self._selected = ["AUTO"]
+            return True
+        self._auto = False
+        self._selected = cleaned
+        return True
 
 
 def _build_trader(open_trades=None, lock_reason=""):
@@ -64,3 +90,55 @@ def test_prepare_execution_blocks_when_strategy_is_in_post_tier1_lockout():
 
     assert prepared is None
     assert reason == "Execution blocked: post-TIER1 cooldown active (180s remaining, source #123)"
+
+
+def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled():
+    trader = _build_trader()
+    previous = cfg.ANTI_MODE_ENABLED
+    cfg.ANTI_MODE_ENABLED = True
+    try:
+        signal = {"signal": "BUY", "sl": 99.0, "tp": 101.0, "lot": 0.01, "reason": "base long"}
+
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP",
+            signal,
+            {"ask": 100.1, "bid": 100.0},
+            {},
+            {"m15_df": None},
+        )
+
+        assert reason == ""
+        assert prepared["action"] == "SELL"
+        assert prepared["signal"]["_anti_mode"] is True
+        assert prepared["signal"]["_anti_original_signal"] == "BUY"
+        assert prepared["signal"]["_anti_execution_signal"] == "SELL"
+        assert prepared["signal"]["_anti_sl_multiplier"] == cfg.ANTI_MODE_SL_MULTIPLIER
+        assert prepared["signal"]["_anti_tp_multiplier"] == cfg.ANTI_MODE_TP_MULTIPLIER
+        assert prepared["comment"].endswith("_ANTI")
+        assert prepared["sl"] == 101.5
+        assert prepared["tp"] == 99.5
+    finally:
+        cfg.ANTI_MODE_ENABLED = previous
+
+
+def test_set_anti_mode_forces_m15_pair_and_restores_previous_selection():
+    trader = AutoTrader.__new__(AutoTrader)
+    trader.strat_mgr = _SelectableStrategyManager()
+    trader._anti_mode_previous_selection = []
+    trader.log = lambda *args, **kwargs: None
+    trader._apply_startup_strategy = lambda: trader.strat_mgr.set_selection(["AUTO"])
+
+    previous = cfg.ANTI_MODE_ENABLED
+    cfg.ANTI_MODE_ENABLED = False
+    try:
+        trader.strat_mgr.set_selection(["SMC_CONFLUENCE"])
+
+        enabled_state = trader.set_anti_mode(True)
+        assert enabled_state["enabled"] is True
+        assert trader.strat_mgr.selected == ["M15_ZONE_SCALP", "M15_ZONE_SCALP_INVERSE"]
+
+        disabled_state = trader.set_anti_mode(False)
+        assert disabled_state["enabled"] is False
+        assert trader.strat_mgr.selected == ["SMC_CONFLUENCE"]
+    finally:
+        cfg.ANTI_MODE_ENABLED = previous

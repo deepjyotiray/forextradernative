@@ -1193,6 +1193,7 @@ def _build_tick_data(trader) -> dict:
     return {
         "app_version": cfg.APP_VERSION,
         "enabled": trader.enabled,
+        "anti_mode": getattr(trader, "_anti_mode_status", lambda: {"enabled": bool(getattr(cfg, "ANTI_MODE_ENABLED", False)), "strategies": []})(),
         "mt5_connected": trader._mt5_connected,
         "tick": trader._last_tick,
         "account": trader._last_account,
@@ -1286,6 +1287,7 @@ def _build_status_sync() -> dict:
         "app_version": cfg.APP_VERSION,
         "symbol": trader.bridge.current_symbol if trader.bridge else cfg.SYMBOL,
         "strategy": trader.strat_mgr.active_name if trader.strat_mgr else "AUTO",
+        "anti_mode": getattr(trader, "_anti_mode_status", lambda: {"enabled": bool(getattr(cfg, "ANTI_MODE_ENABLED", False)), "strategies": []})(),
         "config_version": _config_version,
     })
     # Strip legacy group aliases from available list
@@ -2280,6 +2282,8 @@ async def emergency_stop():
 async def set_strategy(strategy_name: str):
     """Set active trading strategy."""
     trader = get_auto_trader()
+    if bool(getattr(cfg, "ANTI_MODE_ENABLED", False)):
+        raise HTTPException(status_code=409, detail="Disable anti mode before changing strategy selection")
     name = strategy_name.upper()
     if trader.strat_mgr.set_active(name):
         cfg.DEFAULT_STRATEGY = name
@@ -2302,6 +2306,8 @@ async def set_strategy(strategy_name: str):
 async def set_strategies_selection(request: Request):
     """Set AUTO or an explicit strategy selection."""
     trader = get_auto_trader()
+    if bool(getattr(cfg, "ANTI_MODE_ENABLED", False)):
+        raise HTTPException(status_code=409, detail="Disable anti mode before changing strategy selection")
     body = await request.json()
     raw_selected = body.get("selected") or []
     if isinstance(raw_selected, str):
@@ -2324,6 +2330,23 @@ async def set_strategies_selection(request: Request):
     _invalidate_status_cache()
     result = trader.strat_mgr.status()
     return result
+
+
+@router.post("/anti-mode")
+async def set_anti_mode(request: Request):
+    """Enable or disable live anti mode for the M15 zone scalp pair."""
+    trader = get_auto_trader()
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    result = trader.set_anti_mode(enabled)
+    try:
+        cfg.save_runtime_config()
+    except Exception:
+        pass
+    trader.log("API", f"Anti mode -> {'ON' if enabled else 'OFF'}")
+    _bump_config_version()
+    _invalidate_status_cache()
+    return convert_numpy_types(result)
 
 @router.post("/symbol/{symbol}")
 async def set_symbol(symbol: str):

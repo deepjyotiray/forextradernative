@@ -179,6 +179,11 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <button class="btn" style="background:#374151;color:#9ca3af" onclick="if(confirm('Shutdown the entire service?'))post('/shutdown')">&#9211; Shutdown</button>
   <button class="btn" style="background:var(--purple);color:#fff" onclick="window.open('/strategies', '_blank')" title="Open strategy configuration manager">⚙ Config</button>
   <button class="btn" style="background:#0e7490;color:#fff" onclick="copyMarketData()" title="Copy live market context + prompt to clipboard">&#128203; Copy Market Data</button>
+  <label style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:11px;cursor:pointer" title="Reverse live execution for M15 zone scalp and inverse only">
+    <span style="color:var(--dim)">Anti M15</span>
+    <input type="checkbox" class="toggle" id="antiModeToggle" onchange="toggleAntiMode(this.checked)">
+    <span id="antiModeText" style="font-weight:700;color:var(--red)">OFF</span>
+  </label>
   <div style="flex:1"></div>
   <div id="tradingStatus" style="font-size:14px;font-weight:700"></div>
 </div>
@@ -501,6 +506,7 @@ function strategyLabel(name){
     SMC_CONFLUENCE:'SMC',
     M15_SCALP_DEEP:'M15 Deep',
     M15_ZONE_SCALP:'M15 Zone',
+    M15_ZONE_SCALP_INVERSE:'M15 Inv',
     TREND_CHANNEL:'TREND',
     HTF_LONG:'HTF Long',
     HTF_SHORT:'HTF Short'
@@ -508,6 +514,10 @@ function strategyLabel(name){
   return labels[String(name||'').toUpperCase()]||humanizeToken(name);
 }
 async function setStrategySelection(name){
+  if((_state.anti_mode||{}).enabled){
+    alert('Disable Anti M15 mode before changing strategy selection.');
+    return;
+  }
   const current=(_state.strategies||{});
   const upper=String(name||'').toUpperCase();
   let selected=(current.selected||[]).filter(s=>s&&s!=='AUTO');
@@ -518,6 +528,29 @@ async function setStrategySelection(name){
     if(!selected.length)selected=['AUTO'];
   }
   await postJson('/strategies/select',{selected});
+}
+async function toggleAntiMode(enabled){
+  const box=$('antiModeToggle');
+  if(enabled){
+    const ok=confirm('Enable live Anti M15 mode? This forces execution to M15 zone scalp + inverse only and reverses the final order side with swapped SL/TP.');
+    if(!ok){
+      if(box)box.checked=false;
+      return;
+    }
+  }
+  try{
+    const r=await fetch(A+'/anti-mode',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data.detail||'Failed to toggle anti mode');
+    setTimeout(refreshAfterControlChange,300);
+  }catch(e){
+    alert(e.message||'Failed to toggle anti mode');
+    if(box)box.checked=!enabled;
+  }
 }
 function num(v,d=0){const n=Number(v);return Number.isFinite(n)?n:d}
 function initAnalyticsLinks(){
@@ -804,14 +837,23 @@ function render(d,opts={}){
   // Trading status + symbol & strategy buttons
   const mt5=d.mt5_connected!==false;
   const mt5Badge=mt5?'<span class="badge b-on">MT5</span>':'<span class="badge b-off">MT5 DISCONNECTED</span>';
-  setHTML($('tradingStatus'),(en?'<span class="green">TRADING ACTIVE</span>':'<span class="red">TRADING OFF</span>')+' '+mt5Badge);
+  const anti=d.anti_mode||{};
+  const antiBadge=anti.enabled?'<span class="badge b-warn">ANTI M15 LIVE</span>':'';
+  setHTML($('tradingStatus'),(en?'<span class="green">TRADING ACTIVE</span>':'<span class="red">TRADING OFF</span>')+' '+mt5Badge+' '+antiBadge);
+  const antiToggle=$('antiModeToggle');
+  const antiText=$('antiModeText');
+  if(antiToggle)antiToggle.checked=!!anti.enabled;
+  if(antiText){
+    antiText.textContent=anti.enabled?'ON':'OFF';
+    antiText.style.color=anti.enabled?'var(--green)':'var(--red)';
+  }
   
   // Update status strip — dynamic badges for all non-legacy available strategies
   const strats=d.strategies||{};
   const enabled=(strats.enabled||[]);
   const available=(strats.available||[]).filter(s=>s!=='AUTO');
   const LABELS={'SMC_CONFLUENCE':'SMC','TREND_CHANNEL':'TREND',
-    'M15_SCALP_DEEP':'M15D','M15_ZONE_SCALP':'M15Z','SWING_ENGINE':'SWING','HTF_LONG':'HTF L','HTF_SHORT':'HTF S'};
+    'M15_SCALP_DEEP':'M15D','M15_ZONE_SCALP':'M15Z','M15_ZONE_SCALP_INVERSE':'M15I','SWING_ENGINE':'SWING','HTF_LONG':'HTF L','HTF_SHORT':'HTF S'};
   const stratBadgesEl=$('stratBadges');
   if(stratBadgesEl&&available.length){
     setHTML(stratBadgesEl,available.map(s=>{

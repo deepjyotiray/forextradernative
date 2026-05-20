@@ -77,6 +77,7 @@ _M15_ZONE_SIBLING_MAP = {
     "M15_ZONE_SCALP": "M15_ZONE_SCALP_INVERSE",
     "M15_ZONE_SCALP_INVERSE": "M15_ZONE_SCALP",
 }
+_ANTI_MODE_STRATEGIES = ("M15_ZONE_SCALP", "M15_ZONE_SCALP_INVERSE")
 
 
 def _safe_dict(value):
@@ -89,6 +90,15 @@ def _safe_float(value, default=0.0):
         return float(value) if value is not None else default
     except (ValueError, TypeError):
         return default
+
+
+def _reverse_trade_action(action: str) -> str:
+    action = str(action or "").upper()
+    if action == "BUY":
+        return "SELL"
+    if action == "SELL":
+        return "BUY"
+    return action
 
 
 def _last_closed_candle_marker(df) -> str:
@@ -206,6 +216,7 @@ class AutoTrader:
         self._last_strategy_skip_log: Dict[str, float] = {}
         self._last_signal: Dict = {}
         self._last_strategy_results: Dict[str, Dict] = {}
+        self._anti_mode_previous_selection: list[str] = []
 
     def _register_strategies(self):
         self.strat_mgr._strategies.clear()
@@ -238,15 +249,107 @@ class AutoTrader:
         if isinstance(default_strategy, (list, tuple, set)):
             if not self.strat_mgr.set_selection(default_strategy):
                 self.strat_mgr.set_active("AUTO")
-            return
-        text = str(default_strategy or "AUTO").strip()
-        if "," in text:
-            names = [part.strip().upper() for part in text.split(",") if part.strip()]
-            if not self.strat_mgr.set_selection(names):
+        else:
+            text = str(default_strategy or "AUTO").strip()
+            if "," in text:
+                names = [part.strip().upper() for part in text.split(",") if part.strip()]
+                if not self.strat_mgr.set_selection(names):
+                    self.strat_mgr.set_active("AUTO")
+            elif not self.strat_mgr.set_active(text.upper() or "AUTO"):
                 self.strat_mgr.set_active("AUTO")
-            return
-        if not self.strat_mgr.set_active(text.upper() or "AUTO"):
-            self.strat_mgr.set_active("AUTO")
+        if bool(getattr(cfg, "ANTI_MODE_ENABLED", False)):
+            self._apply_anti_mode_selection()
+
+    @staticmethod
+    def _anti_mode_targets_strategy(strategy_name: str) -> bool:
+        return bool(getattr(cfg, "ANTI_MODE_ENABLED", False)) and str(strategy_name or "").upper() in _ANTI_MODE_STRATEGIES
+
+    @staticmethod
+    def _anti_mode_status() -> Dict:
+        return {
+            "enabled": bool(getattr(cfg, "ANTI_MODE_ENABLED", False)),
+            "strategies": list(_ANTI_MODE_STRATEGIES),
+        }
+
+    def _current_selection_tokens(self) -> list[str]:
+        return ["AUTO"] if self.strat_mgr.is_auto else list(self.strat_mgr.selected)
+
+    def _apply_anti_mode_selection(self) -> bool:
+        return bool(self.strat_mgr.set_selection(list(_ANTI_MODE_STRATEGIES)))
+
+    def set_anti_mode(self, enabled: bool) -> Dict:
+        desired = bool(enabled)
+        current = bool(getattr(cfg, "ANTI_MODE_ENABLED", False))
+        if desired == current:
+            if desired:
+                self._apply_anti_mode_selection()
+            return self._anti_mode_status()
+
+        if desired:
+            self._anti_mode_previous_selection = self._current_selection_tokens()
+            cfg.ANTI_MODE_ENABLED = True
+            self._apply_anti_mode_selection()
+            self.log("API", "ANTI MODE ENABLED -> M15_ZONE_SCALP + M15_ZONE_SCALP_INVERSE")
+            return self._anti_mode_status()
+
+        cfg.ANTI_MODE_ENABLED = False
+        restore = list(self._anti_mode_previous_selection or [])
+        restored = False
+        if restore:
+            restored = bool(self.strat_mgr.set_selection(restore))
+        if not restored:
+            self._apply_startup_strategy()
+        self.log("API", "ANTI MODE DISABLED")
+        return self._anti_mode_status()
+
+    def _build_execution_signal(self, strategy_name: str, sig: Dict, tick: Dict) -> tuple[Dict, str, float, float, float, str]:
+        execution_sig = dict(sig or {})
+        action = str(execution_sig.get("signal") or "NO_TRADE").upper()
+        sl = _safe_float(execution_sig.get("sl"), 0.0)
+        tp = _safe_float(execution_sig.get("tp"), 0.0)
+        comment = str(execution_sig.get("_comment") or f"FT_{strategy_name[:8]}")
+        anti_applied = False
+
+        if self._anti_mode_targets_strategy(strategy_name):
+            original_action = action
+            original_sl = sl
+            original_tp = tp
+            action = _reverse_trade_action(action)
+            sl = original_tp
+            tp = original_sl
+            execution_sig["_anti_mode"] = True
+            execution_sig["_anti_original_signal"] = original_action
+            execution_sig["_anti_original_sl"] = original_sl
+            execution_sig["_anti_original_tp"] = original_tp
+            execution_sig["_anti_execution_signal"] = action
+            execution_sig["_anti_mode_label"] = "ANTI_M15_ZONE"
+            execution_sig["reason"] = f"[ANTI {original_action}->{action}] {execution_sig.get('reason', '')}".strip()
+            comment = f"{comment}_ANTI"
+            anti_applied = True
+
+        signal_entry = _safe_float(execution_sig.get("entry"), 0.0)
+        entry = self._market_entry_price(action, tick, fallback=signal_entry)
+        if anti_applied:
+            mirrored_sl_distance = abs(entry - _safe_float(sl))
+            mirrored_tp_distance = abs(entry - _safe_float(tp))
+            widened_sl_distance = round(max(0.01, mirrored_sl_distance) * _safe_float(getattr(cfg, "ANTI_MODE_SL_MULTIPLIER", 1.5), 1.5), 4)
+            compressed_tp_distance = round(max(0.01, mirrored_tp_distance) * _safe_float(getattr(cfg, "ANTI_MODE_TP_MULTIPLIER", 0.5), 0.5), 4)
+            if action == "BUY":
+                sl = round(entry - widened_sl_distance, 2)
+                tp = round(entry + compressed_tp_distance, 2)
+            else:
+                sl = round(entry + widened_sl_distance, 2)
+                tp = round(entry - compressed_tp_distance, 2)
+            execution_sig["_anti_sl_multiplier"] = _safe_float(getattr(cfg, "ANTI_MODE_SL_MULTIPLIER", 1.5), 1.5)
+            execution_sig["_anti_tp_multiplier"] = _safe_float(getattr(cfg, "ANTI_MODE_TP_MULTIPLIER", 0.5), 0.5)
+            execution_sig["_anti_profit_choke_r"] = _safe_float(getattr(cfg, "ANTI_MODE_PROFIT_CHOKE_R", 0.08), 0.08)
+            execution_sig["_anti_final_sl"] = sl
+            execution_sig["_anti_final_tp"] = tp
+            execution_sig["tp_levels"] = [tp]
+            execution_sig["_tp_levels"] = [tp]
+
+        sl_distance = abs(entry - _safe_float(sl))
+        return execution_sig, action, sl, tp, sl_distance, comment
 
     def _backup_log_if_new_day(self):
         """At midnight IST, move yesterday's trader.log to backup_logs/."""
@@ -786,19 +889,16 @@ class AutoTrader:
             sig = strategy.generate_signal(strat_data)
         except Exception:
             return
-        action = sig.get("signal", "NO_TRADE")
+        action = str(sig.get("signal", "NO_TRADE")).upper()
         if action not in ("BUY", "SELL"):
             self.log("REENTRY", f"[{strategy_name}] No re-entry signal after recovery exit: {sig.get('reason', '')}")
             return
-        sl, tp = sig.get("sl"), sig.get("tp")
+        execution_sig, action, sl, tp, sl_distance, comment = self._build_execution_signal(strategy_name, sig, tick)
         if not sl or not tp:
             return
-        signal_entry = _safe_float(sig.get("entry"), 0.0)
-        entry = self._market_entry_price(action, tick, fallback=signal_entry)
-        sl_distance = abs(entry - _safe_float(sl))
         if sl_distance <= 0:
             return
-        lot = _safe_float(sig.get("lot", sig.get("lot_size")), 0.0)
+        lot = _safe_float(execution_sig.get("lot", execution_sig.get("lot_size")), 0.0)
         if lot <= 0:
             lot = self.risk.calculate_lot(account, sl_distance, strategy=strategy_name)
         if lot <= 0:
@@ -808,7 +908,9 @@ class AutoTrader:
             if not pre_send.get("allowed", True):
                 self.log("REENTRY", f"[{strategy_name}] Re-entry blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}")
                 return
-        comment = sig.get("_comment") or f"FT_{strategy_name[:8]}_RE"
+        comment = comment or f"FT_{strategy_name[:8]}_RE"
+        if execution_sig.get("_anti_mode") and not comment.endswith("_ANTI"):
+            comment = f"{comment}_ANTI"
         result = self.bridge.open_trade(action, lot, sl, tp, comment=comment)
         if result and result.get("success"):
             t = result["ticket"]
@@ -816,16 +918,21 @@ class AutoTrader:
             live_tick_metrics = self.tick_proc.snapshot() or {}
             self.trades.register_trade(
                 t, action, lot, fp, sl, tp, sl_distance,
-                strategy=strategy_name, confidence=sig.get("confidence", 0),
-                reason=f"[re-entry] {sig.get('reason', '')}",
+                strategy=strategy_name, confidence=execution_sig.get("confidence", 0),
+                reason=f"[re-entry] {execution_sig.get('reason', '')}",
                 features={
                     "atr": self._indicators.get("atr", 0),
-                    "signal_confidence": sig.get("confidence", 0),
+                    "signal_confidence": execution_sig.get("confidence", 0),
                     "entry_tick_velocity": live_tick_metrics.get("velocity", 0),
                     "entry_tick_count": live_tick_metrics.get("tick_count", 0),
                     "regime": self._regime.get("state", ""),
                     "session": get_session(),
-                    "profile_name": sig.get("_exit_profile"),
+                    "profile_name": execution_sig.get("_exit_profile"),
+                    "anti_mode": bool(execution_sig.get("_anti_mode")),
+                    "anti_original_signal": execution_sig.get("_anti_original_signal"),
+                    "anti_execution_signal": execution_sig.get("_anti_execution_signal"),
+                    "anti_original_sl": execution_sig.get("_anti_original_sl"),
+                    "anti_original_tp": execution_sig.get("_anti_original_tp"),
                 },
             )
             record_trade_taken()
@@ -955,16 +1062,33 @@ class AutoTrader:
             if not pre_send.get("allowed", True):
                 return None, f"Execution blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}"
 
+        execution_sig, action, sl, tp, sl_distance, comment = self._build_execution_signal(strategy_name, sig, tick)
+        if not sl or not tp:
+            return None, "Execution blocked: invalid anti-mode SL/TP"
+        if sl_distance <= 0:
+            return None, "Execution blocked: invalid anti-mode stop distance"
+
+        lot = _safe_float(execution_sig.get("lot", execution_sig.get("lot_size")), 0.0)
+        if lot <= 0:
+            lot = self.risk.calculate_lot(
+                account,
+                sl_distance,
+                high_conf=bool(execution_sig.get("_high_conf", False)),
+                strategy=strategy_name,
+            )
+        if lot <= 0:
+            return None, "Execution blocked: invalid lot"
+
         return {
             "strategy": strategy_name,
-            "signal": sig,
+            "signal": execution_sig,
             "action": action,
             "sl": sl,
             "tp": tp,
-            "entry": entry,
+            "entry": self._market_entry_price(action, tick, fallback=_safe_float(execution_sig.get("entry"), 0.0)),
             "sl_distance": sl_distance,
             "lot": lot,
-            "comment": sig.get("_comment") or f"FT_{strategy_name[:8]}",
+            "comment": comment,
             "setup_signature": setup_signature,
         }, ""
 
@@ -1046,6 +1170,11 @@ class AutoTrader:
                     "market_memory_low_rejecting": market_memory.get("low_rejecting"),
                     "market_memory_summary": market_memory.get("summary"),
                     "market_memory_bonus": memory_assessment.get("score_bonus"),
+                    "anti_mode": bool(sig.get("_anti_mode")),
+                    "anti_original_signal": sig.get("_anti_original_signal"),
+                    "anti_execution_signal": sig.get("_anti_execution_signal"),
+                    "anti_original_sl": sig.get("_anti_original_sl"),
+                    "anti_original_tp": sig.get("_anti_original_tp"),
                 },
             )
             record_trade_taken()
@@ -1360,6 +1489,7 @@ class AutoTrader:
             "mt5_connected": self._mt5_connected,
             "strategy": self.strat_mgr.active_name,
             "strategies": self.strat_mgr.status(),
+            "anti_mode": self._anti_mode_status(),
             "symbol": self.bridge.current_symbol,
             "available_symbols": cfg.AVAILABLE_SYMBOLS,
             "session": get_session(),

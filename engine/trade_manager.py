@@ -202,6 +202,23 @@ def _resolve_exit_profile(
             _safe_bool(profile.get("velocity_drop_enabled"), False),
         ),
     }
+    if _safe_bool(feature_map.get("anti_mode"), False):
+        resolved["be_trigger_r"] = 0.0
+        resolved["breakeven_min_hold_seconds"] = 0
+        resolved["breakeven_volume_hold_ratio"] = 0.0
+        resolved["early_fail_points"] = 9999.0
+        resolved["profit_lock_1_arm_r"] = 0.0
+        resolved["profit_lock_1_r"] = 0.0
+        resolved["profit_lock_2_arm_r"] = 0.0
+        resolved["profit_lock_2_r"] = 0.0
+        resolved["reversal_arm_r"] = 9999.0
+        resolved["reversal_drawdown_pct"] = 1.0
+        resolved["reversal_floor_r"] = -9999.0
+        resolved["timeout_seconds"] = max(_safe_int(resolved.get("timeout_seconds"), 0), 12 * 3600)
+        resolved["timeout_min_progress_r"] = -9999.0
+        resolved["trail_activate_r"] = 0.0
+        resolved["trail_lock_r"] = 0.0
+        resolved["velocity_drop_enabled"] = False
     return resolved
 
 
@@ -984,6 +1001,19 @@ class TradeManager:
             market_context.get("m1_df"),
             int(getattr(cfg, "BREAKEVEN_VOLUME_LOOKBACK_CANDLES", 8) or 8),
         )
+        anti_mode = _safe_bool((t.features or {}).get("anti_mode"), False)
+        anti_profit_choke_r = _safe_float(
+            (t.features or {}).get("anti_profit_choke_r"),
+            _safe_float(getattr(cfg, "ANTI_MODE_PROFIT_CHOKE_R", 0.08), 0.08),
+        )
+
+        if anti_mode and live_r >= anti_profit_choke_r and age >= 1.0:
+            self._close_early(
+                t,
+                f"ANTI profit choke ({live_r:.2f}R >= {anti_profit_choke_r:.2f}R)",
+                category="anti_profit_choke",
+            )
+            return True
 
         if cfg.TIER1_ENABLED and t.tier1_min_ticks <= ticks_since_entry <= t.tier1_max_ticks and points_move <= -t.early_fail_points:
             self._close_early(

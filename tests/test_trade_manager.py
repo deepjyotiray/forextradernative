@@ -498,6 +498,40 @@ class TradeManagerTests(unittest.TestCase):
         self.assertFalse(handled)
         manager.bridge.close_trade.assert_not_called()
 
+    def test_anti_trade_closes_small_winner_early_to_choke_profit(self):
+        manager = self._build_manager()
+        features = self._m15_zone_features()
+        features["anti_mode"] = True
+        features["anti_profit_choke_r"] = 0.08
+        trade = TradeRecord(
+            10051, "SELL", 0.02, 4579.0, 4584.4, 4578.25, 5.4,
+            strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+            early_fail=0.12, features=features,
+        )
+        trade.fill_ts = time.time() - 5
+        trade.live_pnl = 1.20
+
+        handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
+
+        self.assertTrue(handled)
+        manager.bridge.close_trade.assert_called_once()
+        self.assertEqual(manager._pending_close_reasons[10051]["category"], "anti_profit_choke")
+
+    def test_anti_trade_profile_disables_protective_management_snapshot(self):
+        features = self._m15_zone_features()
+        features["anti_mode"] = True
+        trade = TradeRecord(
+            10052, "SELL", 0.02, 4579.0, 4584.4, 4578.25, 5.4,
+            strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+            early_fail=0.12, features=features,
+        )
+
+        self.assertEqual(trade.be_trigger_r, 0.0)
+        self.assertEqual(trade.profit_lock_1_arm_r, 0.0)
+        self.assertEqual(trade.profit_lock_2_arm_r, 0.0)
+        self.assertFalse(trade.velocity_drop_enabled)
+        self.assertGreaterEqual(trade.timeout_seconds, 12 * 3600)
+
     def test_manage_all_records_close_diagnostics(self):
         manager = self._build_manager()
         trade = TradeRecord(
