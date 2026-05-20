@@ -12,6 +12,7 @@ from engine.m15_zone_scalp_strategy import (
     _bullish_reaction,
     _bullish_htf_ok,
     _bearish_htf_ok,
+    _tp_distance_with_rr_floor,
 )
 from engine.m15_zone_scalp_inverse_strategy import M15ZoneScalpInverseStrategy
 from engine.m15_zone_micro_bias import resolve_m15_zone_micro_bias
@@ -108,6 +109,10 @@ def _candidate(signal="SELL"):
 
 
 class M15ZoneScalpLogicTests(unittest.TestCase):
+    def test_tp_distance_expands_to_meet_rr_floor(self):
+        self.assertAlmostEqual(_tp_distance_with_rr_floor(2.5, 3.5, 1.1), 3.85, places=6)
+        self.assertAlmostEqual(_tp_distance_with_rr_floor(2.5, 2.0, 1.1), 2.5, places=6)
+
     def test_pick_demand_requires_bid_ge_zone_low_and_touch(self):
         strat = M15ZoneScalpStrategy()
         clusters = [{"zone_low": 100.0, "zone_high": 101.0, "zone_mid": 100.5, "strength": 0.5}]
@@ -149,6 +154,68 @@ class M15ZoneScalpLogicTests(unittest.TestCase):
         profile = get_exit_profile_config("m15_zone_scalp")
         self.assertEqual(profile["profile_name"], "m15_zone_scalp")
         self.assertGreater(profile["be_trigger_r"], 0)
+
+    def test_family_candidates_raise_tp_to_min_rr_floor(self):
+        strat = M15ZoneScalpStrategy()
+        m15_df = pd.DataFrame([{"open": 100.0, "high": 100.5, "low": 99.5, "close": 100.2}] * 24)
+        data = {
+            "symbol": "XAUUSD",
+            "tick": {"bid": 100.0, "ask": 100.1, "spread": 0.1},
+            "m15_df": m15_df,
+            "account": {"balance": 1000.0},
+            "strategy_trade_counts": {"M15_ZONE_SCALP": 0},
+            "market_state": {
+                "trend": {"D1": "UP", "H4": "UP", "H1": "UP"},
+                "structure": {"D1": "UP", "H4": "UP", "H1": "UP"},
+            },
+            "calendar": {"blocked": False},
+            "now_utc": datetime(2026, 5, 20, 7, 0, tzinfo=timezone.utc),
+        }
+
+        cfg_values = {
+            "spread_max": 0.5,
+            "sessions": ["LONDON", "NEW_YORK", "ASIAN"],
+            "news_block": True,
+            "max_active_trades": 1,
+            "pip_size": 0.1,
+            "tp_pips": 25,
+            "min_rr": 1.1,
+            "zone_touch_floor_pts": 0.8,
+            "zone_touch_atr_mult": 0.25,
+            "zone_detector_eps": 1.2,
+            "zone_detector_min_samples": 2,
+            "zone_detector_max_width": 5.0,
+            "min_zone_strength": 0.15,
+            "sl_buffer_atr_mult": 0.35,
+            "sl_floor_pips": 12,
+            "sl_ceiling_pips": 35,
+            "rejection_wick_ratio": 0.32,
+            "displacement_body_ratio": 0.52,
+            "close_near_extreme_ratio": 0.62,
+            "risk_pct": 0.5,
+            "require_htf_bias": True,
+            "bias_fallback_min_confidence": 0.35,
+        }
+        clusters = [{"zone_low": 97.0, "zone_high": 99.0, "zone_mid": 98.0, "strength": 0.5}]
+
+        with patch("engine.m15_zone_scalp_strategy._scfg.get", return_value=cfg_values), \
+             patch("engine.m15_zone_scalp_strategy._m15_atr", return_value=4.0), \
+             patch("engine.m15_zone_scalp_strategy._bullish_reaction", return_value=True), \
+             patch("engine.m15_zone_scalp_strategy._bearish_reaction", return_value=False), \
+             patch.object(M15ZoneScalpStrategy, "_pick_demand_zone", return_value=(0, clusters[0])), \
+             patch.object(M15ZoneScalpStrategy, "_pick_supply_zone", return_value=None), \
+             patch("engine.m15_zone_scalp_strategy.ZoneDetector.scored_clusters", return_value=clusters):
+            candidates, blocked = strat._family_candidates(data)
+
+        self.assertIsNone(blocked)
+        self.assertEqual(len(candidates), 1)
+        signal = candidates[0]
+        self.assertEqual(signal["signal"], "BUY")
+        self.assertAlmostEqual(signal["sl_distance"], 3.5, places=2)
+        self.assertAlmostEqual(signal["tp"], 103.85, places=2)
+        self.assertAlmostEqual(signal["rr"], 1.1, places=2)
+        self.assertEqual(signal["_effective_tp_pips"], 38.5)
+        self.assertIn("RR floor 1.10", signal["reason"])
 
     def test_resolver_routes_conflicted_sell_to_inverse_buy_on_long_pressure(self):
         resolver = resolve_m15_zone_micro_bias(

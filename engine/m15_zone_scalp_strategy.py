@@ -56,6 +56,15 @@ def _m15_atr(m15: pd.DataFrame) -> float:
     return v if np.isfinite(v) and v > 0 else 0.0
 
 
+def _tp_distance_with_rr_floor(base_tp_dist: float, sl_dist: float, min_rr: float) -> float:
+    base = max(0.0, _safe_float(base_tp_dist))
+    risk = max(0.0, _safe_float(sl_dist))
+    rr_floor = max(0.0, _safe_float(min_rr))
+    if risk <= 0 or rr_floor <= 0:
+        return base
+    return max(base, risk * rr_floor)
+
+
 def _calc_scalp_lot(balance: float, s_cfg: Dict, sl_dist: float) -> float:
     fl_raw = s_cfg.get("fixed_lot")
     fixed_lot = _safe_float(fl_raw) if fl_raw not in (None, "", False) else 0.0
@@ -298,6 +307,7 @@ class M15ZoneScalpStrategy(BaseStrategy):
         pip = max(0.01, float(s_cfg.get("pip_size", 0.1) or 0.1))
         tp_pips = float(s_cfg.get("tp_pips", 25) or 25)
         tp_dist = tp_pips * pip
+        min_rr = float(s_cfg.get("min_rr", 1.1) or 1.1)
         proximity = max(
             float(s_cfg.get("zone_touch_floor_pts", 0.8) or 0.8),
             atr_m15 * float(s_cfg.get("zone_touch_atr_mult", 0.25) or 0.25),
@@ -357,19 +367,27 @@ class M15ZoneScalpStrategy(BaseStrategy):
                 sl_raw = zl - sl_buf
                 sl_dist = max(sl_floor, min(sl_cap, entry - sl_raw))
                 sl = round(entry - sl_dist, 2)
-                tp = round(entry + tp_dist, 2)
                 zone_type = "DEMAND"
             else:
                 entry = ask if ask > 0 else bid
                 sl_raw = zh + sl_buf
                 sl_dist = max(sl_floor, min(sl_cap, sl_raw - entry))
                 sl = round(entry + sl_dist, 2)
-                tp = round(entry - tp_dist, 2)
                 zone_type = "SUPPLY"
 
-            rr = tp_dist / max(sl_dist, 1e-6)
+            target_tp_dist = _tp_distance_with_rr_floor(tp_dist, sl_dist, min_rr)
+            if direction == "BUY":
+                tp = round(entry + target_tp_dist, 2)
+            else:
+                tp = round(entry - target_tp_dist, 2)
+
+            rr = target_tp_dist / max(sl_dist, 1e-6)
             confidence = round(0.55 + float(zn.get("strength", 0.0)) * 0.35, 2)
             lot = _calc_scalp_lot(balance, s_cfg, sl_dist)
+            effective_tp_pips = target_tp_dist / max(pip, 1e-6)
+            tp_note = f"TP {effective_tp_pips:.1f} pips ({target_tp_dist:.2f})"
+            if target_tp_dist > tp_dist + 1e-6:
+                tp_note += f" via RR floor {min_rr:.2f}"
 
             candidates.append(
                 {
@@ -384,7 +402,7 @@ class M15ZoneScalpStrategy(BaseStrategy):
                     "confidence_pct": int(round(confidence * 100)),
                     "reason": (
                         f"{direction} M15 zone scalp | demand/supply | {htf_note} | zone_mid:{zm} [{zl}-{zh}] "
-                        f"str:{zn.get('strength')} touch≤{proximity:.2f} | TP {tp_pips} pips ({tp_dist:.2f})"
+                        f"str:{zn.get('strength')} touch≤{proximity:.2f} | {tp_note}"
                     ),
                     "rr": round(rr, 2),
                     "_strategy_name": self.name,
@@ -408,6 +426,8 @@ class M15ZoneScalpStrategy(BaseStrategy):
                     "_zone_strength": float(zn.get("strength", 0.0)),
                     "_zone_type": zone_type,
                     "_tp_pips": tp_pips,
+                    "_effective_tp_pips": round(effective_tp_pips, 2),
+                    "_min_rr": round(min_rr, 2),
                     "_pip_size": pip,
                     "_session": sess_lbl,
                     "_htf_note": htf_note,
