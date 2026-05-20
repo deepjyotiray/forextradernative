@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from .indicators import ema, atr, rsi, supertrend, wilder_atr
+from .market_memory import compute_market_memory
 from .trendline import detect_trendlines
 
 
@@ -214,6 +215,7 @@ def compute_market_state(candles: Dict[str, pd.DataFrame], now_utc=None) -> Dict
       equal_highs    — list of equal high levels from M15
       equal_lows     — list of equal low levels from M15
       rsi            — per-TF RSI14 last value
+      market_memory  — rolling 4h multi-TF directional memory
     """
     m1  = candles.get("M1")
     m5  = candles.get("M5")
@@ -292,6 +294,7 @@ def compute_market_state(candles: Dict[str, pd.DataFrame], now_utc=None) -> Dict
             "D1": _last_ohlc(d1),
             "W1": _last_ohlc(w1),
         },
+        "market_memory": compute_market_memory({"M1": m1, "M5": m5, "M15": m15}),
     }
     return state
 

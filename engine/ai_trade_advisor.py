@@ -91,6 +91,7 @@ def build_trade_review_context(
     positions = market_state.get("positions") or []
     account = market_state.get("account") or {}
     m15_context = gate_result.get("m15_context") or {}
+    market_memory = market_state.get("market_memory") or (market_state.get("market_state") or {}).get("market_memory") or {}
 
     action = str(signal.get("signal") or "").upper()
     fallback_entry = tick.get("ask") if action == "BUY" else tick.get("bid")
@@ -146,6 +147,11 @@ def build_trade_review_context(
             "open_positions": len(positions),
             "balance": round(_safe_float(account.get("balance"), 0.0), 2),
             "equity": round(_safe_float(account.get("equity"), 0.0), 2),
+            "market_memory_direction": _clip_text(market_memory.get("direction"), 16),
+            "market_memory_phase": _clip_text(market_memory.get("phase"), 16),
+            "market_memory_confidence": round(_safe_float(market_memory.get("confidence"), 0.0), 4),
+            "market_memory_alignment": round(_safe_float(market_memory.get("alignment"), 0.0), 4),
+            "market_memory_range_position": round(_safe_float(market_memory.get("range_position"), 0.5), 4),
         },
     }
 

@@ -990,6 +990,8 @@ class AutoTrader:
             t = result["ticket"]
             fp = result["price"]
             live_tick_metrics = self.tick_proc.snapshot() or {}
+            market_memory = (self._market_state or {}).get("market_memory") or {}
+            memory_assessment = sig.get("_market_memory_assessment") or {}
             self.trades.register_trade(
                 t, action, lot, fp, sl, tp, sl_distance,
                 strategy=strat_name, confidence=sig.get("confidence", 0),
@@ -1033,6 +1035,17 @@ class AutoTrader:
                     "signal_id": sig.get("_signal_id") or setup_signature,
                     "setup_signature": setup_signature,
                     "ttl_seconds": sig.get("_ttl_seconds"),
+                    "market_memory_direction": market_memory.get("direction"),
+                    "market_memory_confidence": market_memory.get("confidence"),
+                    "market_memory_alignment": market_memory.get("alignment"),
+                    "market_memory_phase": market_memory.get("phase"),
+                    "market_memory_score": market_memory.get("score"),
+                    "market_memory_impulse_direction": market_memory.get("impulse_direction"),
+                    "market_memory_range_position": market_memory.get("range_position"),
+                    "market_memory_high_rejecting": market_memory.get("high_rejecting"),
+                    "market_memory_low_rejecting": market_memory.get("low_rejecting"),
+                    "market_memory_summary": market_memory.get("summary"),
+                    "market_memory_bonus": memory_assessment.get("score_bonus"),
                 },
             )
             record_trade_taken()

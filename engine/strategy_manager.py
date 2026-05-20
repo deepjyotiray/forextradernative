@@ -13,6 +13,7 @@ from engine.master_control import pre_trade_validation, log_trade_decision_compr
 from engine.master_trade_gate import master_trade_gate
 from engine import strategy_configs
 from engine.decision_logger import log_decision
+from engine.market_memory import assess_signal as assess_market_memory
 from engine.recent_setup_learner import assess_signal as assess_recent_setup
 from engine.xgb_model import xgb_model, xgb_bypass_enabled
 
@@ -107,10 +108,12 @@ def _pressure_bonus(trade_dir: str, pressure_score: float) -> float:
 
 def _build_auto_market_state(data: Dict) -> Dict:
     market_state = dict(data or {})
+    nested_market_state = data.get("market_state") or {}
     market_state.setdefault("bias", data.get("bias") or {})
     market_state.setdefault("regime", data.get("regime") or {})
     market_state.setdefault("tick_snapshot", data.get("tick_snapshot") or {})
     market_state.setdefault("tick_pressure", data.get("tick_pressure") or {})
+    market_state.setdefault("market_memory", nested_market_state.get("market_memory") or {})
     return market_state
 
 
@@ -132,6 +135,8 @@ def _summarize_auto_candidate(signal: Dict, strategy_name: str, gate_result: Opt
     xgb_prob = _safe_float(signal.get("_xgb_prob"), 0.5)
     recent_setup = dict(signal.get("_recent_setup_learning") or {})
     recent_setup_bonus = _safe_float(recent_setup.get("score_bonus"), 0.0)
+    market_memory = dict(signal.get("_market_memory_assessment") or {})
+    market_memory_bonus = _safe_float(market_memory.get("score_bonus"), 0.0)
 
     arbitration_score = float(gate_score)
     arbitration_score += min(max(confidence, 0.0), 1.0) * 20.0
@@ -141,6 +146,7 @@ def _summarize_auto_candidate(signal: Dict, strategy_name: str, gate_result: Opt
     arbitration_score += _pressure_bonus(trade_dir, pressure_score)
     arbitration_score += (xgb_prob - 0.5) * 16.0
     arbitration_score += recent_setup_bonus
+    arbitration_score += market_memory_bonus
     if trade_dir in ("LONG", "SHORT"):
         if bias_dir == trade_dir:
             arbitration_score += 8.0
@@ -165,6 +171,12 @@ def _summarize_auto_candidate(signal: Dict, strategy_name: str, gate_result: Opt
         "recent_setup_bonus": round(recent_setup_bonus, 3),
         "recent_setup_scope": recent_setup.get("scope"),
         "recent_setup_sample_size": _safe_int(recent_setup.get("sample_size"), 0),
+        "market_memory_bonus": round(market_memory_bonus, 3),
+        "market_memory_direction": market_memory.get("direction"),
+        "market_memory_phase": market_memory.get("phase"),
+        "market_memory_confidence": round(_safe_float(market_memory.get("confidence"), 0.0), 3),
+        "market_memory_alignment": round(_safe_float(market_memory.get("alignment"), 0.0), 3),
+        "market_memory_range_position": round(_safe_float(market_memory.get("range_position"), 0.5), 3),
         "arbitration_score": round(arbitration_score, 3),
     }
 
@@ -366,6 +378,10 @@ class StrategyManager:
                     sig["_recent_setup_learning"] = assess_recent_setup(sig, market_state)
                 except Exception:
                     sig["_recent_setup_learning"] = {"enabled": False, "score_bonus": 0.0}
+                try:
+                    sig["_market_memory_assessment"] = assess_market_memory(sig, market_state)
+                except Exception:
+                    sig["_market_memory_assessment"] = {"enabled": False, "score_bonus": 0.0}
                 sig["_master_gate_preview"] = gate_result
                 candidate = _summarize_auto_candidate(sig, name, gate_result, market_state)
                 candidates.append(candidate)
@@ -383,6 +399,12 @@ class StrategyManager:
                         "recent_setup_bonus": candidate["recent_setup_bonus"],
                         "recent_setup_scope": candidate["recent_setup_scope"],
                         "recent_setup_sample_size": candidate["recent_setup_sample_size"],
+                        "market_memory_bonus": candidate["market_memory_bonus"],
+                        "market_memory_direction": candidate["market_memory_direction"],
+                        "market_memory_phase": candidate["market_memory_phase"],
+                        "market_memory_confidence": candidate["market_memory_confidence"],
+                        "market_memory_alignment": candidate["market_memory_alignment"],
+                        "market_memory_range_position": candidate["market_memory_range_position"],
                         "arb_score": candidate["arbitration_score"],
                     }
                 )
@@ -413,6 +435,12 @@ class StrategyManager:
                 "recent_setup_bonus": winner["recent_setup_bonus"],
                 "recent_setup_scope": winner["recent_setup_scope"],
                 "recent_setup_sample_size": winner["recent_setup_sample_size"],
+                "market_memory_bonus": winner["market_memory_bonus"],
+                "market_memory_direction": winner["market_memory_direction"],
+                "market_memory_phase": winner["market_memory_phase"],
+                "market_memory_confidence": winner["market_memory_confidence"],
+                "market_memory_alignment": winner["market_memory_alignment"],
+                "market_memory_range_position": winner["market_memory_range_position"],
             }
             best_sig["_master_gate_preview"] = best_sig.get("_master_gate_preview") or winner["signal"].get("_master_gate_preview")
             selected_signal = best_sig
