@@ -332,7 +332,11 @@ class AutoTrader:
         if anti_applied:
             mirrored_sl_distance = abs(entry - _safe_float(sl))
             mirrored_tp_distance = abs(entry - _safe_float(tp))
-            widened_sl_distance = round(max(0.01, mirrored_sl_distance) * _safe_float(getattr(cfg, "ANTI_MODE_SL_MULTIPLIER", 1.5), 1.5), 4)
+            sl_multiplier = _safe_float(getattr(cfg, "ANTI_MODE_SL_MULTIPLIER", 1.0), 1.0)
+            sl_cap_points = _safe_float(getattr(cfg, "ANTI_MODE_MAX_SL_POINTS", 4.5), 4.5)
+            widened_sl_distance = round(max(0.01, mirrored_sl_distance) * sl_multiplier, 4)
+            if sl_cap_points > 0:
+                widened_sl_distance = round(min(widened_sl_distance, sl_cap_points), 4)
             compressed_tp_distance = round(max(0.01, mirrored_tp_distance) * _safe_float(getattr(cfg, "ANTI_MODE_TP_MULTIPLIER", 0.5), 0.5), 4)
             if action == "BUY":
                 sl = round(entry - widened_sl_distance, 2)
@@ -340,9 +344,12 @@ class AutoTrader:
             else:
                 sl = round(entry + widened_sl_distance, 2)
                 tp = round(entry - compressed_tp_distance, 2)
-            execution_sig["_anti_sl_multiplier"] = _safe_float(getattr(cfg, "ANTI_MODE_SL_MULTIPLIER", 1.5), 1.5)
+            execution_sig["_anti_sl_multiplier"] = sl_multiplier
+            execution_sig["_anti_sl_cap_points"] = sl_cap_points
             execution_sig["_anti_tp_multiplier"] = _safe_float(getattr(cfg, "ANTI_MODE_TP_MULTIPLIER", 0.5), 0.5)
             execution_sig["_anti_profit_choke_r"] = _safe_float(getattr(cfg, "ANTI_MODE_PROFIT_CHOKE_R", 0.08), 0.08)
+            execution_sig["_anti_mirrored_sl_distance"] = round(mirrored_sl_distance, 4)
+            execution_sig["_anti_effective_sl_distance"] = widened_sl_distance
             execution_sig["_anti_final_sl"] = sl
             execution_sig["_anti_final_tp"] = tp
             execution_sig["tp_levels"] = [tp]

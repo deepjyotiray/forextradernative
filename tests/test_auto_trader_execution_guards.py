@@ -113,12 +113,43 @@ def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled
         assert prepared["signal"]["_anti_original_signal"] == "BUY"
         assert prepared["signal"]["_anti_execution_signal"] == "SELL"
         assert prepared["signal"]["_anti_sl_multiplier"] == cfg.ANTI_MODE_SL_MULTIPLIER
+        assert prepared["signal"]["_anti_sl_cap_points"] == cfg.ANTI_MODE_MAX_SL_POINTS
         assert prepared["signal"]["_anti_tp_multiplier"] == cfg.ANTI_MODE_TP_MULTIPLIER
         assert prepared["comment"].endswith("_ANTI")
-        assert prepared["sl"] == 101.5
+        assert prepared["sl"] == 101.0
         assert prepared["tp"] == 99.5
     finally:
         cfg.ANTI_MODE_ENABLED = previous
+
+
+def test_prepare_execution_caps_anti_stop_distance_when_configured():
+    trader = _build_trader()
+    previous_enabled = cfg.ANTI_MODE_ENABLED
+    previous_mult = cfg.ANTI_MODE_SL_MULTIPLIER
+    previous_cap = cfg.ANTI_MODE_MAX_SL_POINTS
+    cfg.ANTI_MODE_ENABLED = True
+    cfg.ANTI_MODE_SL_MULTIPLIER = 1.15
+    cfg.ANTI_MODE_MAX_SL_POINTS = 4.5
+    try:
+        signal = {"signal": "BUY", "sl": 95.0, "tp": 104.0, "lot": 0.01, "reason": "wide base long"}
+
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP",
+            signal,
+            {"ask": 100.1, "bid": 100.0},
+            {},
+            {"m15_df": None},
+        )
+
+        assert reason == ""
+        assert prepared["action"] == "SELL"
+        assert prepared["signal"]["_anti_mirrored_sl_distance"] == 4.0
+        assert prepared["signal"]["_anti_effective_sl_distance"] == 4.5
+        assert prepared["sl"] == 104.5
+    finally:
+        cfg.ANTI_MODE_ENABLED = previous_enabled
+        cfg.ANTI_MODE_SL_MULTIPLIER = previous_mult
+        cfg.ANTI_MODE_MAX_SL_POINTS = previous_cap
 
 
 def test_set_anti_mode_forces_m15_pair_and_restores_previous_selection():
