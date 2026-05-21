@@ -972,6 +972,8 @@ class TradeManager:
     def _time_invested_profit_lock_r(self, trade: TradeRecord, live_r: float) -> float:
         if not bool(getattr(cfg, "TIME_INVESTED_PROFIT_LOCK_ENABLED", True)):
             return 0.0
+        if not bool(getattr(trade, "scalp", False)):
+            return 0.0
         min_age = max(0, _safe_int(getattr(cfg, "TIME_INVESTED_PROFIT_LOCK_SECONDS", 300), 300))
         if (time.time() - trade.fill_ts) < min_age:
             return 0.0
@@ -987,6 +989,22 @@ class TradeManager:
         min_buffer_r = max(0.0, _safe_float(getattr(cfg, "TIME_INVESTED_PROFIT_LOCK_MIN_BUFFER_R", 0.02), 0.02))
         max_lock_r = max(0.0, live_r - min_buffer_r)
         return round(min(desired_lock_r, max_lock_r), 3) if max_lock_r > 0 else 0.0
+
+    def _apply_time_invested_profit_lock(self, trade: TradeRecord, live_r: float) -> bool:
+        target_lock_r = self._time_invested_profit_lock_r(trade, live_r)
+        if target_lock_r <= 0:
+            return False
+        if self._locked_profit_r(trade) >= target_lock_r:
+            return False
+        if not self._tighten_profit_lock(trade, target_lock_r):
+            return False
+        trade.sl_breakeven = True
+        self.order_db.update_management_flags(
+            trade.ticket,
+            sl_breakeven=True,
+            trail_active=True,
+        )
+        return True
 
     def _tighten_profit_lock(self, trade: TradeRecord, lock_r: float) -> bool:
         if lock_r <= 0:
@@ -1083,6 +1101,9 @@ class TradeManager:
                 t.sl = new_sl
                 t.sl_breakeven = True
                 self.order_db.update_management_flags(t.ticket, sl_breakeven=True)
+            return True
+
+        if self._apply_time_invested_profit_lock(t, live_r):
             return True
 
         if age >= t.timeout_seconds and live_r < t.timeout_min_progress_r:
