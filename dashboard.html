@@ -179,10 +179,15 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <button class="btn" style="background:#374151;color:#9ca3af" onclick="if(confirm('Shutdown the entire service?'))post('/shutdown')">&#9211; Shutdown</button>
   <button class="btn" style="background:var(--purple);color:#fff" onclick="window.open('/strategies', '_blank')" title="Open strategy configuration manager">⚙ Config</button>
   <button class="btn" style="background:#0e7490;color:#fff" onclick="copyMarketData()" title="Copy live market context + prompt to clipboard">&#128203; Copy Market Data</button>
-  <label style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:11px;cursor:pointer" title="Reverse live execution for M15 zone scalp and inverse only">
+  <label style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:11px;cursor:pointer" title="Reverse live execution for M15 zone scalp only">
     <span style="color:var(--dim)">Anti M15</span>
     <input type="checkbox" class="toggle" id="antiModeToggle" onchange="toggleAntiMode(this.checked)">
     <span id="antiModeText" style="font-weight:700;color:var(--red)">OFF</span>
+  </label>
+  <label style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:11px;cursor:pointer" title="When anti direction strongly conflicts with local micro bias and pressure, reroute back to the base trade direction">
+    <span style="color:var(--dim)">Anti Reroute</span>
+    <input type="checkbox" class="toggle" id="antiRerouteToggle" onchange="toggleAntiConflictReroute(this.checked)">
+    <span id="antiRerouteText" style="font-weight:700;color:var(--red)">OFF</span>
   </label>
   <div style="flex:1"></div>
   <div id="tradingStatus" style="font-size:14px;font-weight:700"></div>
@@ -532,7 +537,7 @@ async function setStrategySelection(name){
 async function toggleAntiMode(enabled){
   const box=$('antiModeToggle');
   if(enabled){
-    const ok=confirm('Enable live Anti M15 mode? This forces execution to M15 zone scalp + inverse only and reverses the final order side with swapped SL/TP.');
+    const ok=confirm('Enable live Anti M15 mode? This forces execution to M15 zone scalp only and reverses the final order side with swapped SL/TP.');
     if(!ok){
       if(box)box.checked=false;
       return;
@@ -549,6 +554,22 @@ async function toggleAntiMode(enabled){
     setTimeout(refreshAfterControlChange,300);
   }catch(e){
     alert(e.message||'Failed to toggle anti mode');
+    if(box)box.checked=!enabled;
+  }
+}
+async function toggleAntiConflictReroute(enabled){
+  const box=$('antiRerouteToggle');
+  try{
+    const r=await fetch(A+'/anti-mode/conflict-reroute',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data.detail||'Failed to toggle anti reroute');
+    setTimeout(refreshAfterControlChange,300);
+  }catch(e){
+    alert(e.message||'Failed to toggle anti reroute');
     if(box)box.checked=!enabled;
   }
 }
@@ -842,10 +863,17 @@ function render(d,opts={}){
   setHTML($('tradingStatus'),(en?'<span class="green">TRADING ACTIVE</span>':'<span class="red">TRADING OFF</span>')+' '+mt5Badge+' '+antiBadge);
   const antiToggle=$('antiModeToggle');
   const antiText=$('antiModeText');
+  const antiRerouteToggle=$('antiRerouteToggle');
+  const antiRerouteText=$('antiRerouteText');
   if(antiToggle)antiToggle.checked=!!anti.enabled;
   if(antiText){
     antiText.textContent=anti.enabled?'ON':'OFF';
     antiText.style.color=anti.enabled?'var(--green)':'var(--red)';
+  }
+  if(antiRerouteToggle)antiRerouteToggle.checked=!!anti.conflict_reroute_enabled;
+  if(antiRerouteText){
+    antiRerouteText.textContent=anti.conflict_reroute_enabled?'ON':'OFF';
+    antiRerouteText.style.color=anti.conflict_reroute_enabled?'var(--green)':'var(--red)';
   }
   
   // Update status strip — dynamic badges for all non-legacy available strategies

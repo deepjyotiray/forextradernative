@@ -306,6 +306,7 @@ class AutoTrader:
     def _anti_mode_status() -> Dict:
         return {
             "enabled": bool(getattr(cfg, "ANTI_MODE_ENABLED", False)),
+            "conflict_reroute_enabled": bool(getattr(cfg, "ANTI_MODE_CONFLICT_REROUTE_ENABLED", True)),
             "strategies": list(_ANTI_MODE_STRATEGIES),
         }
 
@@ -327,7 +328,7 @@ class AutoTrader:
             self._anti_mode_previous_selection = self._current_selection_tokens()
             cfg.ANTI_MODE_ENABLED = True
             self._apply_anti_mode_selection()
-            self.log("API", "ANTI MODE ENABLED -> M15_ZONE_SCALP + M15_ZONE_SCALP_INVERSE")
+            self.log("API", "ANTI MODE ENABLED -> M15_ZONE_SCALP")
             return self._anti_mode_status()
 
         cfg.ANTI_MODE_ENABLED = False
@@ -339,6 +340,36 @@ class AutoTrader:
             self._apply_startup_strategy()
         self.log("API", "ANTI MODE DISABLED")
         return self._anti_mode_status()
+
+    @staticmethod
+    def _anti_mode_conflict_reroute_reason(strategy_name: str, execution_sig: Dict, original_action: str, anti_action: str) -> str:
+        if not bool(getattr(cfg, "ANTI_MODE_CONFLICT_REROUTE_ENABLED", True)):
+            return ""
+        if str(strategy_name or "").upper() != "M15_ZONE_SCALP":
+            return ""
+        direction_aliases = {
+            "BUY": "LONG",
+            "LONG": "LONG",
+            "SELL": "SHORT",
+            "SHORT": "SHORT",
+        }
+        base_direction = str(original_action or "").upper()
+        anti_direction = str(anti_action or "").upper()
+        if base_direction not in ("BUY", "SELL") or anti_direction not in ("BUY", "SELL"):
+            return ""
+        base_bias = direction_aliases.get(base_direction, "")
+        micro_bias = direction_aliases.get(str(execution_sig.get("_micro_bias_direction") or "").upper(), "")
+        pressure_bias = direction_aliases.get(str(
+            execution_sig.get("_pressure_bias")
+            or execution_sig.get("_entry_tick_pressure_bias")
+            or "NEUTRAL"
+        ).upper(), "")
+        if micro_bias == base_bias and pressure_bias == base_bias:
+            return (
+                "anti rerouted: local micro bias and pressure agree with base "
+                f"{base_direction}"
+            )
+        return ""
 
     def _build_execution_signal(self, strategy_name: str, sig: Dict, tick: Dict) -> tuple[Dict, str, float, float, float, str]:
         execution_sig = dict(sig or {})
@@ -352,18 +383,38 @@ class AutoTrader:
             original_action = action
             original_sl = sl
             original_tp = tp
-            action = _reverse_trade_action(action)
-            sl = original_tp
-            tp = original_sl
-            execution_sig["_anti_mode"] = True
             execution_sig["_anti_original_signal"] = original_action
             execution_sig["_anti_original_sl"] = original_sl
             execution_sig["_anti_original_tp"] = original_tp
-            execution_sig["_anti_execution_signal"] = action
-            execution_sig["_anti_mode_label"] = "ANTI_M15_ZONE"
-            execution_sig["reason"] = f"[ANTI {original_action}->{action}] {execution_sig.get('reason', '')}".strip()
-            comment = f"{comment}_ANTI"
-            anti_applied = True
+            anti_action = _reverse_trade_action(action)
+            reroute_reason = self._anti_mode_conflict_reroute_reason(
+                strategy_name,
+                execution_sig,
+                original_action,
+                anti_action,
+            )
+            if reroute_reason:
+                action = original_action
+                sl = original_sl
+                tp = original_tp
+                execution_sig["_anti_conflict_rerouted"] = True
+                execution_sig["_anti_reroute_reason"] = reroute_reason
+                execution_sig["_anti_execution_signal"] = action
+                execution_sig["_anti_mode_label"] = "ANTI_M15_REROUTE"
+                execution_sig["reason"] = (
+                    f"[ANTI REROUTE {anti_action}->{action}] {execution_sig.get('reason', '')}"
+                ).strip()
+                comment = f"{comment}_AR"
+            else:
+                action = anti_action
+                sl = original_tp
+                tp = original_sl
+                execution_sig["_anti_mode"] = True
+                execution_sig["_anti_execution_signal"] = action
+                execution_sig["_anti_mode_label"] = "ANTI_M15_ZONE"
+                execution_sig["reason"] = f"[ANTI {original_action}->{action}] {execution_sig.get('reason', '')}".strip()
+                comment = f"{comment}_ANTI"
+                anti_applied = True
 
         signal_entry = _safe_float(execution_sig.get("entry"), 0.0)
         entry = self._market_entry_price(action, tick, fallback=signal_entry)
@@ -1066,6 +1117,8 @@ class AutoTrader:
                     "anti_execution_signal": execution_sig.get("_anti_execution_signal"),
                     "anti_original_sl": execution_sig.get("_anti_original_sl"),
                     "anti_original_tp": execution_sig.get("_anti_original_tp"),
+                    "anti_conflict_rerouted": bool(execution_sig.get("_anti_conflict_rerouted")),
+                    "anti_reroute_reason": execution_sig.get("_anti_reroute_reason"),
                 },
             )
             record_trade_taken()
@@ -1315,6 +1368,8 @@ class AutoTrader:
                     "anti_execution_signal": sig.get("_anti_execution_signal"),
                     "anti_original_sl": sig.get("_anti_original_sl"),
                     "anti_original_tp": sig.get("_anti_original_tp"),
+                    "anti_conflict_rerouted": bool(sig.get("_anti_conflict_rerouted")),
+                    "anti_reroute_reason": sig.get("_anti_reroute_reason"),
                 },
             )
             record_trade_taken()

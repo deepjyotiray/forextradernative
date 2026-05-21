@@ -2348,6 +2348,23 @@ async def set_anti_mode(request: Request):
     _invalidate_status_cache()
     return convert_numpy_types(result)
 
+
+@router.post("/anti-mode/conflict-reroute")
+async def set_anti_mode_conflict_reroute(request: Request):
+    """Enable or disable rerouting anti trades back to base direction on strong local conflict."""
+    trader = get_auto_trader()
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED = enabled
+    try:
+        cfg.save_runtime_config()
+    except Exception:
+        pass
+    trader.log("API", f"Anti conflict reroute -> {'ON' if enabled else 'OFF'}")
+    _bump_config_version()
+    _invalidate_status_cache()
+    return convert_numpy_types(getattr(trader, "_anti_mode_status", lambda: {"enabled": bool(getattr(cfg, "ANTI_MODE_ENABLED", False)), "strategies": []})())
+
 @router.post("/symbol/{symbol}")
 async def set_symbol(symbol: str):
     """Set trading symbol."""

@@ -137,9 +137,11 @@ def test_prepare_execution_blocks_after_good_profit_burst_in_current_m15_candle(
 def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled():
     trader = _build_trader()
     previous = cfg.ANTI_MODE_ENABLED
+    previous_reroute = cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED
     previous_mult = cfg.ANTI_MODE_SL_MULTIPLIER
     previous_cap = cfg.ANTI_MODE_MAX_SL_POINTS
     cfg.ANTI_MODE_ENABLED = True
+    cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED = False
     cfg.ANTI_MODE_SL_MULTIPLIER = 0.8
     cfg.ANTI_MODE_MAX_SL_POINTS = 3.8
     try:
@@ -166,6 +168,7 @@ def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled
         assert prepared["tp"] == 99.5
     finally:
         cfg.ANTI_MODE_ENABLED = previous
+        cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED = previous_reroute
         cfg.ANTI_MODE_SL_MULTIPLIER = previous_mult
         cfg.ANTI_MODE_MAX_SL_POINTS = previous_cap
 
@@ -193,6 +196,47 @@ def test_prepare_execution_does_not_reverse_inverse_strategy_in_anti_mode():
         assert not prepared["comment"].endswith("_ANTI")
     finally:
         cfg.ANTI_MODE_ENABLED = previous
+
+
+def test_prepare_execution_reroutes_anti_trade_back_to_base_on_strong_local_conflict():
+    trader = _build_trader()
+    previous = cfg.ANTI_MODE_ENABLED
+    previous_reroute = cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED
+    cfg.ANTI_MODE_ENABLED = True
+    cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED = True
+    try:
+        signal = {
+            "signal": "BUY",
+            "sl": 99.0,
+            "tp": 101.0,
+            "lot": 0.01,
+            "reason": "base long",
+            "_micro_bias_direction": "LONG",
+            "_pressure_bias": "LONG",
+        }
+
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP",
+            signal,
+            {"ask": 100.1, "bid": 100.0},
+            {},
+            {"m15_df": None},
+        )
+
+        assert reason == ""
+        assert prepared["action"] == "BUY"
+        assert prepared["signal"].get("_anti_mode") is None
+        assert prepared["signal"]["_anti_conflict_rerouted"] is True
+        assert prepared["signal"]["_anti_original_signal"] == "BUY"
+        assert prepared["signal"]["_anti_execution_signal"] == "BUY"
+        assert prepared["signal"]["_anti_mode_label"] == "ANTI_M15_REROUTE"
+        assert "local micro bias and pressure agree with base BUY" in prepared["signal"]["_anti_reroute_reason"]
+        assert prepared["comment"].endswith("_AR")
+        assert prepared["sl"] == 99.0
+        assert prepared["tp"] == 101.0
+    finally:
+        cfg.ANTI_MODE_ENABLED = previous
+        cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED = previous_reroute
 
 
 def test_prepare_execution_blocks_known_bad_anti_context_expansion():
