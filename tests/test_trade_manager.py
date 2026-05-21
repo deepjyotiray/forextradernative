@@ -304,6 +304,38 @@ class TradeManagerTests(unittest.TestCase):
         self.assertTrue(trade.sl_breakeven)
         self.assertEqual(manager._pending_close_reasons, {})
 
+    def test_time_invested_breakeven_locks_small_profit_after_one_m5_candle(self):
+        manager = self._build_manager()
+        previous_enabled = cfg.TIME_INVESTED_PROFIT_LOCK_ENABLED
+        previous_seconds = cfg.TIME_INVESTED_PROFIT_LOCK_SECONDS
+        previous_usd = cfg.TIME_INVESTED_PROFIT_LOCK_USD
+        previous_buffer = cfg.TIME_INVESTED_PROFIT_LOCK_MIN_BUFFER_R
+        cfg.TIME_INVESTED_PROFIT_LOCK_ENABLED = True
+        cfg.TIME_INVESTED_PROFIT_LOCK_SECONDS = 300
+        cfg.TIME_INVESTED_PROFIT_LOCK_USD = 0.75
+        cfg.TIME_INVESTED_PROFIT_LOCK_MIN_BUFFER_R = 0.02
+        try:
+            trade = TradeRecord(
+                10038, "BUY", 0.01, 4538.89, 4535.23, 4541.23, 3.67,
+                strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+                early_fail=0.12, features=self._m15_zone_features(),
+            )
+            trade.fill_ts = time.time() - 320
+            trade.live_pnl = 1.46
+            trade.peak_pnl = 1.52
+
+            handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
+
+            self.assertTrue(handled)
+            manager.bridge.modify_trade.assert_called_once_with(10038, 4539.64, 4541.23)
+            self.assertEqual(trade.sl, 4539.64)
+            self.assertTrue(trade.sl_breakeven)
+        finally:
+            cfg.TIME_INVESTED_PROFIT_LOCK_ENABLED = previous_enabled
+            cfg.TIME_INVESTED_PROFIT_LOCK_SECONDS = previous_seconds
+            cfg.TIME_INVESTED_PROFIT_LOCK_USD = previous_usd
+            cfg.TIME_INVESTED_PROFIT_LOCK_MIN_BUFFER_R = previous_buffer
+
     def test_tier1_exit_sets_strategy_reentry_lockout(self):
         manager = self._build_manager()
         features = self._m15_zone_features()

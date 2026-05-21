@@ -969,6 +969,25 @@ class TradeManager:
             return round((current_sl - trade.entry) / max(0.01, trade.sl_distance), 3)
         return round((trade.entry - current_sl) / max(0.01, trade.sl_distance), 3)
 
+    def _time_invested_profit_lock_r(self, trade: TradeRecord, live_r: float) -> float:
+        if not bool(getattr(cfg, "TIME_INVESTED_PROFIT_LOCK_ENABLED", True)):
+            return 0.0
+        min_age = max(0, _safe_int(getattr(cfg, "TIME_INVESTED_PROFIT_LOCK_SECONDS", 300), 300))
+        if (time.time() - trade.fill_ts) < min_age:
+            return 0.0
+        desired_usd = max(0.0, _safe_float(getattr(cfg, "TIME_INVESTED_PROFIT_LOCK_USD", 0.75), 0.75))
+        if desired_usd <= 0:
+            return 0.0
+        risk_dollars = _risk_unit_dollars(trade.sl_distance, trade.initial_volume)
+        if risk_dollars <= 0:
+            return 0.0
+        desired_lock_r = desired_usd / risk_dollars
+        if desired_lock_r <= 0:
+            return 0.0
+        min_buffer_r = max(0.0, _safe_float(getattr(cfg, "TIME_INVESTED_PROFIT_LOCK_MIN_BUFFER_R", 0.02), 0.02))
+        max_lock_r = max(0.0, live_r - min_buffer_r)
+        return round(min(desired_lock_r, max_lock_r), 3) if max_lock_r > 0 else 0.0
+
     def _tighten_profit_lock(self, trade: TradeRecord, lock_r: float) -> bool:
         if lock_r <= 0:
             return False
@@ -1056,6 +1075,9 @@ class TradeManager:
             ):
                 return False
             new_sl = round(t.entry, 2)
+            time_invested_lock_r = self._time_invested_profit_lock_r(t, live_r)
+            if time_invested_lock_r > 0:
+                new_sl = self._profit_lock_price(t, time_invested_lock_r)
             res = self.bridge.modify_trade(t.ticket, new_sl, t.tp)
             if res.get("success"):
                 t.sl = new_sl
