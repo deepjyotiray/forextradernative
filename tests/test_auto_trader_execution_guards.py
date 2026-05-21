@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import auto_trader as auto_trader_module
 import config as cfg
 
 from auto_trader import AutoTrader
@@ -151,6 +152,82 @@ def test_prepare_execution_does_not_reverse_inverse_strategy_in_anti_mode():
         assert not prepared["comment"].endswith("_ANTI")
     finally:
         cfg.ANTI_MODE_ENABLED = previous
+
+
+def test_prepare_execution_blocks_known_bad_anti_context_expansion():
+    trader = _build_trader()
+    previous_enabled = cfg.ANTI_MODE_ENABLED
+    previous_block = cfg.ANTI_MODE_CONTEXT_BLOCK_ENABLED
+    previous_session = auto_trader_module.get_session
+    cfg.ANTI_MODE_ENABLED = True
+    cfg.ANTI_MODE_CONTEXT_BLOCK_ENABLED = True
+    auto_trader_module.get_session = lambda: "ASIAN"
+    try:
+        signal = {
+            "signal": "BUY",
+            "sl": 99.0,
+            "tp": 101.0,
+            "lot": 0.01,
+            "_htf_state": {"D1": "UP", "H4": "DOWN", "H1": "UP", "M15": "RANGE"},
+            "_micro_bias_direction": "SHORT",
+            "_pressure_bias": "SHORT",
+        }
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP",
+            signal,
+            {"ask": 100.1, "bid": 100.0},
+            {},
+            {
+                "m15_df": None,
+                "regime": {"state": "RANGING"},
+                "market_state": {"market_memory": {"direction": "SHORT", "phase": "EXPANSION"}},
+            },
+        )
+
+        assert prepared is None
+        assert reason == "Execution blocked: anti-context blocked: Asian ranging short-memory expansion under mixed HTF range"
+    finally:
+        cfg.ANTI_MODE_ENABLED = previous_enabled
+        cfg.ANTI_MODE_CONTEXT_BLOCK_ENABLED = previous_block
+        auto_trader_module.get_session = previous_session
+
+
+def test_prepare_execution_blocks_known_bad_anti_context_balanced_sell_conflict():
+    trader = _build_trader()
+    previous_enabled = cfg.ANTI_MODE_ENABLED
+    previous_block = cfg.ANTI_MODE_CONTEXT_BLOCK_ENABLED
+    previous_session = auto_trader_module.get_session
+    cfg.ANTI_MODE_ENABLED = True
+    cfg.ANTI_MODE_CONTEXT_BLOCK_ENABLED = True
+    auto_trader_module.get_session = lambda: "ASIAN"
+    try:
+        signal = {
+            "signal": "BUY",
+            "sl": 99.0,
+            "tp": 101.0,
+            "lot": 0.01,
+            "_htf_state": {"D1": "UP", "H4": "DOWN", "H1": "UP", "M15": "RANGE"},
+            "_micro_bias_direction": "LONG",
+            "_pressure_bias": "SHORT",
+        }
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP",
+            signal,
+            {"ask": 100.1, "bid": 100.0},
+            {},
+            {
+                "m15_df": None,
+                "regime": {"state": "RANGING"},
+                "market_state": {"market_memory": {"direction": "SHORT", "phase": "BALANCED"}},
+            },
+        )
+
+        assert prepared is None
+        assert reason == "Execution blocked: anti-context blocked: Asian balanced short-memory sell with long micro bias and short pressure"
+    finally:
+        cfg.ANTI_MODE_ENABLED = previous_enabled
+        cfg.ANTI_MODE_CONTEXT_BLOCK_ENABLED = previous_block
+        auto_trader_module.get_session = previous_session
 
 
 def test_prepare_execution_caps_anti_stop_distance_when_configured():

@@ -358,6 +358,57 @@ class AutoTrader:
         sl_distance = abs(entry - _safe_float(sl))
         return execution_sig, action, sl, tp, sl_distance, comment
 
+    def _anti_mode_context_block_reason(self, strategy_name: str, execution_sig: Dict, strat_data: Dict) -> str:
+        if not bool(getattr(cfg, "ANTI_MODE_CONTEXT_BLOCK_ENABLED", True)):
+            return ""
+        if not _safe_dict(execution_sig).get("_anti_mode"):
+            return ""
+        if str(strategy_name or "").upper() != "M15_ZONE_SCALP":
+            return ""
+
+        session = str(get_session() or "").upper()
+        regime_state = str(_safe_dict(strat_data.get("regime")).get("state") or "").upper()
+        market_state = _safe_dict(strat_data.get("market_state"))
+        nested_state = _safe_dict(market_state.get("market_state"))
+        market_memory = _safe_dict(market_state.get("market_memory") or nested_state.get("market_memory"))
+        memory_direction = str(market_memory.get("direction") or "").upper()
+        memory_phase = str(market_memory.get("phase") or "").upper()
+        htf_state = _safe_dict(execution_sig.get("_htf_state"))
+        anti_action = str(execution_sig.get("_anti_execution_signal") or "").upper()
+        micro_bias = str(execution_sig.get("_micro_bias_direction") or "").upper()
+        pressure_bias = str(
+            execution_sig.get("_pressure_bias")
+            or execution_sig.get("_entry_tick_pressure_bias")
+            or "NEUTRAL"
+        ).upper()
+
+        htf_range_conflict = (
+            htf_state.get("D1") == "UP"
+            and htf_state.get("H4") == "DOWN"
+            and htf_state.get("H1") == "UP"
+            and htf_state.get("M15") == "RANGE"
+        )
+        if not (
+            session == "ASIAN"
+            and regime_state == "RANGING"
+            and memory_direction == "SHORT"
+            and htf_range_conflict
+        ):
+            return ""
+
+        if memory_phase == "EXPANSION":
+            return "anti-context blocked: Asian ranging short-memory expansion under mixed HTF range"
+
+        if (
+            memory_phase == "BALANCED"
+            and anti_action == "SELL"
+            and micro_bias == "LONG"
+            and pressure_bias == "SHORT"
+        ):
+            return "anti-context blocked: Asian balanced short-memory sell with long micro bias and short pressure"
+
+        return ""
+
     def _backup_log_if_new_day(self):
         """At midnight IST, move yesterday's trader.log to backup_logs/."""
         today = datetime.now(_IST).strftime("%Y-%m-%d")
@@ -901,6 +952,10 @@ class AutoTrader:
             self.log("REENTRY", f"[{strategy_name}] No re-entry signal after recovery exit: {sig.get('reason', '')}")
             return
         execution_sig, action, sl, tp, sl_distance, comment = self._build_execution_signal(strategy_name, sig, tick)
+        anti_block_reason = self._anti_mode_context_block_reason(strategy_name, execution_sig, strat_data)
+        if anti_block_reason:
+            self.log("REENTRY", f"[{strategy_name}] Re-entry blocked: {anti_block_reason}")
+            return
         if not sl or not tp:
             return
         if sl_distance <= 0:
@@ -1070,6 +1125,9 @@ class AutoTrader:
                 return None, f"Execution blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}"
 
         execution_sig, action, sl, tp, sl_distance, comment = self._build_execution_signal(strategy_name, sig, tick)
+        anti_block_reason = self._anti_mode_context_block_reason(strategy_name, execution_sig, strat_data)
+        if anti_block_reason:
+            return None, f"Execution blocked: {anti_block_reason}"
         if not sl or not tp:
             return None, "Execution blocked: invalid anti-mode SL/TP"
         if sl_distance <= 0:
