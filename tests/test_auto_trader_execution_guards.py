@@ -95,7 +95,11 @@ def test_prepare_execution_blocks_when_strategy_is_in_post_tier1_lockout():
 def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled():
     trader = _build_trader()
     previous = cfg.ANTI_MODE_ENABLED
+    previous_mult = cfg.ANTI_MODE_SL_MULTIPLIER
+    previous_cap = cfg.ANTI_MODE_MAX_SL_POINTS
     cfg.ANTI_MODE_ENABLED = True
+    cfg.ANTI_MODE_SL_MULTIPLIER = 0.85
+    cfg.ANTI_MODE_MAX_SL_POINTS = 4.0
     try:
         signal = {"signal": "BUY", "sl": 99.0, "tp": 101.0, "lot": 0.01, "reason": "base long"}
 
@@ -116,8 +120,35 @@ def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled
         assert prepared["signal"]["_anti_sl_cap_points"] == cfg.ANTI_MODE_MAX_SL_POINTS
         assert prepared["signal"]["_anti_tp_multiplier"] == cfg.ANTI_MODE_TP_MULTIPLIER
         assert prepared["comment"].endswith("_ANTI")
-        assert prepared["sl"] == 101.0
+        assert prepared["sl"] == 100.85
         assert prepared["tp"] == 99.5
+    finally:
+        cfg.ANTI_MODE_ENABLED = previous
+        cfg.ANTI_MODE_SL_MULTIPLIER = previous_mult
+        cfg.ANTI_MODE_MAX_SL_POINTS = previous_cap
+
+
+def test_prepare_execution_does_not_reverse_inverse_strategy_in_anti_mode():
+    trader = _build_trader()
+    previous = cfg.ANTI_MODE_ENABLED
+    cfg.ANTI_MODE_ENABLED = True
+    try:
+        signal = {"signal": "SELL", "sl": 101.0, "tp": 99.0, "lot": 0.01, "reason": "inverse short"}
+
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP_INVERSE",
+            signal,
+            {"ask": 100.1, "bid": 100.0},
+            {},
+            {"m15_df": None},
+        )
+
+        assert reason == ""
+        assert prepared["action"] == "SELL"
+        assert prepared["signal"].get("_anti_mode") is None
+        assert prepared["sl"] == 101.0
+        assert prepared["tp"] == 99.0
+        assert not prepared["comment"].endswith("_ANTI")
     finally:
         cfg.ANTI_MODE_ENABLED = previous
 
@@ -166,7 +197,7 @@ def test_set_anti_mode_forces_m15_pair_and_restores_previous_selection():
 
         enabled_state = trader.set_anti_mode(True)
         assert enabled_state["enabled"] is True
-        assert trader.strat_mgr.selected == ["M15_ZONE_SCALP", "M15_ZONE_SCALP_INVERSE"]
+        assert trader.strat_mgr.selected == ["M15_ZONE_SCALP"]
 
         disabled_state = trader.set_anti_mode(False)
         assert disabled_state["enabled"] is False
