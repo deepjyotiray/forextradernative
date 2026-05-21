@@ -522,6 +522,28 @@ class OrderDatabase:
                 orders.append(order)
             
             return orders
+
+    def get_closed_orders_opened_between(self, start_time: str, end_time: str) -> List[Dict]:
+        """Get closed orders whose open_time falls within a UTC interval."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT * FROM orders
+                WHERE status = 'CLOSED' AND open_time >= ? AND open_time < ?
+                ORDER BY open_time DESC
+            """, (start_time, end_time))
+
+            orders = []
+            for row in cursor.fetchall():
+                order = dict(row)
+                order['features'] = json.loads(order['features'] or '{}')
+                order['scalp'] = bool(order['scalp'])
+                order['sl_breakeven'] = bool(order['sl_breakeven'])
+                order['partial_closed'] = bool(order['partial_closed'])
+                order['trail_active'] = bool(order['trail_active'])
+                orders.append(order)
+
+            return orders
     
     def get_order(self, ticket: int) -> Optional[Dict]:
         """Get specific order by ticket."""

@@ -122,6 +122,44 @@ def _last_closed_candle_marker(df) -> str:
         return ""
 
 
+def _coerce_utc_datetime(value) -> datetime | None:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        elif hasattr(value, "to_pydatetime"):
+            dt = value.to_pydatetime()
+        else:
+            dt = datetime.fromisoformat(str(value))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _current_m15_candle_window(df) -> tuple[datetime, datetime]:
+    now_utc = datetime.now(timezone.utc)
+    candle_start = None
+    try:
+        if df is not None and len(df) >= 1:
+            if hasattr(df, "columns") and "time" in df.columns:
+                raw_time = df["time"].iloc[-1]
+            else:
+                raw_time = df.index[-1]
+            candle_start = _coerce_utc_datetime(raw_time)
+    except Exception:
+        candle_start = None
+    if candle_start is None:
+        candle_start = now_utc
+    candle_start = candle_start.replace(minute=(candle_start.minute // 15) * 15, second=0, microsecond=0)
+    candle_end = candle_start + timedelta(minutes=15)
+    return candle_start, candle_end
+
+
 def _build_strategy_setup_signature(strategy_name: str, sig: Dict, strat_data: Dict) -> str:
     existing = str(sig.get("_context_hash") or sig.get("_signal_id") or "").strip()
     if existing:
@@ -407,6 +445,35 @@ class AutoTrader:
         ):
             return "anti-context blocked: Asian balanced short-memory sell with long micro bias and short pressure"
 
+        return ""
+
+    def _m15_candle_profit_throttle_reason(self, strategy_name: str, strat_data: Dict) -> str:
+        if not bool(getattr(cfg, "M15_CANDLE_PROFIT_THROTTLE_ENABLED", True)):
+            return ""
+        if not str(strategy_name or "").upper().startswith("M15_"):
+            return ""
+        if not self.trades or not getattr(self.trades, "order_db", None):
+            return ""
+
+        candle_start, candle_end = _current_m15_candle_window((strat_data or {}).get("m15_df"))
+        try:
+            rows = self.trades.order_db.get_closed_orders_opened_between(
+                candle_start.isoformat(),
+                candle_end.isoformat(),
+            )
+        except Exception:
+            return ""
+
+        wins = [row for row in rows if _safe_float(row.get("final_pnl"), 0.0) > 0]
+        profitable_count = len(wins)
+        profitable_pnl = round(sum(_safe_float(row.get("final_pnl"), 0.0) for row in wins), 2)
+        min_wins = max(1, int(getattr(cfg, "M15_CANDLE_PROFIT_THROTTLE_MIN_WINS", 3)))
+        min_pnl = max(0.0, _safe_float(getattr(cfg, "M15_CANDLE_PROFIT_THROTTLE_MIN_PNL", 2.0), 2.0))
+        if profitable_count >= min_wins and profitable_pnl >= min_pnl:
+            return (
+                "M15 candle profit throttle active "
+                f"({profitable_count} wins, ${profitable_pnl:.2f} booked in current candle)"
+            )
         return ""
 
     def _backup_log_if_new_day(self):
@@ -951,6 +1018,10 @@ class AutoTrader:
         if action not in ("BUY", "SELL"):
             self.log("REENTRY", f"[{strategy_name}] No re-entry signal after recovery exit: {sig.get('reason', '')}")
             return
+        candle_profit_lock_reason = self._m15_candle_profit_throttle_reason(strategy_name, strat_data)
+        if candle_profit_lock_reason:
+            self.log("REENTRY", f"[{strategy_name}] Re-entry blocked: {candle_profit_lock_reason}")
+            return
         execution_sig, action, sl, tp, sl_distance, comment = self._build_execution_signal(strategy_name, sig, tick)
         anti_block_reason = self._anti_mode_context_block_reason(strategy_name, execution_sig, strat_data)
         if anti_block_reason:
@@ -1096,6 +1167,10 @@ class AutoTrader:
             )
             if lock_reason:
                 return None, f"Execution blocked: {lock_reason}"
+
+        candle_profit_lock_reason = self._m15_candle_profit_throttle_reason(strategy_name, strat_data)
+        if candle_profit_lock_reason:
+            return None, f"Execution blocked: {candle_profit_lock_reason}"
 
         sl, tp = sig.get("sl"), sig.get("tp")
         if not sl or not tp:

@@ -7,9 +7,17 @@ from auto_trader import AutoTrader
 
 
 class _StubTrades:
-    def __init__(self, open_trades=None, lock_reason=""):
+    class _StubOrderDb:
+        def __init__(self, closed_orders=None):
+            self._closed_orders = list(closed_orders or [])
+
+        def get_closed_orders_opened_between(self, start_time: str, end_time: str):
+            return list(self._closed_orders)
+
+    def __init__(self, open_trades=None, lock_reason="", closed_orders=None):
         self.open_trades = open_trades or {}
         self._lock_reason = lock_reason
+        self.order_db = self._StubOrderDb(closed_orders=closed_orders)
 
     def get_strategy_entry_lockout_reason(self, strategy_name: str, *, setup_signature: str = "") -> str:
         return self._lock_reason
@@ -49,9 +57,9 @@ class _SelectableStrategyManager:
         return True
 
 
-def _build_trader(open_trades=None, lock_reason=""):
+def _build_trader(open_trades=None, lock_reason="", closed_orders=None):
     trader = AutoTrader.__new__(AutoTrader)
-    trader.trades = _StubTrades(open_trades=open_trades, lock_reason=lock_reason)
+    trader.trades = _StubTrades(open_trades=open_trades, lock_reason=lock_reason, closed_orders=closed_orders)
     trader.risk = _StubRisk()
     trader.strat_mgr = _StubStrategyManager()
     return trader
@@ -91,6 +99,39 @@ def test_prepare_execution_blocks_when_strategy_is_in_post_tier1_lockout():
 
     assert prepared is None
     assert reason == "Execution blocked: post-TIER1 cooldown active (180s remaining, source #123)"
+
+
+def test_prepare_execution_blocks_after_good_profit_burst_in_current_m15_candle():
+    trader = _build_trader(
+        closed_orders=[
+            {"final_pnl": 0.80},
+            {"final_pnl": 0.75},
+            {"final_pnl": 0.70},
+        ]
+    )
+    previous_enabled = cfg.M15_CANDLE_PROFIT_THROTTLE_ENABLED
+    previous_wins = cfg.M15_CANDLE_PROFIT_THROTTLE_MIN_WINS
+    previous_pnl = cfg.M15_CANDLE_PROFIT_THROTTLE_MIN_PNL
+    cfg.M15_CANDLE_PROFIT_THROTTLE_ENABLED = True
+    cfg.M15_CANDLE_PROFIT_THROTTLE_MIN_WINS = 3
+    cfg.M15_CANDLE_PROFIT_THROTTLE_MIN_PNL = 2.0
+    try:
+        signal = {"signal": "BUY", "sl": 99.0, "tp": 101.0, "lot": 0.01}
+
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP",
+            signal,
+            {"ask": 100.0, "bid": 99.9},
+            {},
+            {"m15_df": None},
+        )
+
+        assert prepared is None
+        assert reason == "Execution blocked: M15 candle profit throttle active (3 wins, $2.25 booked in current candle)"
+    finally:
+        cfg.M15_CANDLE_PROFIT_THROTTLE_ENABLED = previous_enabled
+        cfg.M15_CANDLE_PROFIT_THROTTLE_MIN_WINS = previous_wins
+        cfg.M15_CANDLE_PROFIT_THROTTLE_MIN_PNL = previous_pnl
 
 
 def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled():
