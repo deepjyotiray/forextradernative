@@ -502,14 +502,14 @@ class TradeManagerTests(unittest.TestCase):
         manager = self._build_manager()
         features = self._m15_zone_features()
         features["anti_mode"] = True
-        features["anti_profit_choke_r"] = 0.08
+        features["anti_profit_choke_r"] = 0.12
         trade = TradeRecord(
             10051, "SELL", 0.02, 4579.0, 4584.4, 4578.25, 5.4,
             strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
             early_fail=0.12, features=features,
         )
         trade.fill_ts = time.time() - 5
-        trade.live_pnl = 1.20
+        trade.live_pnl = 1.40
 
         handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
 

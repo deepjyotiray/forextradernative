@@ -98,8 +98,8 @@ def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled
     previous_mult = cfg.ANTI_MODE_SL_MULTIPLIER
     previous_cap = cfg.ANTI_MODE_MAX_SL_POINTS
     cfg.ANTI_MODE_ENABLED = True
-    cfg.ANTI_MODE_SL_MULTIPLIER = 0.85
-    cfg.ANTI_MODE_MAX_SL_POINTS = 4.0
+    cfg.ANTI_MODE_SL_MULTIPLIER = 0.8
+    cfg.ANTI_MODE_MAX_SL_POINTS = 3.8
     try:
         signal = {"signal": "BUY", "sl": 99.0, "tp": 101.0, "lot": 0.01, "reason": "base long"}
 
@@ -120,7 +120,7 @@ def test_prepare_execution_reverses_targeted_m15_strategy_when_anti_mode_enabled
         assert prepared["signal"]["_anti_sl_cap_points"] == cfg.ANTI_MODE_MAX_SL_POINTS
         assert prepared["signal"]["_anti_tp_multiplier"] == cfg.ANTI_MODE_TP_MULTIPLIER
         assert prepared["comment"].endswith("_ANTI")
-        assert prepared["sl"] == 100.85
+        assert prepared["sl"] == 100.8
         assert prepared["tp"] == 99.5
     finally:
         cfg.ANTI_MODE_ENABLED = previous
