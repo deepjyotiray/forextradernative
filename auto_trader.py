@@ -378,11 +378,12 @@ class AutoTrader:
         tp = _safe_float(execution_sig.get("tp"), 0.0)
         comment = str(execution_sig.get("_comment") or f"FT_{strategy_name[:8]}")
         anti_applied = False
+        reroute_applied = False
+        original_action = action
+        original_sl = sl
+        original_tp = tp
 
         if self._anti_mode_targets_strategy(strategy_name):
-            original_action = action
-            original_sl = sl
-            original_tp = tp
             execution_sig["_anti_original_signal"] = original_action
             execution_sig["_anti_original_sl"] = original_sl
             execution_sig["_anti_original_tp"] = original_tp
@@ -397,6 +398,7 @@ class AutoTrader:
                 action = original_action
                 sl = original_sl
                 tp = original_tp
+                reroute_applied = True
                 execution_sig["_anti_conflict_rerouted"] = True
                 execution_sig["_anti_reroute_reason"] = reroute_reason
                 execution_sig["_anti_execution_signal"] = action
@@ -443,6 +445,28 @@ class AutoTrader:
             execution_sig["_anti_final_tp"] = tp
             execution_sig["tp_levels"] = [tp]
             execution_sig["_tp_levels"] = [tp]
+        elif reroute_applied:
+            reroute_sl_distance = abs(entry - _safe_float(original_sl))
+            reroute_sl_multiplier = _safe_float(
+                getattr(cfg, "ANTI_MODE_REROUTE_SL_MULTIPLIER", 0.8),
+                0.8,
+            )
+            reroute_sl_cap_points = _safe_float(
+                getattr(cfg, "ANTI_MODE_REROUTE_MAX_SL_POINTS", 3.0),
+                3.0,
+            )
+            tightened_sl_distance = round(max(0.01, reroute_sl_distance) * reroute_sl_multiplier, 4)
+            if reroute_sl_cap_points > 0:
+                tightened_sl_distance = round(min(tightened_sl_distance, reroute_sl_cap_points), 4)
+            if action == "BUY":
+                sl = round(entry - tightened_sl_distance, 2)
+            else:
+                sl = round(entry + tightened_sl_distance, 2)
+            execution_sig["_anti_reroute_sl_multiplier"] = reroute_sl_multiplier
+            execution_sig["_anti_reroute_sl_cap_points"] = reroute_sl_cap_points
+            execution_sig["_anti_reroute_original_sl_distance"] = round(reroute_sl_distance, 4)
+            execution_sig["_anti_reroute_effective_sl_distance"] = tightened_sl_distance
+            execution_sig["_anti_reroute_final_sl"] = sl
 
         sl_distance = abs(entry - _safe_float(sl))
         return execution_sig, action, sl, tp, sl_distance, comment

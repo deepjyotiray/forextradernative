@@ -81,6 +81,25 @@ def _risk_unit_dollars(sl_distance: float, volume: float) -> float:
     return risk if risk > 0 else 1.0
 
 
+def _per_point_dollar_value(volume: float) -> float:
+    value = _safe_float(volume, 0.0) * _safe_float(getattr(cfg, "PIP_VALUE_PER_LOT", 0.0), 0.0)
+    return value if value > 0 else 0.0
+
+
+def _normalized_profit_dollar_ratchet_levels() -> list[tuple[float, float]]:
+    raw_levels = getattr(cfg, "PROFIT_DOLLAR_RATCHET_LEVELS", [[3.0, 2.5], [4.0, 3.5]])
+    normalized: list[tuple[float, float]] = []
+    for item in list(raw_levels or []):
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        trigger_usd = _safe_float(item[0], 0.0)
+        lock_usd = _safe_float(item[1], 0.0)
+        if trigger_usd > 0 and lock_usd > 0 and lock_usd < trigger_usd:
+            normalized.append((trigger_usd, lock_usd))
+    normalized.sort(key=lambda pair: pair[0])
+    return normalized
+
+
 def _mt5_ts_to_utc(ts: int) -> datetime:
     return datetime.fromtimestamp(int(ts) - _MT5_OFFSET_SECONDS, tz=timezone.utc)
 
@@ -941,6 +960,8 @@ class TradeManager:
             return result
 
     def _manage_trade(self, t: TradeRecord, tick_metrics: Dict, market_context: Dict | None = None):
+        if self._apply_profit_dollar_ratchet(t):
+            return
         if not _uses_isolated_exit_manager(t):
             if self._apply_universal_management(t, tick_metrics, market_context):
                 return
@@ -968,6 +989,57 @@ class TradeManager:
         if trade.direction == "BUY":
             return round((current_sl - trade.entry) / max(0.01, trade.sl_distance), 3)
         return round((trade.entry - current_sl) / max(0.01, trade.sl_distance), 3)
+
+    def _locked_profit_usd(self, trade: TradeRecord) -> float:
+        current_sl = _safe_float(trade.sl, 0.0)
+        if current_sl <= 0:
+            return -999.0
+        per_point_value = _per_point_dollar_value(trade.initial_volume)
+        if per_point_value <= 0:
+            return -999.0
+        if trade.direction == "BUY":
+            return round((current_sl - trade.entry) * per_point_value, 2)
+        return round((trade.entry - current_sl) * per_point_value, 2)
+
+    def _profit_lock_price_from_usd(self, trade: TradeRecord, lock_usd: float) -> float:
+        per_point_value = _per_point_dollar_value(trade.initial_volume)
+        if per_point_value <= 0:
+            return round(_safe_float(trade.entry), 2)
+        lock_points = max(0.0, _safe_float(lock_usd, 0.0)) / per_point_value
+        if trade.direction == "BUY":
+            return round(trade.entry + lock_points, 2)
+        return round(trade.entry - lock_points, 2)
+
+    def _apply_profit_dollar_ratchet(self, trade: TradeRecord) -> bool:
+        if not bool(getattr(cfg, "PROFIT_DOLLAR_RATCHET_ENABLED", True)):
+            return False
+        live_pnl = _safe_float(trade.live_pnl, 0.0)
+        target_lock_usd = 0.0
+        for trigger_usd, lock_usd in _normalized_profit_dollar_ratchet_levels():
+            if live_pnl >= trigger_usd:
+                target_lock_usd = max(target_lock_usd, lock_usd)
+        if target_lock_usd <= 0:
+            return False
+        if self._locked_profit_usd(trade) >= round(target_lock_usd - 0.01, 2):
+            return False
+        new_sl = self._profit_lock_price_from_usd(trade, target_lock_usd)
+        current_sl = _safe_float(trade.sl, 0.0)
+        if trade.direction == "BUY" and current_sl >= new_sl:
+            return False
+        if trade.direction == "SELL" and current_sl <= new_sl:
+            return False
+        res = self.bridge.modify_trade(trade.ticket, new_sl, trade.tp)
+        if not res.get("success"):
+            return False
+        trade.sl = new_sl
+        trade.sl_breakeven = True
+        trade.trail_active = True
+        self.order_db.update_management_flags(
+            trade.ticket,
+            sl_breakeven=True,
+            trail_active=True,
+        )
+        return True
 
     def _time_invested_profit_lock_r(self, trade: TradeRecord, live_r: float) -> float:
         if not bool(getattr(cfg, "TIME_INVESTED_PROFIT_LOCK_ENABLED", True)):

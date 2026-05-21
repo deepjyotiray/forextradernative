@@ -269,6 +269,54 @@ class TradeManagerTests(unittest.TestCase):
         self.assertTrue(trade.sl_breakeven)
         manager.order_db.update_management_flags.assert_called()
 
+    def test_profit_dollar_ratchet_locks_two_point_five_after_three_dollar_profit(self):
+        manager = self._build_manager()
+        previous_enabled = cfg.PROFIT_DOLLAR_RATCHET_ENABLED
+        previous_levels = cfg.PROFIT_DOLLAR_RATCHET_LEVELS
+        cfg.PROFIT_DOLLAR_RATCHET_ENABLED = True
+        cfg.PROFIT_DOLLAR_RATCHET_LEVELS = [[3.0, 2.5], [4.0, 3.5]]
+        try:
+            trade = TradeRecord(
+                10030, "SELL", 0.01, 4518.72, 4522.39, 4515.04, 3.67,
+                strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+                early_fail=0.12, features=self._m15_zone_features(),
+            )
+            trade.live_pnl = 3.12
+
+            manager._manage_trade(trade, {"tick_count": 420, "velocity": 9.0}, {})
+
+            manager.bridge.modify_trade.assert_called_once_with(10030, 4516.22, 4515.04)
+            self.assertEqual(trade.sl, 4516.22)
+            self.assertTrue(trade.sl_breakeven)
+            self.assertTrue(trade.trail_active)
+            manager.order_db.update_management_flags.assert_called_with(10030, sl_breakeven=True, trail_active=True)
+        finally:
+            cfg.PROFIT_DOLLAR_RATCHET_ENABLED = previous_enabled
+            cfg.PROFIT_DOLLAR_RATCHET_LEVELS = previous_levels
+
+    def test_profit_dollar_ratchet_applies_before_isolated_swing_manager(self):
+        manager = self._build_manager()
+        previous_enabled = cfg.PROFIT_DOLLAR_RATCHET_ENABLED
+        previous_levels = cfg.PROFIT_DOLLAR_RATCHET_LEVELS
+        cfg.PROFIT_DOLLAR_RATCHET_ENABLED = True
+        cfg.PROFIT_DOLLAR_RATCHET_LEVELS = [[3.0, 2.5], [4.0, 3.5]]
+        try:
+            manager._manage_swing_engine = Mock()
+            trade = TradeRecord(
+                10040, "BUY", 0.01, 4500.0, 4496.0, 4508.0, 4.0,
+                strategy="SWING_ENGINE", scalp=False, features={"profile_name": "swing_engine"},
+            )
+            trade.live_pnl = 4.18
+
+            manager._manage_trade(trade, {"tick_count": 420, "velocity": 9.0}, {})
+
+            manager.bridge.modify_trade.assert_called_once_with(10040, 4503.5, 4508.0)
+            manager._manage_swing_engine.assert_not_called()
+            self.assertEqual(trade.sl, 4503.5)
+        finally:
+            cfg.PROFIT_DOLLAR_RATCHET_ENABLED = previous_enabled
+            cfg.PROFIT_DOLLAR_RATCHET_LEVELS = previous_levels
+
     def test_m15_zone_scalp_does_not_force_close_before_earlier_breakeven_window(self):
         manager = self._build_manager()
         trade = TradeRecord(

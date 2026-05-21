@@ -202,12 +202,16 @@ def test_prepare_execution_reroutes_anti_trade_back_to_base_on_strong_local_conf
     trader = _build_trader()
     previous = cfg.ANTI_MODE_ENABLED
     previous_reroute = cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED
+    previous_reroute_mult = cfg.ANTI_MODE_REROUTE_SL_MULTIPLIER
+    previous_reroute_cap = cfg.ANTI_MODE_REROUTE_MAX_SL_POINTS
     cfg.ANTI_MODE_ENABLED = True
     cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED = True
+    cfg.ANTI_MODE_REROUTE_SL_MULTIPLIER = 0.8
+    cfg.ANTI_MODE_REROUTE_MAX_SL_POINTS = 3.0
     try:
         signal = {
             "signal": "BUY",
-            "sl": 99.0,
+            "sl": 95.0,
             "tp": 101.0,
             "lot": 0.01,
             "reason": "base long",
@@ -230,13 +234,19 @@ def test_prepare_execution_reroutes_anti_trade_back_to_base_on_strong_local_conf
         assert prepared["signal"]["_anti_original_signal"] == "BUY"
         assert prepared["signal"]["_anti_execution_signal"] == "BUY"
         assert prepared["signal"]["_anti_mode_label"] == "ANTI_M15_REROUTE"
+        assert prepared["signal"]["_anti_reroute_sl_multiplier"] == 0.8
+        assert prepared["signal"]["_anti_reroute_sl_cap_points"] == 3.0
+        assert prepared["signal"]["_anti_reroute_original_sl_distance"] == 5.1
+        assert prepared["signal"]["_anti_reroute_effective_sl_distance"] == 3.0
         assert "local micro bias and pressure agree with base BUY" in prepared["signal"]["_anti_reroute_reason"]
         assert prepared["comment"].endswith("_AR")
-        assert prepared["sl"] == 99.0
+        assert prepared["sl"] == 97.1
         assert prepared["tp"] == 101.0
     finally:
         cfg.ANTI_MODE_ENABLED = previous
         cfg.ANTI_MODE_CONFLICT_REROUTE_ENABLED = previous_reroute
+        cfg.ANTI_MODE_REROUTE_SL_MULTIPLIER = previous_reroute_mult
+        cfg.ANTI_MODE_REROUTE_MAX_SL_POINTS = previous_reroute_cap
 
 
 def test_prepare_execution_blocks_known_bad_anti_context_expansion():
