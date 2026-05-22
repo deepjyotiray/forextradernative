@@ -221,7 +221,15 @@ def _resolve_exit_profile(
             _safe_bool(profile.get("velocity_drop_enabled"), False),
         ),
     }
-    if _safe_bool(feature_map.get("anti_mode"), False):
+    strategy_name = str(strategy or "").strip().upper()
+    m15_zone_anti_exit = _safe_bool(
+        feature_map.get("m15_zone_anti_exit"),
+        bool(getattr(cfg, "M15_ZONE_ANTI_EXIT_ENABLED", False))
+        and profile_name == "m15_zone_scalp"
+        and strategy_name in {"M15_ZONE_SCALP", "M15_ZONE_SCALP_INVERSE"},
+    )
+    resolved["m15_zone_anti_exit"] = m15_zone_anti_exit
+    if _safe_bool(feature_map.get("anti_mode"), False) or m15_zone_anti_exit:
         resolved["be_trigger_r"] = 0.0
         resolved["breakeven_min_hold_seconds"] = 0
         resolved["breakeven_volume_hold_ratio"] = 0.0
@@ -1111,9 +1119,14 @@ class TradeManager:
             int(getattr(cfg, "BREAKEVEN_VOLUME_LOOKBACK_CANDLES", 8) or 8),
         )
         anti_mode = _safe_bool((t.features or {}).get("anti_mode"), False)
+        m15_zone_anti_exit = _safe_bool((t.features or {}).get("m15_zone_anti_exit"), False)
         anti_profit_choke_r = _safe_float(
             (t.features or {}).get("anti_profit_choke_r"),
             _safe_float(getattr(cfg, "ANTI_MODE_PROFIT_CHOKE_R", 0.08), 0.08),
+        )
+        m15_zone_profit_choke_r = _safe_float(
+            (t.features or {}).get("m15_zone_anti_exit_profit_choke_r"),
+            _safe_float(getattr(cfg, "M15_ZONE_ANTI_EXIT_PROFIT_CHOKE_R", anti_profit_choke_r), anti_profit_choke_r),
         )
 
         if anti_mode and live_r >= anti_profit_choke_r and age >= 1.0:
@@ -1121,6 +1134,13 @@ class TradeManager:
                 t,
                 f"ANTI profit choke ({live_r:.2f}R >= {anti_profit_choke_r:.2f}R)",
                 category="anti_profit_choke",
+            )
+            return True
+        if m15_zone_anti_exit and live_r >= m15_zone_profit_choke_r and age >= 1.0:
+            self._close_early(
+                t,
+                f"M15 zone profit choke ({live_r:.2f}R >= {m15_zone_profit_choke_r:.2f}R)",
+                category="m15_zone_profit_choke",
             )
             return True
 

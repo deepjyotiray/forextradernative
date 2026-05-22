@@ -317,7 +317,7 @@ class TradeManagerTests(unittest.TestCase):
             cfg.PROFIT_DOLLAR_RATCHET_ENABLED = previous_enabled
             cfg.PROFIT_DOLLAR_RATCHET_LEVELS = previous_levels
 
-    def test_m15_zone_scalp_does_not_force_close_before_earlier_breakeven_window(self):
+    def test_m15_zone_scalp_chokes_small_winner_early(self):
         manager = self._build_manager()
         trade = TradeRecord(
             10034, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
@@ -329,12 +329,12 @@ class TradeManagerTests(unittest.TestCase):
 
         handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
 
-        self.assertFalse(handled)
-        manager.bridge.close_trade.assert_not_called()
+        self.assertTrue(handled)
+        manager.bridge.close_trade.assert_called_once_with(10034)
         manager.bridge.modify_trade.assert_not_called()
-        self.assertEqual(manager._pending_close_reasons, {})
+        self.assertEqual(manager._pending_close_reasons[10034]["category"], "m15_zone_profit_choke")
 
-    def test_m15_zone_scalp_moves_to_breakeven_instead_of_fixed_profit_target_close(self):
+    def test_m15_zone_scalp_chokes_profit_before_breakeven(self):
         manager = self._build_manager()
         trade = TradeRecord(
             10037, "BUY", 0.01, 4538.89, 4535.23, 4541.23, 3.67,
@@ -348,11 +348,11 @@ class TradeManagerTests(unittest.TestCase):
         handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
 
         self.assertTrue(handled)
-        manager.bridge.modify_trade.assert_called_once_with(10037, 4538.89, 4541.23)
-        self.assertTrue(trade.sl_breakeven)
-        self.assertEqual(manager._pending_close_reasons, {})
+        manager.bridge.close_trade.assert_called_once_with(10037)
+        manager.bridge.modify_trade.assert_not_called()
+        self.assertEqual(manager._pending_close_reasons[10037]["category"], "m15_zone_profit_choke")
 
-    def test_time_invested_breakeven_locks_small_profit_after_one_m5_candle(self):
+    def test_m15_zone_scalp_chokes_profit_before_time_invested_lock(self):
         manager = self._build_manager()
         previous_enabled = cfg.TIME_INVESTED_PROFIT_LOCK_ENABLED
         previous_seconds = cfg.TIME_INVESTED_PROFIT_LOCK_SECONDS
@@ -375,16 +375,16 @@ class TradeManagerTests(unittest.TestCase):
             handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
 
             self.assertTrue(handled)
-            manager.bridge.modify_trade.assert_called_once_with(10038, 4539.64, 4541.23)
-            self.assertEqual(trade.sl, 4539.64)
-            self.assertTrue(trade.sl_breakeven)
+            manager.bridge.close_trade.assert_called_once_with(10038)
+            manager.bridge.modify_trade.assert_not_called()
+            self.assertEqual(manager._pending_close_reasons[10038]["category"], "m15_zone_profit_choke")
         finally:
             cfg.TIME_INVESTED_PROFIT_LOCK_ENABLED = previous_enabled
             cfg.TIME_INVESTED_PROFIT_LOCK_SECONDS = previous_seconds
             cfg.TIME_INVESTED_PROFIT_LOCK_USD = previous_usd
             cfg.TIME_INVESTED_PROFIT_LOCK_MIN_BUFFER_R = previous_buffer
 
-    def test_time_invested_profit_lock_upgrades_existing_breakeven_trade(self):
+    def test_m15_zone_scalp_chokes_profit_before_trailing_upgrade(self):
         manager = self._build_manager()
         previous_enabled = cfg.TIME_INVESTED_PROFIT_LOCK_ENABLED
         previous_seconds = cfg.TIME_INVESTED_PROFIT_LOCK_SECONDS
@@ -408,18 +408,16 @@ class TradeManagerTests(unittest.TestCase):
             handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
 
             self.assertTrue(handled)
-            manager.bridge.modify_trade.assert_called_once_with(10039, 4517.97, 4515.04)
-            self.assertEqual(trade.sl, 4517.97)
-            self.assertTrue(trade.sl_breakeven)
-            self.assertTrue(trade.trail_active)
-            manager.order_db.update_management_flags.assert_called_with(10039, sl_breakeven=True, trail_active=True)
+            manager.bridge.close_trade.assert_called_once_with(10039)
+            manager.bridge.modify_trade.assert_not_called()
+            self.assertEqual(manager._pending_close_reasons[10039]["category"], "m15_zone_profit_choke")
         finally:
             cfg.TIME_INVESTED_PROFIT_LOCK_ENABLED = previous_enabled
             cfg.TIME_INVESTED_PROFIT_LOCK_SECONDS = previous_seconds
             cfg.TIME_INVESTED_PROFIT_LOCK_USD = previous_usd
             cfg.TIME_INVESTED_PROFIT_LOCK_MIN_BUFFER_R = previous_buffer
 
-    def test_tier1_exit_sets_strategy_reentry_lockout(self):
+    def test_m15_zone_anti_style_disables_tier1_reentry_lockout(self):
         manager = self._build_manager()
         features = self._m15_zone_features()
         features["context_hash"] = "m15-zone|buy|same-candle"
@@ -433,14 +431,9 @@ class TradeManagerTests(unittest.TestCase):
 
         handled = manager._apply_universal_management(trade, {"tick_count": 14, "velocity": 9.0})
 
-        self.assertTrue(handled)
-        manager.bridge.close_trade.assert_called_once_with(10036)
-        self.assertIn("M15_ZONE_SCALP", manager._strategy_lockouts)
-        same_setup_reason = manager.get_strategy_entry_lockout_reason(
-            "M15_ZONE_SCALP",
-            setup_signature="m15-zone|buy|same-candle",
-        )
-        self.assertIn("post-TIER1 cooldown active", same_setup_reason)
+        self.assertFalse(handled)
+        manager.bridge.close_trade.assert_not_called()
+        self.assertNotIn("M15_ZONE_SCALP", manager._strategy_lockouts)
 
     def test_non_m15_profiles_ignore_fixed_profit_target_rule(self):
         manager = self._build_manager()
@@ -641,6 +634,20 @@ class TradeManagerTests(unittest.TestCase):
             early_fail=0.12, features=features,
         )
 
+        self.assertEqual(trade.be_trigger_r, 0.0)
+        self.assertEqual(trade.profit_lock_1_arm_r, 0.0)
+        self.assertEqual(trade.profit_lock_2_arm_r, 0.0)
+        self.assertFalse(trade.velocity_drop_enabled)
+        self.assertGreaterEqual(trade.timeout_seconds, 12 * 3600)
+
+    def test_m15_zone_profile_uses_anti_style_exit_snapshot(self):
+        trade = TradeRecord(
+            10053, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
+            strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+            early_fail=0.12, features=self._m15_zone_features(),
+        )
+
+        self.assertTrue(trade.features.get("m15_zone_anti_exit"))
         self.assertEqual(trade.be_trigger_r, 0.0)
         self.assertEqual(trade.profit_lock_1_arm_r, 0.0)
         self.assertEqual(trade.profit_lock_2_arm_r, 0.0)
