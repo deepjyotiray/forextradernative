@@ -278,20 +278,14 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 </div>
 
 
-<div class="section-title">Setup Intelligence</div>
+<div class="section-title">Setup Intelligence &amp; AI Trade Correction</div>
 <div class="grid g2">
   <div class="card"><h3>Why No Trade</h3><div id="blockersCard">Loading...</div></div>
   <div class="card"><h3>Correlation (6 Markets)</h3><div id="corrCard">-</div></div>
 </div>
 
-<div class="section-title">AI Trade Correction</div>
 <div class="card" style="padding:0;overflow:hidden">
   <div id="aiTradeCorrectionPanel" style="padding:10px 12px">Loading...</div>
-</div>
-
-<div class="section-title">Strategy Live Status</div>
-<div class="card" style="padding:0;overflow:hidden">
-  <div id="strategyStatusPanel" style="padding:10px 12px">Loading...</div>
 </div>
 
 <div class="section-title">Calendar &amp; News</div>
@@ -474,13 +468,11 @@ async function fetchFull(){
     const shouldFetchHeavy=!_isMobile
       || !_state.closed_history
       || !_state.performance
-      || !(_state._guidance&&Array.isArray(_state._guidance.strategies))
       || (Date.now()-_lastMobileHeavyFetch)>120000;
     const fetches=[fetch(A+'/status'),fetch(A+'/status/blockers')];
     if(shouldFetchHeavy){
       fetches.push(fetch(A+'/status/closed-history'));
       fetches.push(fetch(A+'/status/performance'));
-      fetches.push(fetch(A+'/strategy-guidance'));
       fetches.push(fetch(A+'/status/ai-correction'));
     }
     const [r,rb,...rest]=await Promise.all(fetches);
@@ -1072,36 +1064,6 @@ function render(d,opts={}){
       </div>
     `;
     setHTML($('aiTradeCorrectionPanel'),aiHtml);
-  }
-
-  // ── Strategy Live Status panel ──────────────────────────────────────────
-  if(full){
-    const g=d._guidance||{};
-    const rows=(g.strategies||[]);
-    const statusColor={ready:'#22c55e',blocked:'#f97316',waiting:'#64748b'};
-    const statusIcon={ready:'●',blocked:'✗',waiting:'○'};
-    let stratHtml='';
-    if(rows.length){
-      stratHtml+=`<div style="display:grid;grid-template-columns:110px 60px 1fr 1fr;gap:0;font-size:10px;color:var(--dim);padding:0 0 4px;border-bottom:1px solid var(--border);margin-bottom:4px">`+
-        `<span>Strategy</span><span>Signal</span><span>Block Reason</span><span>What it needs</span></div>`;
-      rows.forEach(r=>{
-        const col=statusColor[r.status]||'#64748b';
-        const icon=statusIcon[r.status]||'○';
-        const sig=r.signal==='WAIT'?'—':r.signal;
-        const sigCol=r.signal==='BUY'?'#22c55e':r.signal==='SELL'?'#ef4444':'#64748b';
-        stratHtml+=`<div style="display:grid;grid-template-columns:110px 60px 1fr 1fr;gap:0;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);align-items:start">`+
-          `<span style="color:${col};font-weight:600;font-size:11px">${icon} ${r.label}</span>`+
-          `<span style="color:${sigCol};font-weight:700">${sig}</span>`+
-          `<span style="color:var(--fg);font-size:10px;padding-right:8px">${esc(r.reason)}</span>`+
-          `<span style="color:var(--dim);font-size:10px">${esc(r.trigger_hint)}</span>`+
-        `</div>`;
-      });
-      if(g.action_now) stratHtml+=`<div style="margin-top:8px;padding:6px 8px;background:rgba(255,255,255,.04);border-radius:4px;font-size:11px;color:var(--cyan)">${esc(g.action_now)}</div>`;
-      if(g.wait_advice) stratHtml+=`<div style="margin-top:4px;font-size:10px;color:var(--dim)">${esc(g.wait_advice)}</div>`;
-    } else {
-      stratHtml='<div style="color:var(--dim);font-size:11px">No strategy data yet — waiting for first evaluation cycle.</div>';
-    }
-    setHTML($('strategyStatusPanel'),stratHtml);
   }
 
   // ── Calendar & News panel ───────────────────────────────────────────────
