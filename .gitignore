@@ -52,3 +52,6 @@ dist/
 '2026-04-24'
 0
 _dashboard_script.js
+
+# Local secrets
+.ai_trade_correction.local.env
