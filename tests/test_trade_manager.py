@@ -352,6 +352,24 @@ class TradeManagerTests(unittest.TestCase):
         self.assertTrue(trade.sl_breakeven)
         self.assertEqual(manager._pending_close_reasons, {})
 
+    def test_m15_zone_scalp_cuts_dead_trade_before_full_stop(self):
+        manager = self._build_manager()
+        trade = TradeRecord(
+            10054, "BUY", 0.02, 4579.0, 4576.98, 4582.4, 1.5,
+            strategy="M15_ZONE_SCALP", scalp=True, be_trigger=0.30, timeout=60,
+            early_fail=0.12, features=self._m15_zone_features(),
+        )
+        trade.fill_ts = time.time() - 240
+        trade.live_pnl = -1.20
+        trade.peak_pnl = 0.24
+
+        handled = manager._apply_universal_management(trade, {"tick_count": 420, "velocity": 9.0})
+
+        self.assertTrue(handled)
+        manager.bridge.close_trade.assert_called_once_with(10054)
+        self.assertEqual(manager._pending_close_reasons[10054]["category"], "no_follow_through")
+        self.assertIn("no follow-through", manager._pending_close_reasons[10054]["reason"].lower())
+
     def test_time_invested_breakeven_locks_small_profit_after_one_m5_candle(self):
         manager = self._build_manager()
         previous_enabled = cfg.TIME_INVESTED_PROFIT_LOCK_ENABLED

@@ -1169,6 +1169,39 @@ class TradeManager:
             )
             return True
 
+        profile_name = str(getattr(t, "exit_profile", "") or "").strip().lower()
+        if (
+            profile_name == "m15_zone_scalp"
+            and bool(getattr(cfg, "M15_ZONE_NO_FOLLOW_THROUGH_EXIT_ENABLED", True))
+        ):
+            no_follow_through_age = max(
+                0,
+                _safe_int(getattr(cfg, "M15_ZONE_NO_FOLLOW_THROUGH_SECONDS", 180), 180),
+            )
+            no_follow_through_max_peak_r = _safe_float(
+                getattr(cfg, "M15_ZONE_NO_FOLLOW_THROUGH_MAX_PEAK_R", 0.10),
+                0.10,
+            )
+            no_follow_through_negative_r = _safe_float(
+                getattr(cfg, "M15_ZONE_NO_FOLLOW_THROUGH_NEGATIVE_R", -0.35),
+                -0.35,
+            )
+            peak_r = self._pnl_to_r(t, max(_safe_float(t.peak_pnl, 0.0), live_pnl))
+            if (
+                age >= no_follow_through_age
+                and peak_r <= no_follow_through_max_peak_r
+                and live_r <= no_follow_through_negative_r
+            ):
+                self._close_early(
+                    t,
+                    (
+                        "M15 zone no follow-through "
+                        f"({age:.0f}s, peak {peak_r:.2f}R, live {live_r:.2f}R)"
+                    ),
+                    category="no_follow_through",
+                )
+                return True
+
         if t.be_trigger_r > 0 and not t.sl_breakeven and live_r >= t.be_trigger_r:
             if age < t.breakeven_min_hold_seconds:
                 return False
