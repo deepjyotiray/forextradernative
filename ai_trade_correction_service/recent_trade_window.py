@@ -235,7 +235,7 @@ class RecentTradeWindow:
                 "SELECT COUNT(*) AS c FROM trade_snapshots WHERE strategy = ? AND status = 'TRADE_CLOSED'",
                 (strategy,),
             ).fetchone()
-        return int((row or {}).get("c", 0) or 0)
+        return int((row["c"] if row is not None else 0) or 0)
 
     def get_consecutive_losses(self, strategy: str, limit: int = 5) -> List[Dict[str, Any]]:
         recent = self.get_recent_closed(strategy, limit=limit)

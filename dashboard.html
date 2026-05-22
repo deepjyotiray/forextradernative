@@ -284,6 +284,11 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
   <div class="card"><h3>Correlation (6 Markets)</h3><div id="corrCard">-</div></div>
 </div>
 
+<div class="section-title">AI Trade Correction</div>
+<div class="card" style="padding:0;overflow:hidden">
+  <div id="aiTradeCorrectionPanel" style="padding:10px 12px">Loading...</div>
+</div>
+
 <div class="section-title">Strategy Live Status</div>
 <div class="card" style="padding:0;overflow:hidden">
   <div id="strategyStatusPanel" style="padding:10px 12px">Loading...</div>
@@ -476,6 +481,7 @@ async function fetchFull(){
       fetches.push(fetch(A+'/status/closed-history'));
       fetches.push(fetch(A+'/status/performance'));
       fetches.push(fetch(A+'/strategy-guidance'));
+      fetches.push(fetch(A+'/status/ai-correction'));
     }
     const [r,rb,...rest]=await Promise.all(fetches);
     const d=await r.json();
@@ -983,6 +989,90 @@ function render(d,opts={}){
     ${topRows||'<div class="row"><span class="label">None</span><span>-</span></div>'}
   `:`<div class="row"><span class="label">Status</span><span>No blockers logged yet</span></div>`;
   if(full)setHTML($('blockersCard'),blockerHtml);
+
+  // ── AI Trade Correction panel ───────────────────────────────────────────
+  if(full){
+    const ac=d.ai_trade_correction||{};
+    const as=ac.analysis_state||{};
+    const counts=ac.counts||{};
+    const recentAnalyses=ac.recent_analyses||[];
+    const recentMods=ac.recent_modifications||[];
+    const recentForensics=ac.recent_forensics||[];
+    const activeMods=ac.active_modifications||[];
+    const modeLabel=ac.mode==='DRY_RUN'?'Heuristic only':ac.mode==='OPENAI'?'OpenAI live':(ac.mode||'Unknown');
+    const stateText=as.running?'RUNNING':(as.last_status||'IDLE');
+    const stateColor=as.running?'#22c55e':stateText==='COMPLETED'?'#22c55e':stateText==='FAILED'?'#ef4444':'#64748b';
+    const reasonText=ac.reason||((ac.active===false&&ac.enabled)?'Waiting for single enabled strategy mode.':'');
+    const activeRows=activeMods.slice(0,3).map(item=>
+      `<div class="row"><span class="label">${esc(item.action_type||item.exact_runtime_override_key||'RULE')}</span><span style="max-width:70%;text-align:right">${esc(item.rule_description||item.modification_id||'-')}</span></div>`
+    ).join('');
+    const analysisRows=recentAnalyses.slice(0,4).map(item=>{
+      const trig=item.trigger_type||'-';
+      const dec=item.decision||'-';
+      const ts=item.timestamp||item.last_completed_at||'';
+      return `<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:10px">
+          <span style="color:var(--cyan);font-weight:600">${esc(trig)}</span>
+          <span style="color:var(--dim)">${esc(ts)}</span>
+        </div>
+        <div style="font-size:11px;margin-top:2px;color:var(--fg)">${esc(dec)}${item.diagnosis_summary?` | ${esc(item.diagnosis_summary)}`:''}</div>
+      </div>`;
+    }).join('');
+    const forensicRows=recentForensics.slice(0,3).map(item=>
+      `<div class="row"><span class="label">${esc(item.classification||'-')}</span><span style="max-width:70%;text-align:right">${esc(item.signal_id||item.trade_ticket||'-')}</span></div>`
+    ).join('');
+    const modRows=recentMods.slice(0,3).map(item=>
+      `<div class="row"><span class="label">${esc(item.event||'APPLIED')}</span><span style="max-width:70%;text-align:right">${esc(item.modification_id||item.reason||'-')}</span></div>`
+    ).join('');
+    const aiHtml=`
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;border-bottom:1px solid var(--border)">
+        <div style="padding:10px 12px;border-right:1px solid var(--border)">
+          <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:4px">Service</div>
+          <div style="font-size:18px;font-weight:700;color:${ac.active===false&&ac.enabled?'#f97316':'#22c55e'}">${esc(modeLabel)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:3px">${esc(ac.enabled_strategy||'-')}</div>
+        </div>
+        <div style="padding:10px 12px;border-right:1px solid var(--border)">
+          <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:4px">Analysis State</div>
+          <div style="font-size:18px;font-weight:700;color:${stateColor}">${esc(stateText)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:3px">${esc(as.current_trigger||as.last_trigger||'No trigger yet')}</div>
+        </div>
+        <div style="padding:10px 12px;border-right:1px solid var(--border)">
+          <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:4px">Pending / Active</div>
+          <div style="font-size:18px;font-weight:700">${counts.pending_signals||0} / ${counts.active_modifications||0}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:3px">Pending confirmations / live overrides</div>
+        </div>
+        <div style="padding:10px 12px">
+          <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:4px">Last Decision</div>
+          <div style="font-size:18px;font-weight:700;color:var(--cyan)">${esc(as.last_decision||'-')}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:3px">${esc(as.last_completed_at||'-')}</div>
+        </div>
+      </div>
+      <div style="padding:10px 12px">
+        ${reasonText?`<div style="margin-bottom:8px;padding:6px 8px;background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.25);border-radius:6px;font-size:11px;color:var(--orange)">${esc(reasonText)}</div>`:''}
+        ${as.last_error?`<div style="margin-bottom:8px;padding:6px 8px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:6px;font-size:11px;color:var(--red)">${esc(as.last_error)}</div>`:''}
+        <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:12px">
+          <div>
+            <div style="font-size:10px;color:var(--dim);margin-bottom:6px">Recent analyses: what ran and when</div>
+            ${analysisRows||'<div style="font-size:11px;color:var(--dim)">No forensic analyses recorded yet.</div>'}
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--dim);margin-bottom:6px">Active live modifications</div>
+            ${activeRows||'<div class="row"><span class="label">None</span><span>-</span></div>'}
+            <div style="font-size:10px;color:var(--dim);margin:10px 0 6px">Recent modification events</div>
+            ${modRows||'<div class="row"><span class="label">None</span><span>-</span></div>'}
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--dim);margin-bottom:6px">Recent forensic outcomes</div>
+            ${forensicRows||'<div class="row"><span class="label">None</span><span>-</span></div>'}
+            <div style="font-size:10px;color:var(--dim);margin:10px 0 6px">Reviewed trades</div>
+            <div class="row"><span class="label">Closed</span><span>${counts.closed_trades||0}</span></div>
+            <div class="row"><span class="label">Rolled back</span><span>${counts.rolled_back_modifications||0}</span></div>
+          </div>
+        </div>
+      </div>
+    `;
+    setHTML($('aiTradeCorrectionPanel'),aiHtml);
+  }
 
   // ── Strategy Live Status panel ──────────────────────────────────────────
   if(full){

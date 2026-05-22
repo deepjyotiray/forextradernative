@@ -79,6 +79,9 @@ _DEPLOYMENT_CACHE_TTL = 5.0
 _ai_reviews_cache = None
 _ai_reviews_cache_time = 0.0
 _AI_REVIEWS_CACHE_TTL = 10.0
+_ai_correction_cache = None
+_ai_correction_cache_time = 0.0
+_AI_CORRECTION_CACHE_TTL = 5.0
 _manual_ai_ideas: Dict[str, Dict[str, Any]] = {}
 _MANUAL_AI_IDEA_TTL_SECONDS = 15 * 60
 _config_version = 1
@@ -113,7 +116,7 @@ def _invalidate_status_cache(include_slow: bool = False):
     global _blockers_cache, _blockers_cache_time, _xgb_cache, _xgb_cache_time
     global _perf_cache, _perf_cache_time, _closed_history_cache, _closed_history_cache_time
     global _heavy_status_cache, _heavy_status_cache_time, _deployment_cache, _deployment_cache_time
-    global _ai_reviews_cache, _ai_reviews_cache_time
+    global _ai_reviews_cache, _ai_reviews_cache_time, _ai_correction_cache, _ai_correction_cache_time
     _status_cache = None
     _status_cache_time = 0.0
     _ws_latest_cycle = -1
@@ -132,6 +135,8 @@ def _invalidate_status_cache(include_slow: bool = False):
         _deployment_cache_time = 0.0
         _ai_reviews_cache = None
         _ai_reviews_cache_time = 0.0
+        _ai_correction_cache = None
+        _ai_correction_cache_time = 0.0
 
 def _bump_config_version():
     global _config_version
@@ -1031,6 +1036,83 @@ def _build_ai_trade_advisor_status() -> dict:
     }
 
 
+def _build_ai_trade_correction_status(*, include_recent: bool = False, limit: int = 8) -> dict:
+    trader = _auto_trader_instance
+    service = getattr(trader, "trade_correction_service", None) if trader is not None else None
+    if service is None:
+        return {
+            "enabled": False,
+            "active": False,
+            "mode": "UNAVAILABLE",
+            "api_configured": False,
+            "fail_open": True,
+            "enabled_strategy": "",
+            "single_strategy_mode": False,
+            "reason": "AI trade correction service is not attached.",
+            "analysis_state": {
+                "running": False,
+                "current_trigger": "",
+                "current_started_at": "",
+                "last_trigger": "",
+                "last_started_at": "",
+                "last_completed_at": "",
+                "last_status": "UNAVAILABLE",
+                "last_error": "",
+                "last_decision": "",
+                "last_analysis_id": "",
+                "last_trade_ids_reviewed": [],
+                "last_modification_ids": [],
+            },
+            "counts": {
+                "closed_trades": 0,
+                "pending_signals": 0,
+                "active_modifications": 0,
+                "rolled_back_modifications": 0,
+            },
+            "active_modifications": [],
+            "recent_analyses": [],
+            "recent_modifications": [],
+            "recent_forensics": [],
+        }
+    try:
+        return convert_numpy_types(service.get_dashboard_status(include_recent=include_recent, limit=limit))
+    except Exception as exc:
+        return {
+            "enabled": bool(getattr(getattr(service, "runtime_config", None), "enabled", False)),
+            "active": False,
+            "mode": "ERROR",
+            "api_configured": bool(getattr(getattr(service, "runtime_config", None), "api_key_present", False)),
+            "fail_open": bool(getattr(getattr(service, "runtime_config", None), "fail_open", True)),
+            "enabled_strategy": str(getattr(service, "enabled_strategy_info", {}).get("enabled_strategy") or ""),
+            "single_strategy_mode": False,
+            "reason": f"Failed to build AI trade correction status: {exc}",
+            "analysis_state": {
+                "running": False,
+                "current_trigger": "",
+                "current_started_at": "",
+                "last_trigger": "",
+                "last_started_at": "",
+                "last_completed_at": "",
+                "last_status": "ERROR",
+                "last_error": str(exc),
+                "last_decision": "",
+                "last_analysis_id": "",
+                "last_trade_ids_reviewed": [],
+                "last_modification_ids": [],
+            },
+            "counts": {
+                "closed_trades": 0,
+                "pending_signals": 0,
+                "active_modifications": 0,
+                "rolled_back_modifications": 0,
+            },
+            "active_modifications": [],
+            "recent_analyses": [],
+            "recent_modifications": [],
+            "recent_forensics": [],
+        }
+
+
 def _build_gate_config_dict() -> dict:
     return {
         "CALENDAR_BLOCKING_ENABLED": cfg.CALENDAR_BLOCKING_ENABLED,
@@ -1313,6 +1395,7 @@ def _build_status_sync() -> dict:
     status["risk"] = _build_risk_dict(trader)
     status["tick_pressure"] = getattr(trader, "_tick_pressure", None) or {"ready": False}
     status["ai_trade_advisor"] = _build_ai_trade_advisor_status()
+    status["ai_trade_correction"] = _build_ai_trade_correction_status(include_recent=False)
     status["deployment"] = _get_deployment_status(trader)
     return convert_numpy_types(status)
 
@@ -1486,6 +1569,31 @@ async def get_ai_reviews_panel(limit: int = 12):
     return {"ai_trade_reviews": result}
 
 
+@router.get("/status/ai-correction")
+async def get_ai_correction_panel(limit: int = 12):
+    """Recent AI trade correction activity, active overrides, and service state."""
+    safe_limit = max(1, min(int(limit or 12), 30))
+    global _ai_correction_cache, _ai_correction_cache_time
+    now = time.monotonic()
+    if _ai_correction_cache is not None and (now - _ai_correction_cache_time) < _AI_CORRECTION_CACHE_TTL:
+        cached = dict(_ai_correction_cache)
+        cached["recent_analyses"] = list((cached.get("recent_analyses") or [])[:safe_limit])
+        cached["recent_modifications"] = list((cached.get("recent_modifications") or [])[:safe_limit])
+        cached["recent_forensics"] = list((cached.get("recent_forensics") or [])[:safe_limit])
+        return {"ai_trade_correction": cached}
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: _build_ai_trade_correction_status(include_recent=True, limit=safe_limit)),
+            timeout=6.0,
+        )
+    except asyncio.TimeoutError:
+        result = _ai_correction_cache or _build_ai_trade_correction_status(include_recent=False, limit=safe_limit)
+    _ai_correction_cache = result
+    _ai_correction_cache_time = time.monotonic()
+    return {"ai_trade_correction": result}
+
+
 @router.get("/status/heavy")
 async def get_status_heavy():
     """Aggregate all heavy panels concurrently. Kept for backward compatibility."""
@@ -1493,14 +1601,15 @@ async def get_status_heavy():
     now = time.monotonic()
     if _heavy_status_cache is not None and (now - _heavy_status_cache_time) < _HEAVY_STATUS_CACHE_TTL:
         return _heavy_status_cache
-    ch, perf, xgb_resp, bl, ai_reviews = await asyncio.gather(
+    ch, perf, xgb_resp, bl, ai_reviews, ai_correction = await asyncio.gather(
         get_closed_history(),
         get_performance_panel(),
         get_xgb_panel(),
         get_blockers_panel(),
         get_ai_reviews_panel(),
+        get_ai_correction_panel(),
     )
-    result = {**ch, **perf, **xgb_resp, **bl, **ai_reviews}
+    result = {**ch, **perf, **xgb_resp, **bl, **ai_reviews, **ai_correction}
     _heavy_status_cache = result
     _heavy_status_cache_time = time.monotonic()
     return result

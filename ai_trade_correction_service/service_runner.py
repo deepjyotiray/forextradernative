@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -38,9 +39,24 @@ class AITradeCorrectionService:
         self.ai_client = AIForensicClient(self.runtime_config, self.audit_logger)
         self.decision_applier = DecisionApplier(self.rule_store, self.audit_logger)
         self._analysis_lock = threading.Lock()
+        self._status_lock = threading.Lock()
         self._last_15m_bucket = ""
         self._last_session = ""
         self._last_day = datetime.now(timezone.utc).date().isoformat()
+        self._analysis_status = {
+            "running": False,
+            "current_trigger": "",
+            "current_started_at": "",
+            "last_trigger": "",
+            "last_started_at": "",
+            "last_completed_at": "",
+            "last_status": "IDLE",
+            "last_error": "",
+            "last_decision": "",
+            "last_analysis_id": "",
+            "last_trade_ids_reviewed": [],
+            "last_modification_ids": [],
+        }
 
     @property
     def is_active(self) -> bool:
@@ -234,6 +250,16 @@ class AITradeCorrectionService:
         recent_trades = self.store.get_recent_closed(strategy_name, limit=5)
         if not recent_trades:
             return None
+        started_at = datetime.now(timezone.utc).isoformat()
+        self._set_analysis_status(
+            running=True,
+            current_trigger=trigger_type,
+            current_started_at=started_at,
+            last_trigger=trigger_type,
+            last_started_at=started_at,
+            last_status="RUNNING",
+            last_error="",
+        )
         context = {
             "trigger_type": trigger_type,
             "strategy": strategy_name,
@@ -247,14 +273,91 @@ class AITradeCorrectionService:
             payload = self.ai_client.analyze(context)
             decision = validate_ai_decision(payload)
         except Exception as exc:
+            self._set_analysis_status(
+                running=False,
+                current_trigger="",
+                current_started_at="",
+                last_completed_at=datetime.now(timezone.utc).isoformat(),
+                last_status="FAILED",
+                last_error=str(exc),
+            )
             if self.log_fn:
                 self.log_fn("AI_CORRECT", f"Analysis skipped: {exc}")
             return None
 
         applied = self.decision_applier.apply(decision)
         self.audit_logger.log_ai_decision(decision.model_dump(mode="json"))
+        self._set_analysis_status(
+            running=False,
+            current_trigger="",
+            current_started_at="",
+            last_completed_at=datetime.now(timezone.utc).isoformat(),
+            last_status="COMPLETED",
+            last_error="",
+            last_decision=decision.decision.value,
+            last_analysis_id=decision.analysis_id,
+            last_trade_ids_reviewed=list(decision.trade_ids_reviewed or []),
+            last_modification_ids=[item.get("modification_id", "") for item in applied if item.get("modification_id")],
+        )
         self._refresh_daily_report(strategy_name, applied)
         return decision.model_dump(mode="json")
+
+    def get_dashboard_status(self, *, include_recent: bool = True, limit: int = 8) -> Dict[str, Any]:
+        strategy_name = str(self.enabled_strategy_info.get("enabled_strategy") or "")
+        with self._status_lock:
+            analysis_state = dict(self._analysis_status)
+
+        payload = {
+            "enabled": bool(self.runtime_config.enabled),
+            "active": bool(self.is_active),
+            "mode": "DRY_RUN" if self.runtime_config.dry_run else "OPENAI",
+            "api_configured": bool(self.runtime_config.api_key_present),
+            "fail_open": bool(self.runtime_config.fail_open),
+            "enabled_strategy": strategy_name,
+            "single_strategy_mode": bool(self.enabled_strategy_info.get("single_strategy_mode")),
+            "reason": str(self.enabled_strategy_info.get("reason") or ""),
+            "analysis_state": analysis_state,
+            "counts": {
+                "closed_trades": self.store.count_closed(strategy_name) if strategy_name else 0,
+                "pending_signals": len(self.store.list_pending_signals(strategy_name)) if strategy_name else 0,
+                "active_modifications": len(self.rule_store.list_active(strategy_name)) if strategy_name else 0,
+                "rolled_back_modifications": len(self.rule_store.state.get("rolled_back", []) or []),
+            },
+            "active_modifications": self.rule_store.list_active(strategy_name)[:5] if strategy_name else [],
+        }
+        if include_recent:
+            payload["recent_analyses"] = self._read_recent_jsonl(self.audit_logger.ai_decisions_path, limit=limit)
+            payload["recent_modifications"] = self._read_recent_jsonl(self.audit_logger.live_modifications_path, limit=limit)
+            payload["recent_forensics"] = self._read_recent_jsonl(self.audit_logger.trade_forensics_path, limit=limit)
+        else:
+            payload["recent_analyses"] = []
+            payload["recent_modifications"] = []
+            payload["recent_forensics"] = []
+        return payload
+
+    def _set_analysis_status(self, **updates: Any) -> None:
+        with self._status_lock:
+            self._analysis_status.update({k: v for k, v in updates.items() if v is not None})
+
+    def _read_recent_jsonl(self, path: Path, *, limit: int) -> List[Dict[str, Any]]:
+        if not path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    text = line.strip()
+                    if not text:
+                        continue
+                    try:
+                        rows.append(json.loads(text))
+                    except Exception:
+                        continue
+        except Exception:
+            return []
+        rows = rows[-max(1, int(limit)) :]
+        rows.reverse()
+        return rows
 
     def _refresh_daily_report(self, strategy_name: str, applied_modifications: List[Dict[str, Any]]) -> None:
         closed = self.store.get_recent_closed(strategy_name, limit=100)
