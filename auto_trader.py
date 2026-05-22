@@ -70,6 +70,7 @@ from engine import strategy_configs as _scfg
 from engine.strategy_configs import apply_all_to_cfg as _apply_strategy_configs
 from engine.sl_streak_guard import sl_streak_guard
 from engine.deployment_metadata import capture_code_snapshot
+from ai_trade_correction_service import AITradeCorrectionService
 
 _TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120, "D1": 720}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -222,6 +223,12 @@ class AutoTrader:
         self._register_strategies()
         self._apply_startup_strategy()
         _apply_strategy_configs()  # apply per-strategy config to cfg on startup
+        self.trade_correction_service = AITradeCorrectionService(
+            _BASE_DIR,
+            cfg,
+            strategy_manager=self.strat_mgr,
+            log_fn=self.log,
+        )
 
         self._candles: Dict = {}
         self._candle_counts: Dict = {}
@@ -964,6 +971,12 @@ class AutoTrader:
                             for v in t["features"].values())]
             if len(featured) >= 15 and xgb_model.should_retrain(len(featured)):
                 threading.Thread(target=xgb_model.train, args=(featured,), daemon=True).start()
+            correction_service = getattr(self, "trade_correction_service", None)
+            if correction_service is not None and db_order:
+                try:
+                    correction_service.on_trade_closed(ticket, db_order, mt5_trade or {})
+                except Exception as e:
+                    self.log("AI_CORRECT", f"Post-close forensic update failed: {e}")
 
         # Poll MT5 history every 5s — single source of truth
         now_ts = time.time()
@@ -1009,7 +1022,14 @@ class AutoTrader:
             "_risk_manager": self.risk,
             "now_utc": datetime.now(timezone.utc),
             "strategy_trade_counts": self._strategy_trade_counts(),
+            "session": get_session(),
         }
+        correction_service = getattr(self, "trade_correction_service", None)
+        if correction_service is not None and self.trades:
+            try:
+                correction_service.on_cycle(strat_data, self.trades.open_trades)
+            except Exception as e:
+                self.log("AI_CORRECT", f"Cycle update failed: {e}")
         if self.strat_mgr.is_auto:
             item = self.strat_mgr.generate_signal(strat_data)
             signals_to_execute = [item]
@@ -1019,6 +1039,13 @@ class AutoTrader:
             signals_to_execute = self.strat_mgr.generate_signals(strat_data)
             # Build results summary for dashboard
             self._last_strategy_results = {r["strategy"]: {"signal": r["signal"].get("signal", "NO_TRADE"), "reason": str(r["signal"].get("reason", ""))[:120]} for r in signals_to_execute}
+        if correction_service is not None:
+            try:
+                pending_signals = correction_service.release_pending_signals(strat_data)
+                if pending_signals:
+                    signals_to_execute = pending_signals + list(signals_to_execute or [])
+            except Exception as e:
+                self.log("AI_CORRECT", f"Pending confirmation release failed: {e}")
 
         handled_cycle_strategies = set()
 
@@ -1231,11 +1258,33 @@ class AutoTrader:
 
     def _prepare_execution_order(self, strategy_name: str, sig: Dict, tick: Dict, account: Dict, strat_data: Dict):
         action = str(sig.get("signal") or "NO_TRADE").upper()
+        setup_signature = _build_strategy_setup_signature(strategy_name, sig, strat_data)
+        correction_service = getattr(self, "trade_correction_service", None)
+        signal_id = ""
+        if correction_service is not None:
+            try:
+                signal_id = correction_service.capture_signal(strategy_name, sig, strat_data, setup_signature)
+            except Exception as e:
+                self.log("AI_CORRECT", f"Signal capture failed: {e}")
         if action not in ("BUY", "SELL"):
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(
+                    signal_id,
+                    status="SKIPPED",
+                    reason=str(sig.get("reason") or "No signal")[:120],
+                    signal_snapshot=sig,
+                )
             return None, str(sig.get("reason") or "No signal")[:120]
 
         max_active_trades = self._strategy_max_active_trades(strategy_name)
         if self._strategy_open_count(strategy_name) >= max_active_trades:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(
+                    signal_id,
+                    status="SKIPPED",
+                    reason=f"Open trade cap reached for this strategy ({max_active_trades})",
+                    signal_snapshot=sig,
+                )
             return None, f"Open trade cap reached for this strategy ({max_active_trades})"
 
         sibling_strategy = _M15_ZONE_SIBLING_MAP.get(str(strategy_name or "").upper())
@@ -1244,29 +1293,53 @@ class AutoTrader:
             and sibling_strategy
             and self._strategy_open_count(sibling_strategy) > 0
         ):
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(
+                    signal_id,
+                    status="SKIPPED",
+                    reason=f"Paired strategy {sibling_strategy} already has an open trade",
+                    signal_snapshot=sig,
+                )
             return None, f"Paired strategy {sibling_strategy} already has an open trade"
 
-        setup_signature = _build_strategy_setup_signature(strategy_name, sig, strat_data)
         if self.trades:
             lock_reason = self.trades.get_strategy_entry_lockout_reason(
                 strategy_name,
                 setup_signature=setup_signature,
             )
             if lock_reason:
+                if correction_service is not None and signal_id:
+                    correction_service.update_signal_status(
+                        signal_id,
+                        status="SKIPPED",
+                        reason=f"Execution blocked: {lock_reason}",
+                        signal_snapshot=sig,
+                    )
                 return None, f"Execution blocked: {lock_reason}"
 
         candle_profit_lock_reason = self._m15_candle_profit_throttle_reason(strategy_name, strat_data)
         if candle_profit_lock_reason:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(
+                    signal_id,
+                    status="SKIPPED",
+                    reason=f"Execution blocked: {candle_profit_lock_reason}",
+                    signal_snapshot=sig,
+                )
             return None, f"Execution blocked: {candle_profit_lock_reason}"
 
         sl, tp = sig.get("sl"), sig.get("tp")
         if not sl or not tp:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(signal_id, status="SKIPPED", reason="Execution blocked: missing SL/TP", signal_snapshot=sig)
             return None, "Execution blocked: missing SL/TP"
 
         signal_entry = _safe_float(sig.get("entry"), 0.0)
         entry = self._market_entry_price(action, tick, fallback=signal_entry)
         sl_distance = abs(entry - _safe_float(sl))
         if sl_distance <= 0:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(signal_id, status="SKIPPED", reason="Execution blocked: invalid stop distance", signal_snapshot=sig)
             return None, "Execution blocked: invalid stop distance"
 
         lot = _safe_float(sig.get("lot", sig.get("lot_size")), 0.0)
@@ -1278,25 +1351,70 @@ class AutoTrader:
                 strategy=strategy_name,
             )
         if lot <= 0:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(signal_id, status="SKIPPED", reason="Execution blocked: invalid lot", signal_snapshot=sig)
             return None, "Execution blocked: invalid lot"
 
         strategy_obj = self.strat_mgr.get(strategy_name)
         if strategy_obj is not None and hasattr(strategy_obj, "pre_send_revalidate"):
             pre_send = strategy_obj.pre_send_revalidate(sig, strat_data)
             if not pre_send.get("allowed", True):
+                if correction_service is not None and signal_id:
+                    correction_service.update_signal_status(
+                        signal_id,
+                        status="SKIPPED",
+                        reason=f"Execution blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}",
+                        signal_snapshot=sig,
+                    )
                 return None, f"Execution blocked: {pre_send.get('reason', 'PRE_SEND_BLOCK')}"
 
         execution_sig, action, sl, tp, sl_distance, comment = self._build_execution_signal(strategy_name, sig, tick)
         anti_block_reason = self._anti_mode_context_block_reason(strategy_name, execution_sig, strat_data)
         if anti_block_reason:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(signal_id, status="SKIPPED", reason=f"Execution blocked: {anti_block_reason}", signal_snapshot=execution_sig)
             return None, f"Execution blocked: {anti_block_reason}"
         overlap_block_reason = self._m15_zone_overlap_block_reason(strategy_name, execution_sig, strat_data)
         if overlap_block_reason:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(signal_id, status="SKIPPED", reason=overlap_block_reason, signal_snapshot=execution_sig)
             return None, overlap_block_reason
         if not sl or not tp:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(signal_id, status="SKIPPED", reason="Execution blocked: invalid anti-mode SL/TP", signal_snapshot=execution_sig)
             return None, "Execution blocked: invalid anti-mode SL/TP"
         if sl_distance <= 0:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(signal_id, status="SKIPPED", reason="Execution blocked: invalid anti-mode stop distance", signal_snapshot=execution_sig)
             return None, "Execution blocked: invalid anti-mode stop distance"
+
+        if correction_service is not None and signal_id:
+            try:
+                correction = correction_service.pre_execution_check(
+                    strategy_name=strategy_name,
+                    signal_id=signal_id,
+                    signal=execution_sig,
+                    market_data=strat_data,
+                )
+                correction_action = str(correction.get("action") or "TAKE_NOW").upper()
+                if correction_action in ("SKIP", "WAIT_FOR_CONFIRMATION", "WAIT_FOR_RETEST"):
+                    correction_service.update_signal_status(
+                        signal_id,
+                        status=correction_action,
+                        reason=correction.get("reason", correction_action),
+                        signal_snapshot=correction.get("signal") or execution_sig,
+                    )
+                    return None, f"AI correction: {correction.get('reason', correction_action)}"
+                execution_sig = dict(correction.get("signal") or execution_sig)
+                sl = execution_sig.get("sl", sl)
+                tp = execution_sig.get("tp", tp)
+                action = str(execution_sig.get("signal") or action).upper()
+                sl_distance = abs(
+                    self._market_entry_price(action, tick, fallback=_safe_float(execution_sig.get("entry"), 0.0))
+                    - _safe_float(sl)
+                )
+            except Exception as e:
+                self.log("AI_CORRECT", f"Pre-execution correction failed open: {e}")
 
         lot = _safe_float(execution_sig.get("lot", execution_sig.get("lot_size")), 0.0)
         if lot <= 0:
@@ -1307,6 +1425,8 @@ class AutoTrader:
                 strategy=strategy_name,
             )
         if lot <= 0:
+            if correction_service is not None and signal_id:
+                correction_service.update_signal_status(signal_id, status="SKIPPED", reason="Execution blocked: invalid lot", signal_snapshot=execution_sig)
             return None, "Execution blocked: invalid lot"
 
         return {
@@ -1320,6 +1440,7 @@ class AutoTrader:
             "lot": lot,
             "comment": comment,
             "setup_signature": setup_signature,
+            "signal_id": signal_id,
         }, ""
 
     def _execute_prepared_order(self, prepared: Dict, tick: Dict) -> bool:
@@ -1332,6 +1453,7 @@ class AutoTrader:
         sl_distance = _safe_float(prepared.get("sl_distance"), 0.0)
         comment = str(prepared.get("comment") or f"FT_{strat_name[:8]}")
         setup_signature = str(prepared.get("setup_signature") or "")
+        signal_id = str(prepared.get("signal_id") or "")
 
         result = None
         for _ in range(3):
@@ -1407,8 +1529,15 @@ class AutoTrader:
                     "anti_original_tp": sig.get("_anti_original_tp"),
                     "anti_conflict_rerouted": bool(sig.get("_anti_conflict_rerouted")),
                     "anti_reroute_reason": sig.get("_anti_reroute_reason"),
+                    **(sig.get("_ai_feature_overrides") or {}),
                 },
             )
+            correction_service = getattr(self, "trade_correction_service", None)
+            if correction_service is not None and signal_id:
+                try:
+                    correction_service.on_trade_opened(signal_id, sig, t, fp)
+                except Exception as e:
+                    self.log("AI_CORRECT", f"Open-trade snapshot attach failed: {e}")
             record_trade_taken()
             record_pacing_trade()
             record_session_trade()
