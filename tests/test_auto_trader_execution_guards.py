@@ -85,6 +85,101 @@ def test_prepare_execution_blocks_when_paired_m15_strategy_is_open():
     assert reason == "Paired strategy M15_ZONE_SCALP_INVERSE already has an open trade"
 
 
+def test_prepare_execution_allows_second_m15_zone_trade_when_cap_is_two_and_stop_is_distinct():
+    trader = _build_trader(
+        open_trades={
+            1: SimpleNamespace(
+                ticket=1,
+                strategy="M15_ZONE_SCALP",
+                direction="BUY",
+                sl=95.0,
+                features={
+                    "zone_type": "DEMAND",
+                    "zone_low": 94.0,
+                    "zone_mid": 95.0,
+                    "zone_high": 96.0,
+                    "setup_signature": "older-setup",
+                },
+            ),
+        }
+    )
+    signal = {
+        "signal": "BUY",
+        "entry": 100.0,
+        "sl": 91.5,
+        "tp": 104.0,
+        "lot": 0.01,
+        "_zone_type": "DEMAND",
+        "_zone_low": 90.0,
+        "_zone_mid": 91.0,
+        "_zone_high": 92.0,
+    }
+
+    original_get = auto_trader_module._scfg.get
+    auto_trader_module._scfg.get = lambda name: {"max_active_trades": 2}
+    try:
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP",
+            signal,
+            {"ask": 100.1, "bid": 100.0},
+            {},
+            {"m15_df": None},
+        )
+    finally:
+        auto_trader_module._scfg.get = original_get
+
+    assert reason == ""
+    assert prepared is not None
+    assert prepared["action"] == "BUY"
+
+
+def test_prepare_execution_blocks_second_m15_zone_trade_when_stop_too_close():
+    trader = _build_trader(
+        open_trades={
+            7: SimpleNamespace(
+                ticket=7,
+                strategy="M15_ZONE_SCALP",
+                direction="BUY",
+                sl=99.0,
+                features={
+                    "zone_type": "DEMAND",
+                    "zone_low": 97.0,
+                    "zone_mid": 98.0,
+                    "zone_high": 99.0,
+                    "setup_signature": "older-setup",
+                },
+            ),
+        }
+    )
+    signal = {
+        "signal": "BUY",
+        "entry": 100.0,
+        "sl": 100.5,
+        "tp": 103.0,
+        "lot": 0.01,
+        "_zone_type": "DEMAND",
+        "_zone_low": 100.0,
+        "_zone_mid": 101.0,
+        "_zone_high": 102.0,
+    }
+
+    original_get = auto_trader_module._scfg.get
+    auto_trader_module._scfg.get = lambda name: {"max_active_trades": 2}
+    try:
+        prepared, reason = trader._prepare_execution_order(
+            "M15_ZONE_SCALP",
+            signal,
+            {"ask": 100.1, "bid": 100.0},
+            {},
+            {"m15_df": None},
+        )
+    finally:
+        auto_trader_module._scfg.get = original_get
+
+    assert prepared is None
+    assert "second M15 zone scalp stop too close" in reason
+
+
 def test_prepare_execution_blocks_when_strategy_is_in_post_tier1_lockout():
     trader = _build_trader(lock_reason="post-TIER1 cooldown active (180s remaining, source #123)")
     signal = {"signal": "BUY", "sl": 99.0, "tp": 101.0, "lot": 0.01}

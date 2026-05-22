@@ -4,7 +4,7 @@ DEFAULTS = {
     "enabled": True,
     "risk_pct": 0.5,
     "fixed_lot": None,
-    "max_active_trades": 1,
+    "max_active_trades": 2,
     "max_trades_day": 0,
     "spread_max": 0.5,
     "pip_size": 0.1,

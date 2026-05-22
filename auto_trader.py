@@ -66,6 +66,7 @@ from engine.master_control import log_trade_decision_comprehensive
 from engine.master_trade_gate import set_gate_log_fn as _set_gate_log_fn
 from engine import adaptive_params
 from engine.market_state import compute_market_state
+from engine import strategy_configs as _scfg
 from engine.strategy_configs import apply_all_to_cfg as _apply_strategy_configs
 from engine.sl_streak_guard import sl_streak_guard
 from engine.deployment_metadata import capture_code_snapshot
@@ -195,6 +196,14 @@ def _build_strategy_setup_signature(strategy_name: str, sig: Dict, strat_data: D
             candle_marker,
         ]
     ).strip("|")
+
+
+def _same_setup_zone_signature(sig: Dict) -> str:
+    zone_type = str(sig.get("_zone_type") or "").upper()
+    zone_low = round(_safe_float(sig.get("_zone_low"), 0.0), 2)
+    zone_mid = round(_safe_float(sig.get("_zone_mid"), 0.0), 2)
+    zone_high = round(_safe_float(sig.get("_zone_high"), 0.0), 2)
+    return "|".join([zone_type, f"{zone_low:.2f}", f"{zone_mid:.2f}", f"{zone_high:.2f}"]).strip("|")
 
 
 class AutoTrader:
@@ -1062,7 +1071,7 @@ class AutoTrader:
             and not is_market_open()
         ):
             return
-        if self._strategy_open_count(strategy_name) > 0:
+        if self._strategy_open_count(strategy_name) >= self._strategy_max_active_trades(strategy_name):
             return
         strat_data = {
             "m1_df": self._candles.get("M1"), "m5_df": self._candles.get("M5"),
@@ -1225,8 +1234,9 @@ class AutoTrader:
         if action not in ("BUY", "SELL"):
             return None, str(sig.get("reason") or "No signal")[:120]
 
-        if self._strategy_open_count(strategy_name) > 0:
-            return None, "Open trade already exists for this strategy"
+        max_active_trades = self._strategy_max_active_trades(strategy_name)
+        if self._strategy_open_count(strategy_name) >= max_active_trades:
+            return None, f"Open trade cap reached for this strategy ({max_active_trades})"
 
         sibling_strategy = _M15_ZONE_SIBLING_MAP.get(str(strategy_name or "").upper())
         if (
@@ -1280,6 +1290,9 @@ class AutoTrader:
         anti_block_reason = self._anti_mode_context_block_reason(strategy_name, execution_sig, strat_data)
         if anti_block_reason:
             return None, f"Execution blocked: {anti_block_reason}"
+        overlap_block_reason = self._m15_zone_overlap_block_reason(strategy_name, execution_sig, strat_data)
+        if overlap_block_reason:
+            return None, overlap_block_reason
         if not sl or not tp:
             return None, "Execution blocked: invalid anti-mode SL/TP"
         if sl_distance <= 0:
@@ -1435,6 +1448,68 @@ class AutoTrader:
             return 0
         target = str(strategy_name or "").upper()
         return sum(1 for trade in self.trades.open_trades.values() if str(trade.strategy or "").upper() == target)
+
+    @staticmethod
+    def _strategy_max_active_trades(strategy_name: str) -> int:
+        try:
+            cfg_map = _scfg.get(str(strategy_name or "").upper())
+        except Exception:
+            cfg_map = {}
+        return max(1, int((cfg_map or {}).get("max_active_trades", 1) or 1))
+
+    def _m15_zone_overlap_block_reason(self, strategy_name: str, sig: Dict, strat_data: Dict) -> str:
+        if not self.trades:
+            return ""
+        strategy_key = str(strategy_name or "").upper()
+        if strategy_key not in _M15_ZONE_SIBLING_MAP:
+            return ""
+
+        proposed_direction = str(sig.get("signal") or "").upper()
+        proposed_sl = round(_safe_float(sig.get("sl"), 0.0), 2)
+        proposed_zone = _same_setup_zone_signature(sig)
+        proposed_marker = _last_closed_candle_marker((strat_data or {}).get("m15_df"))
+        min_gap = max(0.0, _safe_float(getattr(cfg, "M15_ZONE_SECOND_ENTRY_MIN_SL_GAP_POINTS", 2.5), 2.5))
+        block_same_zone = bool(getattr(cfg, "M15_ZONE_SECOND_ENTRY_BLOCK_SAME_CANDLE_ZONE", True))
+
+        for trade in self.trades.open_trades.values():
+            existing_strategy = str(getattr(trade, "strategy", "") or "").upper()
+            if existing_strategy != strategy_key:
+                continue
+            existing_direction = str(getattr(trade, "direction", "") or "").upper()
+            existing_sl = round(_safe_float(getattr(trade, "sl", 0.0), 0.0), 2)
+            existing_features = dict(getattr(trade, "features", {}) or {})
+            existing_zone = "|".join(
+                [
+                    str(existing_features.get("zone_type") or "").upper(),
+                    f"{round(_safe_float(existing_features.get('zone_low'), 0.0), 2):.2f}",
+                    f"{round(_safe_float(existing_features.get('zone_mid'), 0.0), 2):.2f}",
+                    f"{round(_safe_float(existing_features.get('zone_high'), 0.0), 2):.2f}",
+                ]
+            ).strip("|")
+            existing_marker = str(existing_features.get("setup_signature") or existing_features.get("context_hash") or "")
+
+            if (
+                block_same_zone
+                and proposed_direction == existing_direction
+                and proposed_zone
+                and existing_zone == proposed_zone
+                and proposed_marker
+                and proposed_marker in existing_marker
+            ):
+                return f"Execution blocked: same M15 zone already active for this candle (ticket #{getattr(trade, 'ticket', 0)})"
+
+            if (
+                min_gap > 0
+                and proposed_direction == existing_direction
+                and proposed_sl > 0
+                and existing_sl > 0
+                and abs(proposed_sl - existing_sl) < min_gap
+            ):
+                return (
+                    "Execution blocked: second M15 zone scalp stop too close to open trade "
+                    f"(gap {abs(proposed_sl - existing_sl):.2f} < {min_gap:.2f}, ticket #{getattr(trade, 'ticket', 0)})"
+                )
+        return ""
 
     def _log_strategy_skip(self, strategy_name: str, message: str, *, cooldown_seconds: float = 30.0):
         now = time.time()
