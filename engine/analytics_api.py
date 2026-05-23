@@ -468,6 +468,7 @@ def _build_day_analysis_page(ist_date: str) -> str:
   </main>
   <script>
     const IST_DATE = {json.dumps(ist_date)};
+    const INITIAL_REFRESH = 0;
     function fmtPct(v) {{
       return typeof v === 'number' ? `${{(v * 100).toFixed(1)}}%` : '-';
     }}
@@ -543,7 +544,7 @@ def _build_day_analysis_page(ist_date: str) -> str:
         textEl.textContent = String(error);
       }}
     }}
-    loadDaySummary(0);
+    loadDaySummary(INITIAL_REFRESH);
   </script>
 </body>
 </html>"""
@@ -589,8 +590,11 @@ async def analytics_ai_summary(
 
 
 @router.get("/analytics/day", response_class=HTMLResponse)
-async def analytics_day_page(date: str = Query(..., min_length=10, max_length=10)):
-    return HTMLResponse(_build_day_analysis_page(date))
+async def analytics_day_page(
+    date: str = Query(..., min_length=10, max_length=10),
+    refresh: int = Query(0, ge=0, le=1),
+):
+    return HTMLResponse(_build_day_analysis_page(date).replace("const INITIAL_REFRESH = 0;", f"const INITIAL_REFRESH = {1 if refresh else 0};"))
 
 
 @router.get("/analytics/api/day-summary")

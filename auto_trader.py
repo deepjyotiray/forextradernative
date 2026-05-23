@@ -2114,7 +2114,9 @@ class AutoTrader:
                     s._j(ai_analysis_service.generate_summary(days=days, refresh=bool(refresh)))
                 elif p == "/analytics/day":
                     target_date = (q.get("date") or [""])[0]
-                    s._h(_build_day_analysis_page(target_date))
+                    refresh = int((q.get("refresh") or ["0"])[0])
+                    page = _build_day_analysis_page(target_date).replace("const INITIAL_REFRESH = 0;", f"const INITIAL_REFRESH = {1 if refresh else 0};")
+                    s._h(page)
                 elif p == "/analytics/api/day-summary":
                     target_date = (q.get("date") or [""])[0]
                     refresh = int((q.get("refresh") or ["0"])[0])

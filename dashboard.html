@@ -1301,7 +1301,7 @@ const _POLL_INTERVAL=_isMobile?30000:15000;
 const _CHART_INTERVAL=_isMobile?30000:15000;
 const _LOG_INTERVAL=_isMobile?120000:60000;
 function toggleDay(d){if(!window._cc)window._cc={};window._cc[d]=!window._cc[d];scheduleRender({},{full:true});}
-function openDayAnalysis(d,ev){if(ev){ev.preventDefault();ev.stopPropagation();}window.open(`${A}/analytics/day?date=${encodeURIComponent(d)}`,'_blank','noopener');}
+function openDayAnalysis(d,ev){if(ev){ev.preventDefault();ev.stopPropagation();}window.open(`${A}/analytics/day?date=${encodeURIComponent(d)}&refresh=1`,'_blank','noopener');}
 async function safeFull(){if(_fullFlight||document.hidden)return;_fullFlight=true;try{await fetchFull();}finally{_fullFlight=false;}}
 setInterval(safeFull,_POLL_INTERVAL);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)safeFull();});
