@@ -4,7 +4,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from engine.ai_analysis import AIAnalysisService, build_analysis_snapshot
+from engine.ai_analysis import AIAnalysisService, build_analysis_snapshot, build_analysis_snapshot_for_date
 from engine.analytics_api import router as analytics_router
 
 
@@ -84,6 +84,71 @@ class AIAnalysisServiceTests(unittest.TestCase):
         self.assertEqual(snapshot["decision_summary"]["total_decisions"], 5)
         self.assertIn("Skipped full attribution-backed report", snapshot["report_error"])
 
+    @patch("engine.ai_analysis.get_recent_attributions")
+    @patch("engine.ai_analysis.OrderDatabase")
+    def test_build_analysis_snapshot_for_date_filters_exact_day(
+        self,
+        order_database_cls,
+        recent_attributions_mock,
+    ):
+        order_database_cls.return_value.get_trade_outcome_review_for_ist_date.return_value = {
+            "summary": {"trades": 2, "wins": 1, "losses": 1, "breakeven": 0, "total_pnl": 1.5},
+            "close_reason_categories": [{"close_reason_category": "tp", "trades": 1}],
+            "strategies": [{"strategy": "SMC_CONFLUENCE", "trades": 2, "total_pnl": 1.5}],
+            "profiles": [],
+            "volume_ratio_buckets": [],
+            "pressure_score_buckets": [],
+            "breakeven_review": {"count": 0},
+        }
+        recent_attributions_mock.return_value = [
+            {
+                "timestamp": "2026-05-22T10:15:00+05:30",
+                "unix_time": 1,
+                "trade_id": "t1",
+                "decision": "TRADE_TAKEN",
+                "trade_completed": True,
+                "setup_direction": "LONG",
+                "session": "LONDON",
+                "quality_score": 0.81,
+                "pnl": 3.0,
+                "outcome": "WIN",
+                "trade_duration": 120,
+            },
+            {
+                "timestamp": "2026-05-22T11:20:00+05:30",
+                "unix_time": 2,
+                "trade_id": "t2",
+                "decision": "TRADE_TAKEN",
+                "trade_completed": True,
+                "setup_direction": "SHORT",
+                "session": "NY",
+                "quality_score": 0.62,
+                "pnl": -1.5,
+                "outcome": "LOSS",
+                "trade_duration": 180,
+            },
+            {
+                "timestamp": "2026-05-22T12:00:00+05:30",
+                "unix_time": 3,
+                "decision": "TRADE_SKIPPED",
+                "reason": "spread too high",
+            },
+            {
+                "timestamp": "2026-05-23T09:00:00+05:30",
+                "unix_time": 4,
+                "decision": "TRADE_SKIPPED",
+                "reason": "different day",
+            },
+        ]
+
+        snapshot = build_analysis_snapshot_for_date("2026-05-22")
+
+        self.assertEqual(snapshot["target_ist_date"], "2026-05-22")
+        self.assertEqual(snapshot["performance_summary"]["total_trades"], 2)
+        self.assertEqual(snapshot["decision_summary"]["total_decisions"], 3)
+        self.assertEqual(snapshot["decision_summary"]["trades_skipped"], 1)
+        self.assertEqual(snapshot["directional_analysis"]["better_direction"], "LONG")
+
     def test_generate_summary_returns_disabled_without_api_key(self):
         service = AIAnalysisService(api_key="", enabled=True)
 
@@ -112,7 +177,7 @@ class AIAnalysisServiceTests(unittest.TestCase):
         self.assertIn("Priority:", result["analysis"])
         self.assertEqual(result["snapshot"]["period_days"], 7)
 
-    @patch.dict("os.environ", {"NVIDIA_API_KEY": "nv-test-key"}, clear=False)
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "", "NVIDIA_API_KEY": "nv-test-key"}, clear=False)
     @patch("engine.ai_analysis.build_analysis_snapshot")
     @patch.object(AIAnalysisService, "_request_nvidia_analysis")
     def test_generate_summary_uses_nvidia_fallback(self, request_mock, build_snapshot_mock):
@@ -131,6 +196,23 @@ class AIAnalysisServiceTests(unittest.TestCase):
         self.assertEqual(result["model"], "mistralai/mistral-medium-3.5-128b")
         self.assertIn("Priority:", result["analysis"])
         request_mock.assert_called_once()
+
+    @patch("engine.ai_analysis.build_analysis_snapshot_for_date")
+    @patch.object(AIAnalysisService, "_request_openai_analysis")
+    def test_generate_day_summary_returns_ready_payload(self, request_mock, build_snapshot_mock):
+        build_snapshot_mock.return_value = {
+            "target_ist_date": "2026-05-22",
+            "performance_summary": {"total_trades": 3, "win_rate": 0.667},
+        }
+        request_mock.return_value = "- Day looks stable\nPriority: review the losing setup."
+        service = AIAnalysisService(api_key="test-key", enabled=True, model="gpt-5.4-mini")
+
+        result = service.generate_day_summary("2026-05-22", refresh=True)
+
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["target_ist_date"], "2026-05-22")
+        self.assertIn("Priority:", result["analysis"])
 
 
 class AnalyticsAISummaryApiTests(unittest.TestCase):
@@ -155,6 +237,23 @@ class AnalyticsAISummaryApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ready")
         generate_summary_mock.assert_called_once_with(days=30, refresh=True)
+
+    def test_day_summary_endpoint_returns_service_payload(self):
+        payload = {
+            "enabled": True,
+            "status": "ready",
+            "target_ist_date": "2026-05-22",
+            "model": "gpt-5.4-mini",
+            "generated_at": "2026-05-23T00:00:00+00:00",
+            "cached": False,
+            "analysis": "- Day-specific snapshot looks stable.\nPriority: compare the losing setup.",
+        }
+        with patch("engine.analytics_api.ai_analysis_service.generate_day_summary", return_value=payload) as generate_summary_mock:
+            response = self.client.get("/analytics/api/day-summary?date=2026-05-22&refresh=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["target_ist_date"], "2026-05-22")
+        generate_summary_mock.assert_called_once_with(ist_date="2026-05-22", refresh=True)
 
 
 if __name__ == "__main__":

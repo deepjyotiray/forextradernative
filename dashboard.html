@@ -1248,7 +1248,7 @@ function render(d,opts={}){
       const dp=day.pnl;
       const open=window._cc[day.date]===true;
       const arrow=open?'&#9660;':'&#9654;';
-      h+=`<tr style="background:rgba(255,255,255,.04);cursor:pointer;user-select:none" onclick="toggleDay('${day.date}')"><td colspan="6" style="font-weight:700;font-size:11px;padding:5px">${arrow} ${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="4" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td></tr>`;
+      h+=`<tr style="background:rgba(255,255,255,.04);cursor:pointer;user-select:none" onclick="toggleDay('${day.date}')"><td colspan="6" style="font-weight:700;font-size:11px;padding:5px">${arrow} ${day.dateLabel}</td><td class="${pc(dp)}" style="font-weight:700;font-size:11px;padding:5px">${ps(dp)}</td><td style="font-size:10px;color:var(--dim);padding:5px">${day.wins}W ${day.losses}L</td><td colspan="3" style="font-size:10px;color:var(--dim);padding:5px">${day.trades.length} trades</td><td style="padding:5px;text-align:right"><button class="btn btn-link" style="padding:3px 8px;font-size:10px" onclick="openDayAnalysis('${day.date}',event)">Analyze</button></td></tr>`;
       if(open)day.trades.forEach(t=>{
         const p=t.pnl||0;
         const dt=t._dt;
@@ -1301,6 +1301,7 @@ const _POLL_INTERVAL=_isMobile?30000:15000;
 const _CHART_INTERVAL=_isMobile?30000:15000;
 const _LOG_INTERVAL=_isMobile?120000:60000;
 function toggleDay(d){if(!window._cc)window._cc={};window._cc[d]=!window._cc[d];scheduleRender({},{full:true});}
+function openDayAnalysis(d,ev){if(ev){ev.preventDefault();ev.stopPropagation();}window.open(`${A}/analytics/day?date=${encodeURIComponent(d)}`,'_blank','noopener');}
 async function safeFull(){if(_fullFlight||document.hidden)return;_fullFlight=true;try{await fetchFull();}finally{_fullFlight=false;}}
 setInterval(safeFull,_POLL_INTERVAL);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)safeFull();});

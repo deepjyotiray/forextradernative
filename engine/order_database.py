@@ -41,6 +41,20 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
+def _normalize_order_row(row: sqlite3.Row) -> Dict[str, Any]:
+    order = dict(row)
+    order['features'] = json.loads(order['features'] or '{}')
+    order['scalp'] = bool(order.get('scalp'))
+    order['sl_breakeven'] = bool(order.get('sl_breakeven'))
+    order['partial_closed'] = bool(order.get('partial_closed'))
+    order['trail_active'] = bool(order.get('trail_active'))
+    return order
+
+
+def _parse_ist_date(ist_date: str) -> datetime:
+    return datetime.strptime(str(ist_date).strip(), "%Y-%m-%d").replace(tzinfo=_IST)
+
+
 def _bucket_volume_ratio(value: float) -> str:
     if value <= 0:
         return "unknown"
@@ -511,17 +525,21 @@ class OrderDatabase:
                 ORDER BY close_time DESC
             """, (cutoff.isoformat(),))
             
-            orders = []
-            for row in cursor.fetchall():
-                order = dict(row)
-                order['features'] = json.loads(order['features'] or '{}')
-                order['scalp'] = bool(order['scalp'])
-                order['sl_breakeven'] = bool(order['sl_breakeven'])
-                order['partial_closed'] = bool(order['partial_closed'])
-                order['trail_active'] = bool(order['trail_active'])
-                orders.append(order)
-            
-            return orders
+            return [_normalize_order_row(row) for row in cursor.fetchall()]
+
+    def get_closed_orders_for_ist_date(self, ist_date: str) -> List[Dict]:
+        """Get closed orders for one exact IST trading day."""
+        day_start = _parse_ist_date(ist_date)
+        day_end = day_start + timedelta(days=1)
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT * FROM orders
+                WHERE status = 'CLOSED' AND close_time_ist >= ? AND close_time_ist < ?
+                ORDER BY close_time_ist DESC, close_time DESC
+            """, (day_start.isoformat(), day_end.isoformat()))
+            return [_normalize_order_row(row) for row in cursor.fetchall()]
 
     def get_closed_orders_opened_between(self, start_time: str, end_time: str) -> List[Dict]:
         """Get closed orders whose open_time falls within a UTC interval."""
@@ -607,6 +625,36 @@ class OrderDatabase:
                 stats[key] = round(stats[key] or 0, 2)
             
             return stats
+
+    def get_stats_for_ist_date(self, ist_date: str) -> Dict:
+        """Get closed-trade stats for one exact IST date."""
+        day_start = _parse_ist_date(ist_date)
+        day_end = day_start + timedelta(days=1)
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT COUNT(*) as trades,
+                       SUM(CASE WHEN final_pnl > 0 THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN final_pnl < 0 THEN 1 ELSE 0 END) as losses,
+                       SUM(final_pnl) as total_pnl,
+                       AVG(final_pnl) as avg_pnl,
+                       MAX(final_pnl) as best_trade,
+                       MIN(final_pnl) as worst_trade
+                FROM orders
+                WHERE status = 'CLOSED' AND close_time_ist >= ? AND close_time_ist < ?
+            """, (day_start.isoformat(), day_end.isoformat()))
+            row = cursor.fetchone()
+
+        stats = {k: (row[k] if row else None) for k in (
+            'trades', 'wins', 'losses', 'total_pnl', 'avg_pnl', 'best_trade', 'worst_trade'
+        )}
+        for key in ['trades', 'wins', 'losses']:
+            stats[key] = stats[key] or 0
+        for key in ['total_pnl', 'avg_pnl', 'best_trade', 'worst_trade']:
+            stats[key] = round(stats[key] or 0, 2)
+        stats["ist_date"] = day_start.strftime("%Y-%m-%d")
+        return stats
     
     def get_daily_pnl(self, days: int = 30) -> List[Dict]:
         """Get daily PNL breakdown using IST dates from close_time_ist."""
@@ -666,14 +714,13 @@ class OrderDatabase:
             
             return results
 
-    def get_trade_outcome_review(self, days: int = 30) -> Dict:
-        """Segment closed trades for tuning exits and entries from recent live outcomes."""
-        rows = self.get_closed_orders(days)
+    def _build_trade_outcome_review(self, rows: List[Dict], *, days: int | None = None, ist_date: str | None = None) -> Dict:
         generated_at = datetime.now(timezone.utc).isoformat()
         if not rows:
             return {
                 "generated_at": generated_at,
                 "days": days,
+                "ist_date": ist_date,
                 "summary": {
                     "trades": 0,
                     "wins": 0,
@@ -744,6 +791,7 @@ class OrderDatabase:
         return {
             "generated_at": generated_at,
             "days": days,
+            "ist_date": ist_date,
             "summary": {
                 "trades": trades,
                 "wins": wins,
@@ -760,6 +808,17 @@ class OrderDatabase:
             "pressure_score_buckets": pressure_score_buckets,
             "breakeven_review": breakeven_review,
         }
+
+    def get_trade_outcome_review(self, days: int = 30) -> Dict:
+        """Segment closed trades for tuning exits and entries from recent live outcomes."""
+        return self._build_trade_outcome_review(self.get_closed_orders(days), days=days)
+
+    def get_trade_outcome_review_for_ist_date(self, ist_date: str) -> Dict:
+        """Segment closed trades for one exact IST trading day."""
+        return self._build_trade_outcome_review(
+            self.get_closed_orders_for_ist_date(ist_date),
+            ist_date=_parse_ist_date(ist_date).strftime("%Y-%m-%d"),
+        )
     
     def cleanup_old_data(self, days: int = 90):
         """Remove orders older than specified days."""

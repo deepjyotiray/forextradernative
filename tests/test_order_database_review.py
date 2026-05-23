@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 import gc
+from datetime import datetime
 
 import engine.order_database as order_database_module
 from engine.order_database import OrderDatabase
@@ -121,6 +122,39 @@ class OrderDatabaseReviewTests(unittest.TestCase):
         pressure_buckets = {row["pressure_score_bucket"]: row for row in report["pressure_score_buckets"]}
         self.assertEqual(pressure_buckets["strong_long(>=0.35)"]["trades"], 1)
         self.assertEqual(pressure_buckets["strong_short(<=-0.35)"]["losses"], 1)
+
+    def test_trade_outcome_review_for_ist_date_filters_exact_day(self):
+        self._store_closed_order(
+            10,
+            "SMC_CONFLUENCE",
+            "swing_fast",
+            3.0,
+            "tp",
+            "tp",
+            1.20,
+            0.31,
+        )
+        self._store_closed_order(
+            11,
+            "M15_SCALP_DEEP",
+            "scalp",
+            -1.0,
+            "sl",
+            "sl",
+            0.95,
+            -0.22,
+        )
+
+        orders = self.db.get_closed_orders_for_ist_date("2099-01-01")
+        self.assertEqual(orders, [])
+
+        today_ist_date = datetime.now(order_database_module._IST).strftime("%Y-%m-%d")
+        report = self.db.get_trade_outcome_review_for_ist_date(today_ist_date)
+
+        self.assertEqual(report["ist_date"], today_ist_date)
+        self.assertEqual(report["summary"]["trades"], 2)
+        self.assertEqual(report["summary"]["wins"], 1)
+        self.assertEqual(report["summary"]["losses"], 1)
 
 
 if __name__ == "__main__":
