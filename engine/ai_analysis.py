@@ -79,6 +79,63 @@ def _mean(values: List[float]) -> float:
     return statistics.mean(values) if values else 0.0
 
 
+def _normalize_session(session_value: Any) -> str:
+    session = str(session_value or "UNKNOWN").upper().strip()
+    if session in {"NEW_YORK", "NY"}:
+        return "NY"
+    return session or "UNKNOWN"
+
+
+def _orders_to_completed_trades(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    trades: List[Dict[str, Any]] = []
+    for row in rows:
+        features = row.get("features") or {}
+        close_dt = _parse_iso_datetime(row.get("close_time_ist")) or _parse_iso_datetime(row.get("close_time"))
+        if not close_dt:
+            continue
+        pnl = _safe_float(row.get("final_pnl"), 0.0)
+        if pnl > 0:
+            outcome = "WIN"
+        elif pnl < 0:
+            outcome = "LOSS"
+        else:
+            outcome = "BE"
+
+        direction = str(row.get("direction") or "").upper()
+        setup_direction = "LONG" if direction in {"BUY", "LONG"} else "SHORT"
+        quality_score = features.get("quality_score")
+        if quality_score is None:
+            quality_score = features.get("signal_confidence")
+        trade_type = "COUNTER_TREND" if "counter-trend" in str(row.get("reason") or "").lower() else "WITH_TREND"
+
+        trades.append(
+            {
+                "timestamp": close_dt.isoformat(),
+                "unix_time": close_dt.astimezone(timezone.utc).timestamp(),
+                "trade_id": f"order_{row.get('ticket')}",
+                "strategy": row.get("strategy") or "UNKNOWN",
+                "setup_direction": setup_direction,
+                "trade_type": trade_type,
+                "quality_score": _safe_float(quality_score, 0.0),
+                "tick_ratio": _safe_float(features.get("tick_ratio"), 0.0),
+                "tick_velocity": _safe_float(features.get("entry_tick_velocity"), 0.0),
+                "spread_mean": _safe_float(features.get("spread"), 0.0),
+                "atr_value": _safe_float(features.get("atr"), 0.0),
+                "session": _normalize_session(features.get("session") or row.get("session_type")),
+                "decision": "TRADE_TAKEN",
+                "reason": row.get("reason") or "",
+                "entry_price": _safe_float(row.get("entry_price"), 0.0),
+                "exit_price": _safe_float(row.get("exit_price"), 0.0),
+                "outcome": outcome,
+                "pnl": pnl,
+                "trade_duration": _safe_float(row.get("held_seconds"), 0.0),
+                "completion_time": close_dt.isoformat(),
+                "trade_completed": True,
+            }
+        )
+    return trades
+
+
 def _build_performance_summary(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
     winners = [t for t in trades if t.get("outcome") == "WIN"]
     losers = [t for t in trades if t.get("outcome") == "LOSS"]
@@ -402,9 +459,10 @@ def build_analysis_snapshot(days: int) -> Dict[str, Any]:
 def build_analysis_snapshot_for_date(ist_date: str) -> Dict[str, Any]:
     normalized_date = _parse_ist_date(ist_date).strftime("%Y-%m-%d")
     order_db = OrderDatabase()
+    day_orders = order_db.get_closed_orders_for_ist_date(normalized_date) or []
     order_review = order_db.get_trade_outcome_review_for_ist_date(normalized_date) or {}
     attributions = _filter_attributions_for_ist_date(normalized_date)
-    completed_trades = [item for item in attributions if item.get("trade_completed", False)]
+    completed_trades = _orders_to_completed_trades(day_orders)
 
     performance_summary = _build_performance_summary(completed_trades)
     directional_analysis = _build_directional_analysis(completed_trades)
@@ -440,7 +498,11 @@ def build_analysis_snapshot_for_date(ist_date: str) -> Dict[str, Any]:
             "pressure_score_buckets": _top_items(order_review.get("pressure_score_buckets") or []),
             "breakeven_review": dict(order_review.get("breakeven_review") or {}),
         },
-        "report_error": None if completed_trades else "No completed attribution records found for the selected IST trading day.",
+        "report_error": (
+            None
+            if attributions
+            else "Decision-attribution records were unavailable for the selected IST day; completed-trade performance was built from orders.db."
+        ),
     }
 
 

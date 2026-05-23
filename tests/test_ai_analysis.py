@@ -91,6 +91,30 @@ class AIAnalysisServiceTests(unittest.TestCase):
         order_database_cls,
         recent_attributions_mock,
     ):
+        order_database_cls.return_value.get_closed_orders_for_ist_date.return_value = [
+            {
+                "ticket": 101,
+                "strategy": "SMC_CONFLUENCE",
+                "direction": "BUY",
+                "final_pnl": 3.0,
+                "held_seconds": 120,
+                "close_time_ist": "2026-05-22T10:16:00+05:30",
+                "close_time": "2026-05-22T04:46:00+00:00",
+                "reason": "trend continuation",
+                "features": {"session": "LONDON", "signal_confidence": 0.81, "spread": 0.12, "atr": 2.1},
+            },
+            {
+                "ticket": 102,
+                "strategy": "SMC_CONFLUENCE",
+                "direction": "SELL",
+                "final_pnl": -1.5,
+                "held_seconds": 180,
+                "close_time_ist": "2026-05-22T11:23:00+05:30",
+                "close_time": "2026-05-22T05:53:00+00:00",
+                "reason": "counter-trend fade",
+                "features": {"session": "NEW_YORK", "signal_confidence": 0.62, "spread": 0.14, "atr": 1.9},
+            },
+        ]
         order_database_cls.return_value.get_trade_outcome_review_for_ist_date.return_value = {
             "summary": {"trades": 2, "wins": 1, "losses": 1, "breakeven": 0, "total_pnl": 1.5},
             "close_reason_categories": [{"close_reason_category": "tp", "trades": 1}],
@@ -148,6 +172,42 @@ class AIAnalysisServiceTests(unittest.TestCase):
         self.assertEqual(snapshot["decision_summary"]["total_decisions"], 3)
         self.assertEqual(snapshot["decision_summary"]["trades_skipped"], 1)
         self.assertEqual(snapshot["directional_analysis"]["better_direction"], "LONG")
+
+    @patch("engine.ai_analysis.get_recent_attributions", return_value=[])
+    @patch("engine.ai_analysis.OrderDatabase")
+    def test_build_analysis_snapshot_for_date_uses_orders_when_attribution_missing(
+        self,
+        order_database_cls,
+        _recent_attributions_mock,
+    ):
+        order_database_cls.return_value.get_closed_orders_for_ist_date.return_value = [
+            {
+                "ticket": 201,
+                "strategy": "M15_ZONE_SCALP",
+                "direction": "BUY",
+                "final_pnl": 2.2,
+                "held_seconds": 45,
+                "close_time_ist": "2026-05-22T09:10:00+05:30",
+                "close_time": "2026-05-22T03:40:00+00:00",
+                "reason": "scalp continuation",
+                "features": {"session": "ASIAN", "signal_confidence": 0.74},
+            }
+        ]
+        order_database_cls.return_value.get_trade_outcome_review_for_ist_date.return_value = {
+            "summary": {"trades": 1, "wins": 1, "losses": 0, "breakeven": 0, "total_pnl": 2.2},
+            "close_reason_categories": [],
+            "strategies": [],
+            "profiles": [],
+            "volume_ratio_buckets": [],
+            "pressure_score_buckets": [],
+            "breakeven_review": {"count": 0},
+        }
+
+        snapshot = build_analysis_snapshot_for_date("2026-05-22")
+
+        self.assertEqual(snapshot["performance_summary"]["total_trades"], 1)
+        self.assertEqual(snapshot["performance_summary"]["total_pnl"], 2.2)
+        self.assertIn("orders.db", snapshot["report_error"])
 
     def test_generate_summary_returns_disabled_without_api_key(self):
         service = AIAnalysisService(api_key="", enabled=True)

@@ -25,7 +25,13 @@ from urllib.parse import urlparse, parse_qs, unquote
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 import config as cfg
-from engine.analytics_api import _build_analytics_page, _LATEST_DIR, _OUTPUT_ROOT
+from engine.analytics_api import (
+    _build_analytics_page,
+    _build_day_analysis_page,
+    _LATEST_DIR,
+    _OUTPUT_ROOT,
+)
+from engine.ai_analysis import ai_analysis_service
 from engine.mt5_bridge import MT5Bridge
 from engine.indicators import compute_indicators, compute_timeframe_context
 from engine.zones import ZoneDetector
@@ -2102,6 +2108,17 @@ class AutoTrader:
                     manifest_path.parent.mkdir(parents=True, exist_ok=True)
                     manifest_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
                     s._j(result)
+                elif p == "/analytics/api/ai-summary":
+                    days = int((q.get("days") or ["30"])[0])
+                    refresh = int((q.get("refresh") or ["0"])[0])
+                    s._j(ai_analysis_service.generate_summary(days=days, refresh=bool(refresh)))
+                elif p == "/analytics/day":
+                    target_date = (q.get("date") or [""])[0]
+                    s._h(_build_day_analysis_page(target_date))
+                elif p == "/analytics/api/day-summary":
+                    target_date = (q.get("date") or [""])[0]
+                    refresh = int((q.get("refresh") or ["0"])[0])
+                    s._j(ai_analysis_service.generate_day_summary(ist_date=target_date, refresh=bool(refresh)))
                 elif p.startswith("/analytics-assets/"):
                     rel_path = unquote(p[len("/analytics-assets/"):]).lstrip("/")
                     target = (_OUTPUT_ROOT / rel_path).resolve()
