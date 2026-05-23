@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from engine.analytics_api import router as analytics_router
@@ -14,6 +15,7 @@ import config as cfg
 app = FastAPI(title="Trading System API", version=cfg.APP_VERSION)
 _BASE_DIR = Path(__file__).resolve().parent
 _ANALYTICS_DIR = _BASE_DIR / "analytics_outputs"
+_SITE_ICON = _BASE_DIR / "UnifiedTraderRestart.ico"
 _ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
 
 app.include_router(order_router)
@@ -39,6 +41,11 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "trading_system", "app_version": cfg.APP_VERSION}
+
+
+@app.get("/site-icon.ico")
+async def site_icon():
+    return FileResponse(_SITE_ICON, media_type="image/x-icon")
 
 
 _LOG_PATTERN = re.compile(

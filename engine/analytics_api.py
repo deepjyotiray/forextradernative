@@ -50,6 +50,7 @@ def _build_analytics_page(result: dict, days: int) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Visual Analytics Dashboard</title>
+  <link rel="icon" href="/site-icon.ico" sizes="any">
   <style>
     :root {{
       --bg: #edf2f4;
@@ -288,6 +289,7 @@ def _build_day_analysis_page(ist_date: str) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Day Trade Analysis - {ist_date}</title>
+  <link rel="icon" href="/site-icon.ico" sizes="any">
   <style>
     :root {{
       --bg: #f4f7fb;

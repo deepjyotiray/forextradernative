@@ -80,6 +80,7 @@ from ai_trade_correction_service import AITradeCorrectionService
 
 _TF_REFRESH = {"M1": 1, "M5": 2, "M15": 10, "M30": 20, "H1": 60, "H4": 120, "D1": 720}
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_SITE_ICON_PATH = os.path.join(_BASE_DIR, "UnifiedTraderRestart.ico")
 _PAIRED_EXECUTION_FOLLOWERS = {}
 _M15_ZONE_SIBLING_MAP = {
     "M15_ZONE_SCALP": "M15_ZONE_SCALP_INVERSE",
@@ -2077,6 +2078,11 @@ class AutoTrader:
                 elif p == "/trades": s._j(trader.trades.status if trader.trades else {})
                 elif p == "/performance": s._j(trader.perf.get_stats())
                 elif p == "/health": s._j({"status":"healthy","service":"auto_trader","app_version":cfg.APP_VERSION})
+                elif p == "/site-icon.ico":
+                    if os.path.isfile(_SITE_ICON_PATH):
+                        s._bytes(Path(_SITE_ICON_PATH).read_bytes(), "image/x-icon")
+                    else:
+                        s._j({"error":"Icon not found"},404)
                 elif p == "/config":
                     from engine import strategy_configs as _scfg
                     _all_cfg = {k: getattr(cfg, k) for k in cfg._PERSISTED_KEYS if hasattr(cfg, k) and isinstance(getattr(cfg, k), (bool, int, float, str, list))}
