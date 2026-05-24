@@ -63,7 +63,8 @@ from engine.xgb_model import (
     xgb_blocking_enabled,
     xgb_blending_enabled,
 )
-from engine.ai_trade_advisor import ai_trade_advisor_service
+from engine.ai_market_bias import AIMarketBiasService
+from engine.weekend_intel import WeekendIntelService
 from engine.anti_starvation import record_trade_taken
 from engine.trade_pacing import record_trade_taken as record_pacing_trade
 from engine.session_risk_control import record_trade_taken as record_session_trade
@@ -236,6 +237,8 @@ class AutoTrader:
             strategy_manager=self.strat_mgr,
             log_fn=self.log,
         )
+        self.ai_market_bias_service = AIMarketBiasService(_BASE_DIR, cfg)
+        self.weekend_intel_service = WeekendIntelService(_BASE_DIR, cfg)
 
         self._candles: Dict = {}
         self._candle_counts: Dict = {}
@@ -1000,6 +1003,17 @@ class AutoTrader:
             self._last_log_time = now
             self._log_status(tick)
 
+        weekend_intel_service = getattr(self, "weekend_intel_service", None)
+        if weekend_intel_service is not None:
+            try:
+                weekend_intel_service.refresh_if_due(
+                    {
+                        "symbol": self.bridge.current_symbol if self.bridge else cfg.SYMBOL,
+                        "now_utc": datetime.now(timezone.utc),
+                    }
+                )
+            except Exception as e:
+                self.log("AI", f"Weekend intel refresh failed open: {e}")
         if not self.enabled:
             return
         if not bool(getattr(cfg, "TEMP_DISABLE_GLOBAL_BLOCKS", False)) and not is_market_open():
@@ -1031,6 +1045,18 @@ class AutoTrader:
             "strategy_trade_counts": self._strategy_trade_counts(),
             "session": get_session(),
         }
+        if weekend_intel_service is not None:
+            try:
+                strat_data["weekend_intel"] = weekend_intel_service.get_status()
+            except Exception:
+                strat_data["weekend_intel"] = {}
+        ai_market_bias_service = getattr(self, "ai_market_bias_service", None)
+        if ai_market_bias_service is not None:
+            try:
+                strat_data["ai_market_bias"] = ai_market_bias_service.refresh_if_due(strat_data)
+            except Exception as e:
+                self.log("AI", f"Market bias refresh failed open: {e}")
+                strat_data["ai_market_bias"] = ai_market_bias_service.get_snapshot()
         correction_service = getattr(self, "trade_correction_service", None)
         if correction_service is not None and self.trades:
             try:
@@ -1395,6 +1421,24 @@ class AutoTrader:
                 correction_service.update_signal_status(signal_id, status="SKIPPED", reason="Execution blocked: invalid anti-mode stop distance", signal_snapshot=execution_sig)
             return None, "Execution blocked: invalid anti-mode stop distance"
 
+        ai_market_bias_service = getattr(self, "ai_market_bias_service", None)
+        if ai_market_bias_service is not None:
+            try:
+                market_bias_result = ai_market_bias_service.apply_to_signal(strategy_name, execution_sig, strat_data)
+                if not market_bias_result.get("allowed", True):
+                    block_reason = str(market_bias_result.get("reason") or "AI market bias blocked trade")
+                    if correction_service is not None and signal_id:
+                        correction_service.update_signal_status(
+                            signal_id,
+                            status="SKIPPED",
+                            reason=block_reason,
+                            signal_snapshot=market_bias_result.get("adjusted_signal") or execution_sig,
+                        )
+                    return None, block_reason
+                execution_sig = dict(market_bias_result.get("adjusted_signal") or execution_sig)
+            except Exception as e:
+                self.log("AI", f"Market bias pre-execution check failed open: {e}")
+
         if correction_service is not None and signal_id:
             try:
                 correction = correction_service.pre_execution_check(
@@ -1431,6 +1475,15 @@ class AutoTrader:
                 high_conf=bool(execution_sig.get("_high_conf", False)),
                 strategy=strategy_name,
             )
+        ai_market_bias_multiplier = min(
+            1.0,
+            max(0.50, _safe_float(execution_sig.get("_ai_market_bias_risk_multiplier"), 1.0)),
+        )
+        if str(execution_sig.get("_ai_market_bias_action") or "").upper() == "REDUCE_RISK" and ai_market_bias_multiplier < 1.0:
+            lot = max(float(getattr(cfg, "MIN_LOT", 0.01)), round(lot * ai_market_bias_multiplier, 2))
+            execution_sig.setdefault("_ai_feature_overrides", {})
+            execution_sig["_ai_feature_overrides"]["ai_market_bias_applied_action"] = "REDUCE_RISK"
+            execution_sig["_ai_feature_overrides"]["ai_market_bias_applied_multiplier"] = ai_market_bias_multiplier
         if lot <= 0:
             if correction_service is not None and signal_id:
                 correction_service.update_signal_status(signal_id, status="SKIPPED", reason="Execution blocked: invalid lot", signal_snapshot=execution_sig)

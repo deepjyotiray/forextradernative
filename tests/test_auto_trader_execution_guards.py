@@ -62,6 +62,7 @@ def _build_trader(open_trades=None, lock_reason="", closed_orders=None):
     trader.trades = _StubTrades(open_trades=open_trades, lock_reason=lock_reason, closed_orders=closed_orders)
     trader.risk = _StubRisk()
     trader.strat_mgr = _StubStrategyManager()
+    trader.ai_market_bias_service = None
     return trader
 
 
@@ -194,6 +195,64 @@ def test_prepare_execution_blocks_when_strategy_is_in_post_tier1_lockout():
 
     assert prepared is None
     assert reason == "Execution blocked: post-TIER1 cooldown active (180s remaining, source #123)"
+
+
+def test_prepare_execution_blocks_from_ai_market_bias_reason():
+    class _StubAIMarketBias:
+        def apply_to_signal(self, strategy_name, signal, market_data):
+            return {
+                "allowed": False,
+                "reason": "AI market bias blocked SHORT trades: strong LONG macro/news bias",
+                "adjusted_signal": dict(signal),
+                "snapshot": {},
+            }
+
+    trader = _build_trader()
+    trader.ai_market_bias_service = _StubAIMarketBias()
+    signal = {"signal": "SELL", "sl": 101.0, "tp": 99.0, "lot": 0.02}
+
+    prepared, reason = trader._prepare_execution_order(
+        "SMC_CONFLUENCE",
+        signal,
+        {"ask": 100.1, "bid": 100.0},
+        {},
+        {"m15_df": None, "symbol": "XAUUSD"},
+    )
+
+    assert prepared is None
+    assert reason == "AI market bias blocked SHORT trades: strong LONG macro/news bias"
+
+
+def test_prepare_execution_reduces_lot_from_ai_market_bias_without_increasing_it():
+    class _StubAIMarketBias:
+        def apply_to_signal(self, strategy_name, signal, market_data):
+            adjusted = dict(signal)
+            adjusted["_ai_market_bias_action"] = "REDUCE_RISK"
+            adjusted["_ai_market_bias_risk_multiplier"] = 0.5
+            adjusted["_ai_feature_overrides"] = {}
+            return {
+                "allowed": True,
+                "reason": "Reduced risk due to mixed macro/news context",
+                "adjusted_signal": adjusted,
+                "snapshot": {},
+            }
+
+    trader = _build_trader()
+    trader.ai_market_bias_service = _StubAIMarketBias()
+    signal = {"signal": "BUY", "sl": 99.0, "tp": 101.0, "lot": 0.02}
+
+    prepared, reason = trader._prepare_execution_order(
+        "SMC_CONFLUENCE",
+        signal,
+        {"ask": 100.0, "bid": 99.9},
+        {},
+        {"m15_df": None, "symbol": "XAUUSD"},
+    )
+
+    assert reason == ""
+    assert prepared is not None
+    assert prepared["lot"] == 0.01
+    assert prepared["signal"]["_ai_market_bias_action"] == "REDUCE_RISK"
 
 
 def test_prepare_execution_blocks_after_good_profit_burst_in_current_m15_candle():

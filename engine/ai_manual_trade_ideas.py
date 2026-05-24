@@ -1,5 +1,5 @@
 """
-On-demand NVIDIA-backed AI trade ideas for manual execution.
+On-demand OpenAI-backed manual trade ideas for manual execution.
 
 This service is advisory only:
 - It never auto-places trades.
@@ -16,6 +16,8 @@ from typing import Any, Dict, List
 
 import requests
 
+import config as cfg
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -28,6 +30,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
 def _clip_text(value: Any, limit: int = 160) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -35,23 +44,19 @@ def _clip_text(value: Any, limit: int = 160) -> str:
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
-def _extract_message_text(payload: Dict[str, Any]) -> str:
-    choices = payload.get("choices") or []
-    if not choices:
-        return ""
-    message = choices[0].get("message") or {}
-    content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: List[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                text = str(item.get("text") or item.get("content") or "").strip()
+def _extract_response_text(payload: Dict[str, Any]) -> str:
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    parts: List[str] = []
+    for item in payload.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            if content.get("type") == "output_text":
+                text = str(content.get("text", "")).strip()
                 if text:
                     parts.append(text)
-        return "\n".join(parts).strip()
-    return ""
+    return "\n".join(parts).strip()
 
 
 def _extract_json_object(text: str) -> Dict[str, Any]:
@@ -263,7 +268,7 @@ class AIManualTradeIdeaService:
         endpoint: str | None = None,
         timeout_seconds: float | None = None,
     ):
-        env_enabled = os.getenv("NVIDIA_MANUAL_TRADE_ENABLED", "").strip().lower()
+        env_enabled = os.getenv("OPENAI_MANUAL_TRADE_ENABLED", "").strip().lower()
         if enabled is not None:
             self.enabled = bool(enabled)
         elif env_enabled:
@@ -271,21 +276,27 @@ class AIManualTradeIdeaService:
         else:
             self.enabled = True
 
-        self.api_key = (
-            api_key if api_key is not None else os.getenv("NVIDIA_API_KEY", os.getenv("NVAPI_KEY", ""))
-        ).strip()
-        self.model = (model or os.getenv("NVIDIA_MANUAL_TRADE_MODEL", "mistralai/mistral-medium-3.5-128b")).strip()
-        self.endpoint = (
-            endpoint or os.getenv("NVIDIA_MANUAL_TRADE_ENDPOINT", "https://integrate.api.nvidia.com/v1/chat/completions")
-        ).strip()
+        self.api_key = (api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")).strip()
+        self.model = (model or os.getenv("OPENAI_MANUAL_TRADE_MODEL", "gpt-5.4-mini")).strip()
+        self.endpoint = (endpoint or os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")).rstrip("/")
         self.timeout_seconds = float(
-            timeout_seconds if timeout_seconds is not None else os.getenv("NVIDIA_MANUAL_TRADE_TIMEOUT_SECONDS", "8")
+            timeout_seconds if timeout_seconds is not None else os.getenv("OPENAI_MANUAL_TRADE_TIMEOUT_SECONDS", "12")
         )
+        self.provider = "openai"
+
+    @property
+    def is_enabled(self) -> bool:
+        env_enabled = os.getenv("OPENAI_MANUAL_TRADE_ENABLED", "").strip().lower()
+        if env_enabled:
+            default = env_enabled not in {"0", "false", "off", "no"}
+        else:
+            default = self.enabled
+        return bool(getattr(cfg, "AI_MANUAL_TRADE_IDEAS_ENABLED", default))
 
     def _base_payload(self) -> Dict[str, Any]:
         return {
-            "enabled": self.enabled,
-            "provider": "nvidia",
+            "enabled": self.is_enabled,
+            "provider": self.provider,
             "model": self.model,
             "status": "disabled",
             "actionable": False,
@@ -307,44 +318,74 @@ class AIManualTradeIdeaService:
             "response_text": "",
         }
 
-    def _build_messages(self, context: Dict[str, Any]) -> List[Dict[str, str]]:
-        schema = {
-            "action": "BUY | SELL | WAIT",
-            "confidence": "0.0 to 1.0",
-            "entry": "number",
-            "sl": "number",
-            "tp": "number",
-            "rr": "number",
-            "setup_type": "LIMIT | STOP | MARKET | WAIT",
-            "reasoning": "max 40 words",
-            "invalidation": "max 20 words",
-            "checklist": ["up to 4 short bullets"],
+    def _schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string", "enum": ["BUY", "SELL", "WAIT"]},
+                "confidence": {"type": "number"},
+                "entry": {"type": "number"},
+                "sl": {"type": "number"},
+                "tp": {"type": "number"},
+                "rr": {"type": "number"},
+                "setup_type": {"type": "string", "enum": ["LIMIT", "STOP", "MARKET", "WAIT"]},
+                "reasoning": {"type": "string"},
+                "invalidation": {"type": "string"},
+                "checklist": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "action",
+                "confidence",
+                "entry",
+                "sl",
+                "tp",
+                "rr",
+                "setup_type",
+                "reasoning",
+                "invalidation",
+                "checklist",
+            ],
         }
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "You are a conservative manual trade idea assistant. "
-                    "You must return exactly one actionable BUY/SELL setup or WAIT. "
-                    "Base the answer only on the structured data provided. "
-                    "Use the entry as the pending-order price. "
-                    "The dashboard may also optionally place a market order now in the same direction, "
-                    "so the direction, SL, and TP must still make sense around current price. "
-                    "Rules: for BUY use sl < entry < tp; for SELL use tp < entry < sl; "
-                    "if no clean setup exists, return WAIT with numeric fields set to 0. "
-                    "Keep reasoning brief and return JSON only with this schema: "
-                    f"{json.dumps(schema)}"
-                ),
+
+    def _build_request(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        instructions = (
+            "You are a conservative manual trade idea assistant for XAUUSD. "
+            "Return exactly one actionable BUY/SELL setup or WAIT. "
+            "Base the answer only on the structured data provided. "
+            "Use the entry as the pending-order price. "
+            "The dashboard may also optionally place a market order now in the same direction, "
+            "so the direction, SL, and TP must still make sense around current price. "
+            "Rules: for BUY use sl < entry < tp; for SELL use tp < entry < sl; "
+            "if no clean setup exists, return WAIT with numeric fields set to 0. "
+            "Prefer RR >= 1.2 and keep the reasoning brief."
+        )
+        user_payload = {
+            "task": "Produce one manual trade idea for the current market.",
+            "context": context,
+        }
+        return {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": instructions}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": json.dumps(user_payload, sort_keys=True)}],
+                },
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "manual_trade_idea",
+                    "strict": True,
+                    "schema": self._schema(),
+                }
             },
-            {
-                "role": "user",
-                "content": (
-                    "Produce one manual trade idea for the current market. "
-                    "Respect spread, volatility, and nearby levels. Prefer RR >= 1.2.\n\n"
-                    f"{json.dumps(context, sort_keys=True)}"
-                ),
-            },
-        ]
+            "max_output_tokens": 500,
+        }
 
     def generate_trade_idea(self, context: Dict[str, Any], tick: Dict[str, Any]) -> Dict[str, Any]:
         result = self._base_payload()
@@ -353,57 +394,45 @@ class AIManualTradeIdeaService:
             3,
         )
 
-        if not self.enabled:
+        if not self.is_enabled:
             result["status"] = "disabled"
             result["reasoning"] = "Manual AI trade ideas are disabled"
             return result
         if not self.api_key:
             result["status"] = "disabled"
-            result["reasoning"] = "Set NVIDIA_API_KEY to enable manual AI trade ideas"
+            result["reasoning"] = "Set OPENAI_API_KEY to enable manual AI trade ideas"
             return result
 
-        messages = self._build_messages(context)
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "reasoning_effort": "none",
-            "messages": messages,
-            "max_tokens": 700,
-            "temperature": 0.15,
-            "top_p": 1.0,
-            "stream": False,
-        }
-
+        payload = self._build_request(context)
         started = time.time()
         try:
             response = requests.post(
-                self.endpoint,
-                headers=headers,
+                f"{self.endpoint}/responses",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
                 json=payload,
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()
             payload_json = response.json()
-            raw_text = _extract_message_text(payload_json)
+            raw_text = _extract_response_text(payload_json)
             if not raw_text:
-                raise RuntimeError("NVIDIA API returned no message content")
+                raise RuntimeError("OpenAI API returned no text output")
             parsed = _extract_json_object(raw_text)
             normalized = normalize_manual_trade_idea(parsed, tick)
             result.update(normalized)
             result["status"] = "ready"
             result["latency_ms"] = int((time.time() - started) * 1000)
-            result["request_text"] = str((messages[1] or {}).get("content") or "")
+            result["request_text"] = json.dumps(payload.get("input", [None, {"content": []}])[1], default=str)
             result["response_text"] = raw_text
             return result
         except Exception as exc:
             result["status"] = "error"
             result["reasoning"] = _clip_text(str(exc), 160)
             result["latency_ms"] = int((time.time() - started) * 1000)
-            result["request_text"] = str((messages[1] or {}).get("content") or "")
+            result["request_text"] = json.dumps(payload.get("input", [None, {"content": []}])[1], default=str)
             return result
 
 

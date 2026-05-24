@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+import config as cfg
 from .data_pipeline import get_decision_summary
 from .order_database import OrderDatabase
 from .reporting_dashboard import generate_comprehensive_report
@@ -642,6 +643,11 @@ class AIAnalysisService:
         self.cache_ttl_seconds = int(cache_ttl_seconds or os.getenv("OPENAI_AI_ANALYSIS_CACHE_TTL_SECONDS", "300"))
         self._cache: Dict[str, Dict[str, Any]] = {}
 
+    @property
+    def is_enabled(self) -> bool:
+        env_enabled = os.getenv("OPENAI_AI_ANALYSIS_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+        return bool(getattr(cfg, "AI_ANALYSIS_ENABLED", env_enabled))
+
     def _disabled_payload(self, days: int, reason: str) -> Dict[str, Any]:
         return {
             "enabled": False,
@@ -751,7 +757,7 @@ class AIAnalysisService:
         return text
 
     def generate_summary(self, days: int = 30, refresh: bool = False) -> Dict[str, Any]:
-        if not self.enabled:
+        if not self.is_enabled:
             return self._disabled_payload(days, "AI analysis is disabled. Set OPENAI_AI_ANALYSIS_ENABLED=1 to enable it.")
         if not self.api_key:
             return self._disabled_payload(days, "Set OPENAI_API_KEY or NVIDIA_API_KEY to enable AI analysis.")
@@ -802,7 +808,7 @@ class AIAnalysisService:
 
     def generate_day_summary(self, ist_date: str, refresh: bool = False) -> Dict[str, Any]:
         normalized_date = _parse_ist_date(ist_date).strftime("%Y-%m-%d")
-        if not self.enabled:
+        if not self.is_enabled:
             return self._disabled_day_payload(normalized_date, "AI analysis is disabled. Set OPENAI_AI_ANALYSIS_ENABLED=1 to enable it.")
         if not self.api_key:
             return self._disabled_day_payload(normalized_date, "Set OPENAI_API_KEY or NVIDIA_API_KEY to enable AI analysis.")

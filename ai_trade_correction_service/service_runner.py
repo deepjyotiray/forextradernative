@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from engine.session_filter import is_market_open_at
+
 from .ai_forensic_client import AIForensicClient
 from .audit_logger import AuditLogger
 from .config_adapter import load_service_runtime_config, resolve_enabled_strategy, session_is_active
@@ -58,11 +60,29 @@ class AITradeCorrectionService:
             "last_modification_ids": [],
         }
 
+    def _refresh_runtime_dependencies(self) -> None:
+        latest = load_service_runtime_config()
+        if latest != self.runtime_config:
+            self.runtime_config = latest
+            self.ai_client = AIForensicClient(self.runtime_config, self.audit_logger)
+
     @property
     def is_active(self) -> bool:
-        return bool(self.runtime_config.enabled and self.enabled_strategy_info.get("single_strategy_mode"))
+        self._refresh_runtime_dependencies()
+        return bool(
+            self.runtime_config.enabled
+            and self.runtime_config.automation_enabled
+            and self.enabled_strategy_info.get("single_strategy_mode")
+        )
+
+    def _market_is_open(self, now: Optional[datetime] = None) -> bool:
+        try:
+            return bool(is_market_open_at(now or datetime.now(timezone.utc)))
+        except Exception:
+            return True
 
     def capture_signal(self, strategy_name: str, signal: Dict[str, Any], market_data: Dict[str, Any], setup_signature: str) -> str:
+        self._refresh_runtime_dependencies()
         if not self.is_active:
             return ""
         if str(strategy_name or "").upper() != str(self.enabled_strategy_info.get("enabled_strategy") or "").upper():
@@ -82,6 +102,7 @@ class AITradeCorrectionService:
         signal: Dict[str, Any],
         market_data: Dict[str, Any],
     ) -> Dict[str, Any]:
+        self._refresh_runtime_dependencies()
         if not self.is_active:
             return {"action": "TAKE_NOW", "reason": "Service inactive.", "signal": signal, "signal_snapshot": {}, "matched_modifications": []}
         if str(strategy_name or "").upper() != str(self.enabled_strategy_info.get("enabled_strategy") or "").upper():
@@ -122,6 +143,7 @@ class AITradeCorrectionService:
         }
 
     def release_pending_signals(self, market_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        self._refresh_runtime_dependencies()
         strategy_name = str(self.enabled_strategy_info.get("enabled_strategy") or "")
         if not self.is_active or not strategy_name:
             return []
@@ -144,6 +166,7 @@ class AITradeCorrectionService:
         return released
 
     def on_trade_opened(self, signal_id: str, signal: Dict[str, Any], trade_ticket: int, fill_price: float) -> None:
+        self._refresh_runtime_dependencies()
         if not signal_id:
             return
         snapshot = (self.store.get_signal_snapshot(signal_id) or {}).get("signal_snapshot") or {}
@@ -151,6 +174,7 @@ class AITradeCorrectionService:
         self.store.attach_trade_open(signal_id, trade_ticket, live_snapshot)
 
     def on_cycle(self, market_data: Dict[str, Any], open_trades: Dict[int, Any]) -> None:
+        self._refresh_runtime_dependencies()
         strategy_name = str(self.enabled_strategy_info.get("enabled_strategy") or "")
         if not strategy_name:
             return
@@ -165,6 +189,7 @@ class AITradeCorrectionService:
         self._check_periodic_triggers(strategy_name, market_data)
 
     def on_trade_closed(self, trade_ticket: int, db_order: Dict[str, Any], mt5_trade: Dict[str, Any]) -> None:
+        self._refresh_runtime_dependencies()
         snapshot = self.store.get_snapshot_by_ticket(int(trade_ticket))
         if not snapshot:
             return
@@ -230,6 +255,10 @@ class AITradeCorrectionService:
     def _schedule_analysis(self, trigger_type: str, *, strategy_name: str, market_window: Optional[Dict[str, Any]] = None) -> None:
         if not self.is_active:
             return
+        if not self._market_is_open():
+            if self.log_fn:
+                self.log_fn("AI_CORRECT", f"Skipped {trigger_type} analysis because market is closed")
+            return
         worker = threading.Thread(
             target=self._run_analysis_if_idle,
             kwargs={"trigger_type": trigger_type, "strategy_name": strategy_name, "market_window": market_window or {}},
@@ -247,6 +276,18 @@ class AITradeCorrectionService:
             self._analysis_lock.release()
 
     def run_analysis_now(self, *, trigger_type: str, strategy_name: str, market_window: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        self._refresh_runtime_dependencies()
+        if not self._market_is_open():
+            self._set_analysis_status(
+                running=False,
+                current_trigger="",
+                current_started_at="",
+                last_trigger=trigger_type,
+                last_completed_at=datetime.now(timezone.utc).isoformat(),
+                last_status="SKIPPED_CLOSED_MARKET",
+                last_error="Market closed: AI trade correction analysis skipped.",
+            )
+            return None
         recent_trades = self.store.get_recent_closed(strategy_name, limit=5)
         if not recent_trades:
             return None
@@ -303,6 +344,7 @@ class AITradeCorrectionService:
         return decision.model_dump(mode="json")
 
     def get_dashboard_status(self, *, include_recent: bool = True, limit: int = 8) -> Dict[str, Any]:
+        self._refresh_runtime_dependencies()
         strategy_name = str(self.enabled_strategy_info.get("enabled_strategy") or "")
         with self._status_lock:
             analysis_state = dict(self._analysis_status)
@@ -313,6 +355,7 @@ class AITradeCorrectionService:
             "mode": "DRY_RUN" if self.runtime_config.dry_run else "OPENAI",
             "api_configured": bool(self.runtime_config.api_key_present),
             "fail_open": bool(self.runtime_config.fail_open),
+            "automation_enabled": bool(self.runtime_config.automation_enabled),
             "enabled_strategy": strategy_name,
             "single_strategy_mode": bool(self.enabled_strategy_info.get("single_strategy_mode")),
             "reason": str(self.enabled_strategy_info.get("reason") or ""),
@@ -333,6 +376,8 @@ class AITradeCorrectionService:
             payload["recent_analyses"] = []
             payload["recent_modifications"] = []
             payload["recent_forensics"] = []
+        if payload["enabled"] and not payload["automation_enabled"]:
+            payload["reason"] = "AI automation bypass is enabled; live trade correction is paused while base strategies keep running."
         return payload
 
     def _set_analysis_status(self, **updates: Any) -> None:

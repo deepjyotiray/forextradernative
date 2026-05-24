@@ -10,6 +10,7 @@ import sys
 import uvicorn
 from auto_trader import AutoTrader
 from engine.trader_api import set_auto_trader_instance
+from local_env import load_local_env_file
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _CF_EXE = os.path.join(_BASE_DIR, "cloudflared.exe")
@@ -93,6 +94,7 @@ def start_auto_trader():
 
 def main():
     """Main startup function."""
+    load_local_env_file(_BASE_DIR)
     print("Starting Unified Trading System...")
     
     # Start auto trader in background thread

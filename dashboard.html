@@ -279,13 +279,20 @@ td{padding:3px 5px;border-bottom:1px solid var(--border)}
 
 
 <div class="section-title">Setup Intelligence &amp; AI Trade Correction</div>
-<div class="grid g2">
+<div class="grid g4">
   <div class="card"><h3>Why No Trade</h3><div id="blockersCard">Loading...</div></div>
+  <div class="card"><h3>AI Market Bias</h3><div id="aiMarketBiasCard">Loading...</div></div>
+  <div class="card"><h3>Weekend Intel</h3><div id="weekendIntelCard">Loading...</div></div>
   <div class="card"><h3>Correlation (6 Markets)</h3><div id="corrCard">-</div></div>
 </div>
 
 <div class="card" style="padding:0;overflow:hidden">
   <div id="aiTradeCorrectionPanel" style="padding:10px 12px">Loading...</div>
+</div>
+
+<div class="section-title">AI Controls</div>
+<div class="card" style="padding:0;overflow:hidden">
+  <div id="aiControlsPanel" style="padding:10px 12px">Loading...</div>
 </div>
 
 <div class="section-title">Calendar &amp; News</div>
@@ -502,6 +509,33 @@ function $(id){return document.getElementById(id)}
 function pc(v){return v>=0?'pnl-pos':'pnl-neg'}
 function ps(v){return(v>=0?'+':'')+v.toFixed(2)}
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function fmtIST(value){
+  if(!value)return'-';
+  try{
+    const dt=new Date(value);
+    if(!isNaN(dt.getTime())){
+      return dt.toLocaleString('en-GB',{
+        timeZone:IST_TIME_ZONE,
+        year:'numeric',
+        month:'2-digit',
+        day:'2-digit',
+        hour:'2-digit',
+        minute:'2-digit',
+        second:'2-digit',
+        hour12:false
+      }).replace(',','');
+    }
+  }catch(e){}
+  try{
+    const t=value.includes('T')?value.split('T')[1].substring(0,8):value.substring(11,19);
+    const [h,m,s]=(t||'').split(':').map(Number);
+    if(isNaN(h)||isNaN(m))return'-';
+    const total=h*60+m+330;
+    const ih=Math.floor(total/60)%24;
+    const im=total%60;
+    return String(ih).padStart(2,'0')+':'+String(im).padStart(2,'0')+':'+(s!=null?String(s).padStart(2,'0'):'00');
+  }catch(e){return'-';}
+}
 function strategyLabel(name){
   const labels={
     AUTO:'AUTO',
@@ -849,6 +883,7 @@ async function manualExitTrade(ticket){
 function render(d,opts={}){
   const full=opts.full!==false;
   const en=d.enabled,tk=d.tick||{},a=d.account||{},rk=d.risk||{},rg=d.regime||{},bi=d.bias||{},co=d.correlation||{},ca=d.calendar||{},ind=d.indicators||{},z=d.zones||{},tr=d.trades||{},st=d.stats||{};
+  const aiControlStatus=d.ai_control_status||{};
   const blockers=d.live_blockers||{};
   const price=tk.bid||0;
   renderDeployment(d);
@@ -982,9 +1017,67 @@ function render(d,opts={}){
   `:`<div class="row"><span class="label">Status</span><span>No blockers logged yet</span></div>`;
   if(full)setHTML($('blockersCard'),blockerHtml);
 
+  const amb=d.ai_market_bias||aiControlStatus.ai_market_bias||{};
+  const ambConf=Math.round((Number(amb.confidence)||0)*100);
+  const ambStatus=String(amb.status||'unknown').toUpperCase();
+  const ambBias=String(amb.directional_bias||'NEUTRAL').toUpperCase();
+  const ambRisk=String(amb.risk_mode||'NORMAL').toUpperCase();
+  const ambBiasColor=ambBias==='LONG'?'var(--green)':ambBias==='SHORT'?'var(--red)':'var(--dim)';
+  const ambStatusColor=ambStatus==='READY'?'var(--green)':ambStatus==='STALE'?'var(--yellow)':ambStatus==='DISABLED'?'var(--dim)':'var(--red)';
+  const ambFresh=amb.generated_at?fmtIST(amb.generated_at):'-';
+  const ambExpiry=amb.expires_at?fmtIST(amb.expires_at):'-';
+  const ambDrivers=(arr)=>((arr||[]).slice(0,2).map(v=>`<div style="font-size:10px;line-height:1.4;color:var(--text)">• ${esc(v)}</div>`).join(''))||'<div style="font-size:10px;color:var(--dim)">None</div>';
+  const ambReason=esc(amb.last_applied_reason||amb.summary||amb.last_error||'-');
+  const ambHtml=`
+    <div class="row"><span class="label">Status</span><span style="color:${ambStatusColor};font-weight:700">${esc(ambStatus)}</span></div>
+    <div class="row"><span class="label">Bias</span><span style="color:${ambBiasColor};font-weight:700">${esc(ambBias)} ${ambConf?`(${ambConf}%)`:''}</span></div>
+    <div class="row"><span class="label">Risk Mode</span><span>${esc(ambRisk)}${ambRisk==='REDUCED'?` (${Number(amb.risk_multiplier||1).toFixed(2)}x)`:''}</span></div>
+    <div class="row"><span class="label">Provider</span><span>${esc(amb.provider||'-')} / ${esc(amb.model||'-')}</span></div>
+    <div class="row"><span class="label">Updated</span><span>${esc(ambFresh)}</span></div>
+    <div class="row"><span class="label">Expires</span><span>${esc(ambExpiry)}</span></div>
+    <div style="font-size:11px;color:var(--dim);margin:8px 0 4px">Macro drivers</div>
+    ${ambDrivers(amb.macro_drivers)}
+    <div style="font-size:11px;color:var(--dim);margin:8px 0 4px">News drivers</div>
+    ${ambDrivers(amb.news_drivers)}
+    <div style="font-size:11px;color:var(--dim);margin:8px 0 4px">Last action</div>
+    <div style="font-size:10px;line-height:1.45;word-break:break-word">${ambReason}</div>
+  `;
+  if(full)setHTML($('aiMarketBiasCard'),ambHtml);
+
+  const wi=d.weekend_intel||aiControlStatus.weekend_intel||{};
+  const wiStatus=String(wi.status||'unknown').toUpperCase();
+  const wiStatusColor=wiStatus==='READY'?'var(--green)':wiStatus==='STALE'?'var(--yellow)':wiStatus==='DISABLED'?'var(--dim)':wiStatus==='IDLE'?'var(--dim)':'var(--red)';
+  const wiUpdated=wi.generated_at?fmtIST(wi.generated_at):'-';
+  const wiNext=wi.next_due_at?fmtIST(wi.next_due_at):'-';
+  const wiCounts=(wi.latest_x_counts||[]).slice(0,3).map(item=>
+    `<div class="row"><span class="label">${esc(item.label||'-')}</span><span>${Number(item.total_count||0)}</span></div>`
+  ).join('');
+  const wiNews=(wi.latest_alpha_news||[]).slice(0,2).map(item=>
+    `<div style="font-size:10px;line-height:1.4;color:var(--text)">• ${esc(item.title||'-')}</div>`
+  ).join('')||'<div style="font-size:10px;color:var(--dim)">None</div>';
+  const wiPosts=(wi.latest_x_posts||[]).slice(0,2).map(item=>
+    `<div style="font-size:10px;line-height:1.4;color:var(--text)">• ${esc(item.text||'-')}</div>`
+  ).join('')||'<div style="font-size:10px;color:var(--dim)">Counts-only this cycle</div>';
+  const wiHtml=`
+    <div class="row"><span class="label">Status</span><span style="color:${wiStatusColor};font-weight:700">${esc(wiStatus)}</span></div>
+    <div class="row"><span class="label">Window</span><span>${wi.weekend_window?'Weekend active':wi.market_open?'Market open':'Out of window'}${wi.preopen_window?' / Pre-open':''}</span></div>
+    <div class="row"><span class="label">Updated</span><span>${esc(wiUpdated)}</span></div>
+    <div class="row"><span class="label">Next Poll</span><span>${esc(wiNext)}</span></div>
+    <div class="row"><span class="label">Samples</span><span>${Number(wi.sample_count||0)}</span></div>
+    <div style="font-size:11px;color:var(--dim);margin:8px 0 4px">X counts</div>
+    ${wiCounts||'<div class="row"><span class="label">None</span><span>-</span></div>'}
+    <div style="font-size:11px;color:var(--dim);margin:8px 0 4px">Alpha news</div>
+    ${wiNews}
+    <div style="font-size:11px;color:var(--dim);margin:8px 0 4px">X posts</div>
+    ${wiPosts}
+    <div style="font-size:11px;color:var(--dim);margin:8px 0 4px">Summary</div>
+    <div style="font-size:10px;line-height:1.45;word-break:break-word">${esc(wi.summary||wi.last_error||'-')}</div>
+  `;
+  if(full)setHTML($('weekendIntelCard'),wiHtml);
+
   // ── AI Trade Correction panel ───────────────────────────────────────────
   if(full){
-    const ac=d.ai_trade_correction||{};
+    const ac=d.ai_trade_correction||aiControlStatus.ai_trade_correction||{};
     const as=ac.analysis_state||{};
     const counts=ac.counts||{};
     const recentAnalyses=ac.recent_analyses||[];
@@ -1064,6 +1157,58 @@ function render(d,opts={}){
       </div>
     `;
     setHTML($('aiTradeCorrectionPanel'),aiHtml);
+  }
+
+  if(full){
+    const ctl=d.ai_controls||{};
+    const biasStatus=d.ai_market_bias||aiControlStatus.ai_market_bias||{};
+    const corrStatus=d.ai_trade_correction||aiControlStatus.ai_trade_correction||{};
+    const intelStatus=d.weekend_intel||aiControlStatus.weekend_intel||{};
+    const analysisStatus=d.ai_analysis||aiControlStatus.ai_analysis||{};
+    const manualIdeaStatus=d.manual_ai_trade_ideas||aiControlStatus.manual_ai_trade_ideas||{};
+    function aiToggleRow(key,label,checked,meta){
+      return `<div class="row" style="align-items:center;gap:10px;padding:6px 0">
+        <span style="flex:1 1 auto;min-width:0">
+          <span style="font-weight:600">${esc(label)}</span>
+          <span style="display:block;font-size:10px;color:var(--dim);line-height:1.4">${meta}</span>
+        </span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex:0 0 auto">
+          <input type="checkbox" class="toggle" onchange="toggleAiControl('${key}', this.checked)" ${checked?'checked':''}>
+          <span style="font-size:10px;color:${checked?'var(--green)':'var(--red)'}">${checked?'ON':'OFF'}</span>
+        </label>
+      </div>`;
+    }
+    const controlsHtml=`
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div style="font-size:10px;color:var(--dim);margin-bottom:6px">Automated runtime controls</div>
+          ${aiToggleRow('AI_AUTOMATION_ENABLED','Global AI automation', !!ctl.AI_AUTOMATION_ENABLED, `Master switch for live AI automation and weekend polling. Current market bias: ${esc(String(biasStatus.status||'unknown').toUpperCase())}.`)}
+          ${aiToggleRow('AI_MARKET_BIAS_ENABLED','AI market bias', !!ctl.AI_MARKET_BIAS_ENABLED, `Live pre-trade gate. Provider ${esc(biasStatus.provider||'openai')} / ${esc(biasStatus.model||'-')}.`)}
+          ${aiToggleRow('AI_MARKET_BIAS_OPENAI_ENABLED','Market bias OpenAI', !!ctl.AI_MARKET_BIAS_OPENAI_ENABLED, `Disable OpenAI calls for the market-bias engine without touching on-demand AI.`)}
+          ${aiToggleRow('AI_MARKET_BIAS_ALPHA_ENABLED','Market bias Alpha Vantage', !!ctl.AI_MARKET_BIAS_ALPHA_ENABLED, `Disable Alpha Vantage collection for market bias. Status ${esc(String((biasStatus.source_health||{}).gold_spot?.ok?'ready':'idle'))}.`)}
+          ${aiToggleRow('AI_TRADE_CORRECTION_ENABLED','AI trade correction', !!ctl.AI_TRADE_CORRECTION_ENABLED, `Live correction engine. Mode ${esc(corrStatus.mode||'-')}. ${esc(corrStatus.reason||'')}`)}
+          ${aiToggleRow('AI_TRADE_CORRECTION_DRY_RUN','Trade correction dry-run', !!ctl.AI_TRADE_CORRECTION_DRY_RUN, `Heuristics only, no OpenAI forensic calls. Current mode ${esc(corrStatus.mode||'-')}.`)}
+          ${aiToggleRow('WEEKEND_INTEL_ENABLED','Weekend intel collector', !!ctl.WEEKEND_INTEL_ENABLED, `Read-only weekend context polling. Status ${esc(String(intelStatus.status||'unknown').toUpperCase())}.`)}
+          ${aiToggleRow('WEEKEND_INTEL_ALPHA_ENABLED','Weekend intel Alpha Vantage', !!ctl.WEEKEND_INTEL_ALPHA_ENABLED, `Controls Alpha Vantage weekend news/history collection.`)}
+          ${aiToggleRow('WEEKEND_INTEL_X_ENABLED','Weekend intel X API', !!ctl.WEEKEND_INTEL_X_ENABLED, `Controls X counts/posts collection for weekend monitoring.`)}
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--dim);margin-bottom:6px">On-demand AI controls</div>
+          ${aiToggleRow('AI_ANALYSIS_ENABLED','AI analytics summaries', !!ctl.AI_ANALYSIS_ENABLED, `On-demand analytics commentary. Provider ${esc(analysisStatus.provider||'openai')} / ${esc(analysisStatus.model||'-')}.`)}
+          ${aiToggleRow('AI_MANUAL_TRADE_IDEAS_ENABLED','Manual AI trade ideas', !!ctl.AI_MANUAL_TRADE_IDEAS_ENABLED, `On-demand idea generation only. Provider ${esc(manualIdeaStatus.provider||'openai')} / ${esc(manualIdeaStatus.model||'-')}.`)}
+          <div style="margin-top:10px;padding:8px;border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,.02)">
+            <div style="font-size:10px;color:var(--dim);margin-bottom:6px">API visibility</div>
+            <div class="row"><span class="label">OpenAI analysis</span><span>${analysisStatus.api_configured?'<span class="green">Configured</span>':'<span class="red">Missing key</span>'}</span></div>
+            <div class="row"><span class="label">Manual OpenAI ideas</span><span>${manualIdeaStatus.api_configured?'<span class="green">Configured</span>':'<span class="red">Missing key</span>'}</span></div>
+            <div class="row"><span class="label">Market bias OpenAI</span><span>${biasStatus.openai_configured?'<span class="green">Configured</span>':'<span class="red">Missing key</span>'}</span></div>
+            <div class="row"><span class="label">Market bias Alpha</span><span>${biasStatus.alpha_configured?'<span class="green">Configured</span>':'<span class="red">Missing key</span>'}</span></div>
+            <div class="row"><span class="label">Weekend X</span><span>${intelStatus.x_configured?'<span class="green">Configured</span>':'<span class="red">Missing key</span>'}</span></div>
+            <div class="row"><span class="label">Weekend Alpha</span><span>${intelStatus.alpha_configured?'<span class="green">Configured</span>':'<span class="red">Missing key</span>'}</span></div>
+          </div>
+        </div>
+      </div>
+    `;
+    setHTML($('aiControlsPanel'),controlsHtml);
   }
 
   // ── Calendar & News panel ───────────────────────────────────────────────
@@ -1217,18 +1362,6 @@ function render(d,opts={}){
         return new Date(raw.replace(/\./g,'-').replace(' ','T')+'Z');
       }catch(e){return null;}
     }
-    function fmtIST(mt5Str){
-      if(!mt5Str)return'-';
-      try{
-        const t=mt5Str.includes('T')?mt5Str.split('T')[1].substring(0,8):mt5Str.substring(11,19);
-        const [h,m,s]=(t||'').split(':').map(Number);
-        if(isNaN(h)||isNaN(m))return'-';
-        const total=h*60+m+330;// +5h30m in minutes (UTC → IST)
-        const ih=Math.floor(total/60)%24;
-        const im=total%60;
-        return String(ih).padStart(2,'0')+':'+String(im).padStart(2,'0')+':'+(s!=null?String(s).padStart(2,'0'):'00');
-      }catch(e){return'-';}
-    }
     function istDateKey(dt){return dt.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});}
     function istDateLabel(dt){return dt.toLocaleDateString('en',{timeZone:'Asia/Kolkata',year:'numeric',month:'short',day:'numeric',weekday:'short'});}
     const grouped={};
@@ -1284,7 +1417,6 @@ function render(d,opts={}){
     }
   }
 
-  const floatPnl=fp.total||0;
   updateTabTitle(d);
 }
 
@@ -1336,6 +1468,59 @@ async function saveXgbToggle(key, value) {
   }
 }
 
+async function toggleAiControl(key, value) {
+  try {
+    const body = {};
+    body[key] = value;
+    await fetch(A + '/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    setTimeout(refreshAfterControlChange, 300);
+  } catch (e) {
+    alert('Failed to save AI control');
+  }
+}
+
+async function generateManualAiIdea() {
+  try {
+    const r = await fetch(A + '/ai/manual-idea', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({timeframe: _chartTF, limit: _chartLimit})
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || 'Failed to generate manual AI idea');
+    _manualAiIdea = data || {};
+    _refreshManualCalc();
+  } catch (e) {
+    alert(e.message || 'Failed to generate manual AI idea');
+  }
+}
+
+async function executeManualAiIdeaMarket(ideaId) {
+  try {
+    const r = await fetch(A + `/ai/manual-idea/${ideaId}/market`, {method: 'POST'});
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || 'Failed to place manual AI market trade');
+    await refreshAfterControlChange();
+  } catch (e) {
+    alert(e.message || 'Failed to place manual AI market trade');
+  }
+}
+
+async function executeManualAiIdeaPending(ideaId) {
+  try {
+    const r = await fetch(A + `/ai/manual-idea/${ideaId}/pending`, {method: 'POST'});
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || 'Failed to place manual AI pending order');
+    await refreshAfterControlChange();
+  } catch (e) {
+    alert(e.message || 'Failed to place manual AI pending order');
+  }
+}
+
 // ─── INDICATOR VISIBILITY ────────────────────────────────────────────────────
 const _indVisible=(function(){
   try{const s=localStorage.getItem('indVisible');if(s)return JSON.parse(s);}catch(e){}
@@ -1357,6 +1542,7 @@ let _chartFlight=false;
 let _chartTimer=null;
 let _chartData=null;
 let _chartUserPanned=false;  // true once user has manually panned away from right edge
+let _manualAiIdea=null;
 // Default candle limits per timeframe matching config.py CANDLE_LIMITS
 const TF_LIMITS={M1:300,M5:200,M15:800,H1:200,H4:200};
 let _chartLimit=_isMobile?120:(TF_LIMITS[_chartTF]||200);
@@ -1930,7 +2116,49 @@ function _renderManualPanel(data){
   const sweepSell=liq.recent_sell_sweep;
 
   // ── SL/TP calculator ──────────────────────────────────────────────
+  const idea=_manualAiIdea||{};
+  const ideaStatus=String(idea.status||'idle').toUpperCase();
+  const ideaProvider=idea.provider||'openai';
+  const ideaModel=idea.model||'-';
+  const ideaConf=Math.round((Number(idea.confidence)||0)*100);
+  const checklist=(idea.checklist||[]).map(item=>`<div style="font-size:10px;line-height:1.35;color:var(--text)">• ${esc(item)}</div>`).join('');
+  const ideaHtml=idea.status?`
+    <div style="margin-top:8px;border:1px solid var(--border);border-radius:6px;padding:8px;background:rgba(255,255,255,.02)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
+        <div>
+          <div style="font-size:10px;color:var(--dim)">Manual AI Idea</div>
+          <div style="font-size:11px;font-weight:700">${esc(String(idea.action||'WAIT').toUpperCase())}${idea.actionable?` · ${ideaConf}%`:''}</div>
+        </div>
+        <div style="font-size:10px;color:var(--dim);text-align:right">${esc(ideaProvider)} / ${esc(ideaModel)}<br>${esc(ideaStatus)}</div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:0;border:1px solid var(--border);border-radius:6px;overflow:hidden;font-size:11px;margin-bottom:8px">
+        <div style="padding:4px 10px;border-right:1px solid var(--border)"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">Entry</span><span class="yellow" style="font-weight:700">${idea.entry?Number(idea.entry).toFixed(2):'-'}</span></div>
+        <div style="padding:4px 10px;border-right:1px solid var(--border)"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">SL</span><span class="red" style="font-weight:700">${idea.sl?Number(idea.sl).toFixed(2):'-'}</span></div>
+        <div style="padding:4px 10px;border-right:1px solid var(--border)"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">TP</span><span class="green" style="font-weight:700">${idea.tp?Number(idea.tp).toFixed(2):'-'}</span></div>
+        <div style="padding:4px 10px;border-right:1px solid var(--border)"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">RR</span><span style="font-weight:700">${idea.rr?Number(idea.rr).toFixed(2):'-'}</span></div>
+        <div style="padding:4px 10px"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">Order</span><span style="font-weight:700">${esc(idea.pending_order_type||'NONE')}</span></div>
+      </div>
+      <div style="font-size:10px;color:var(--dim);margin-bottom:3px">Reasoning</div>
+      <div style="font-size:10px;line-height:1.4;word-break:break-word;margin-bottom:6px">${esc(idea.reasoning||'-')}</div>
+      ${idea.invalidation?`<div style="font-size:10px;color:var(--dim);margin-bottom:3px">Invalidation</div><div style="font-size:10px;line-height:1.4;word-break:break-word;margin-bottom:6px">${esc(idea.invalidation)}</div>`:''}
+      ${checklist?`<div style="font-size:10px;color:var(--dim);margin-bottom:3px">Checklist</div>${checklist}`:''}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-link" onclick="generateManualAiIdea()" style="padding:4px 10px">Refresh Idea</button>
+        ${idea.actionable&&idea.idea_id?`<button class="btn btn-link" onclick="executeManualAiIdeaMarket('${idea.idea_id}')" style="padding:4px 10px;border-color:rgba(34,197,94,.35);color:var(--green)">Place Market</button>`:''}
+        ${idea.actionable&&idea.idea_id?`<button class="btn btn-link" onclick="executeManualAiIdeaPending('${idea.idea_id}')" style="padding:4px 10px;border-color:rgba(59,130,246,.35);color:var(--blue)">Place Pending</button>`:''}
+      </div>
+    </div>
+  `:`
+    <div style="margin-top:8px;border:1px dashed var(--border);border-radius:6px;padding:8px;font-size:10px;color:var(--dim)">
+      No manual AI idea generated yet. Use the button below to request one for the current chart timeframe.
+    </div>
+  `;
+
   setHTML(el,`
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px">
+      <div style="font-size:10px;color:var(--dim)">Manual AI uses the current chart timeframe: <span class="cyan">${_chartTF}</span></div>
+      <button class="btn btn-link" onclick="generateManualAiIdea()" style="padding:4px 10px">Generate AI Idea</button>
+    </div>
     <div style="display:flex;flex-wrap:wrap;gap:0;border:1px solid var(--border);border-radius:6px;overflow:hidden;font-size:11px;margin-top:6px">
       ${nearRes?`<div style="padding:4px 10px;border-right:1px solid var(--border);white-space:nowrap"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">Resistance</span><span class="red" style="font-weight:700">${nearRes.zone_low}–${nearRes.zone_high}</span> <span style="color:var(--dim);font-size:10px">${pip(nearRes.zone_low)} · ${(nearRes.strength*100).toFixed(0)}%</span></div>`:''}
       <div style="padding:4px 10px;border-right:1px solid var(--border);white-space:nowrap"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">Price · Spread · ATR</span><span class="yellow" style="font-weight:700">${price?price.toFixed(2):'-'}</span> <span style="color:var(--dim);font-size:10px">${spread.toFixed(2)} · ${atr.toFixed(3)}</span></div>
@@ -1939,6 +2167,7 @@ function _renderManualPanel(data){
       ${keyLevels.session_low?`<div style="padding:4px 10px;border-right:1px solid var(--border);white-space:nowrap"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">Sess Low</span><span class="cyan" style="font-weight:700">${keyLevels.session_low}</span> <span style="color:var(--dim);font-size:10px">${pip(keyLevels.session_low)}</span></div>`:''}
       <div style="padding:4px 10px;white-space:nowrap"><span style="font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);display:block">Liq Sweeps</span><span style="font-weight:700">${sweepBuy?'<span class="green">BUY ✓</span> ':''} ${sweepSell?'<span class="red">SELL ✓</span>':''} ${!sweepBuy&&!sweepSell?'<span style="color:var(--dim)">None</span>':''}</span></div>
     </div>
+    ${ideaHtml}
   `);
 }
 

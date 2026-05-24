@@ -82,6 +82,12 @@ _AI_REVIEWS_CACHE_TTL = 10.0
 _ai_correction_cache = None
 _ai_correction_cache_time = 0.0
 _AI_CORRECTION_CACHE_TTL = 5.0
+_ai_market_bias_cache = None
+_ai_market_bias_cache_time = 0.0
+_AI_MARKET_BIAS_CACHE_TTL = 5.0
+_weekend_intel_cache = None
+_weekend_intel_cache_time = 0.0
+_WEEKEND_INTEL_CACHE_TTL = 15.0
 _manual_ai_ideas: Dict[str, Dict[str, Any]] = {}
 _MANUAL_AI_IDEA_TTL_SECONDS = 15 * 60
 _config_version = 1
@@ -117,6 +123,7 @@ def _invalidate_status_cache(include_slow: bool = False):
     global _perf_cache, _perf_cache_time, _closed_history_cache, _closed_history_cache_time
     global _heavy_status_cache, _heavy_status_cache_time, _deployment_cache, _deployment_cache_time
     global _ai_reviews_cache, _ai_reviews_cache_time, _ai_correction_cache, _ai_correction_cache_time
+    global _ai_market_bias_cache, _ai_market_bias_cache_time, _weekend_intel_cache, _weekend_intel_cache_time
     _status_cache = None
     _status_cache_time = 0.0
     _ws_latest_cycle = -1
@@ -137,6 +144,10 @@ def _invalidate_status_cache(include_slow: bool = False):
         _ai_reviews_cache_time = 0.0
         _ai_correction_cache = None
         _ai_correction_cache_time = 0.0
+        _ai_market_bias_cache = None
+        _ai_market_bias_cache_time = 0.0
+        _weekend_intel_cache = None
+        _weekend_intel_cache_time = 0.0
 
 def _bump_config_version():
     global _config_version
@@ -994,48 +1005,6 @@ def _build_sl_streak_guard_status() -> dict:
             if sl_streak_guard.status(s)["consecutive_sl_hits"] > 0}
 
 
-def _build_ai_trade_advisor_status() -> dict:
-    from engine.ai_trade_advisor import ai_trade_advisor_service
-    service = ai_trade_advisor_service
-    now = time.time()
-    last_call_at = float(getattr(service, "_last_call_at", 0.0) or 0.0)
-    cooldown_seconds = max(0.0, float(getattr(service, "min_seconds_between_calls", 0.0) or 0.0))
-    seconds_since_last_call = max(0.0, now - last_call_at) if last_call_at > 0 else None
-    cooldown_remaining = max(0.0, cooldown_seconds - (seconds_since_last_call or 0.0)) if last_call_at > 0 else 0.0
-    has_api_key = bool(getattr(service, "api_key", ""))
-    enabled = bool(getattr(service, "enabled", False))
-
-    if not enabled:
-        status = "disabled"
-        reason = "AI advisor disabled"
-    elif not has_api_key:
-        status = "disabled"
-        reason = "Missing NVIDIA API key"
-    elif cooldown_remaining > 0.0:
-        status = "cooldown"
-        reason = "Cooling down between reviews"
-    elif last_call_at <= 0.0:
-        status = "ready"
-        reason = "Waiting for a borderline live setup"
-    else:
-        status = "ready"
-        reason = "Ready for the next borderline setup"
-
-    return {
-        "enabled": enabled,
-        "has_api_key": has_api_key,
-        "status": status,
-        "reason": reason,
-        "ready": enabled and has_api_key,
-        "model": str(getattr(service, "model", "") or ""),
-        "timeout_seconds": float(getattr(service, "timeout_seconds", 0.0) or 0.0),
-        "min_seconds_between_calls": cooldown_seconds,
-        "seconds_since_last_call": round(seconds_since_last_call, 1) if seconds_since_last_call is not None else None,
-        "cooldown_remaining": round(cooldown_remaining, 1),
-        "last_called_at": last_call_at if last_call_at > 0 else None,
-    }
-
-
 def _build_ai_trade_correction_status(*, include_recent: bool = False, limit: int = 8) -> dict:
     trader = _auto_trader_instance
     service = getattr(trader, "trade_correction_service", None) if trader is not None else None
@@ -1111,6 +1080,148 @@ def _build_ai_trade_correction_status(*, include_recent: bool = False, limit: in
             "recent_modifications": [],
             "recent_forensics": [],
         }
+
+
+def _build_ai_market_bias_status() -> dict:
+    trader = _auto_trader_instance
+    service = getattr(trader, "ai_market_bias_service", None) if trader is not None else None
+    if service is None:
+        return {
+            "enabled": False,
+            "status": "unavailable",
+            "provider": "openai",
+            "model": "",
+            "generated_at": "",
+            "expires_at": "",
+            "directional_bias": "NEUTRAL",
+            "confidence": 0.0,
+            "risk_mode": "NORMAL",
+            "allow_long": True,
+            "allow_short": True,
+            "risk_multiplier": 1.0,
+            "summary": "",
+            "macro_drivers": [],
+            "news_drivers": [],
+            "source_health": {},
+            "last_error": "AI market bias service is not attached.",
+            "last_refresh_reason": "",
+            "last_applied_action": "",
+            "last_applied_reason": "",
+            "last_applied_at": "",
+            "symbol_scope": "XAUUSD",
+            "fail_open": True,
+            "alpha_configured": False,
+            "openai_configured": False,
+        }
+    try:
+        return convert_numpy_types(service.get_dashboard_status())
+    except Exception as exc:
+        return {
+            "enabled": bool(getattr(service, "enabled", False)),
+            "status": "error",
+            "provider": str(getattr(service, "provider", "openai") or "openai"),
+            "model": str(getattr(service, "model", "") or ""),
+            "generated_at": "",
+            "expires_at": "",
+            "directional_bias": "NEUTRAL",
+            "confidence": 0.0,
+            "risk_mode": "NORMAL",
+            "allow_long": True,
+            "allow_short": True,
+            "risk_multiplier": 1.0,
+            "summary": "",
+            "macro_drivers": [],
+            "news_drivers": [],
+            "source_health": {},
+            "last_error": str(exc),
+            "last_refresh_reason": "status_error",
+            "last_applied_action": "",
+            "last_applied_reason": "",
+            "last_applied_at": "",
+            "symbol_scope": "XAUUSD",
+            "fail_open": True,
+            "alpha_configured": False,
+            "openai_configured": False,
+        }
+
+
+def _build_weekend_intel_status() -> dict:
+    trader = _auto_trader_instance
+    service = getattr(trader, "weekend_intel_service", None) if trader is not None else None
+    if service is None:
+        return {
+            "enabled": False,
+            "status": "unavailable",
+            "generated_at": "",
+            "last_checked_at": "",
+            "next_due_at": "",
+            "last_error": "Weekend intel service is not attached.",
+            "last_refresh_reason": "",
+            "market_open": False,
+            "weekend_window": False,
+            "preopen_window": False,
+            "refresh_hours": 4,
+            "alpha_configured": False,
+            "x_configured": False,
+            "source_health": {},
+            "latest_alpha_news": [],
+            "latest_x_counts": [],
+            "latest_x_posts": [],
+            "latest_gold_history": [],
+            "recent_samples": [],
+            "sample_count": 0,
+            "summary": "",
+        }
+    try:
+        return convert_numpy_types(service.get_dashboard_status())
+    except Exception as exc:
+        return {
+            "enabled": bool(getattr(service, "is_enabled", False)),
+            "status": "error",
+            "generated_at": "",
+            "last_checked_at": "",
+            "next_due_at": "",
+            "last_error": f"Failed to build weekend intel status: {exc}",
+            "last_refresh_reason": "status_error",
+            "market_open": False,
+            "weekend_window": False,
+            "preopen_window": False,
+            "refresh_hours": int(getattr(service, "refresh_hours", 4) or 4),
+            "alpha_configured": bool(getattr(service, "alpha_api_key", "")),
+            "x_configured": bool(getattr(service, "x_bearer_token", "")),
+            "source_health": {},
+            "latest_alpha_news": [],
+            "latest_x_counts": [],
+            "latest_x_posts": [],
+            "latest_gold_history": [],
+            "recent_samples": [],
+            "sample_count": 0,
+            "summary": "",
+        }
+
+
+def _build_ai_analysis_status() -> dict:
+    from engine.ai_analysis import ai_analysis_service
+    service = ai_analysis_service
+    return {
+        "enabled": bool(service.is_enabled),
+        "provider": str(getattr(service, "provider", "openai") or "openai"),
+        "model": str(getattr(service, "model", "") or ""),
+        "api_configured": bool(getattr(service, "api_key", "")),
+        "cache_ttl_seconds": int(getattr(service, "cache_ttl_seconds", 0) or 0),
+    }
+
+
+def _build_manual_ai_trade_idea_status() -> dict:
+    from engine.ai_manual_trade_ideas import ai_manual_trade_idea_service
+    service = ai_manual_trade_idea_service
+    return {
+        "enabled": bool(service.is_enabled),
+        "provider": str(getattr(service, "provider", "openai") or "openai"),
+        "model": str(getattr(service, "model", "") or ""),
+        "api_configured": bool(getattr(service, "api_key", "")),
+        "timeout_seconds": float(getattr(service, "timeout_seconds", 0.0) or 0.0),
+    }
 
 
 def _build_gate_config_dict() -> dict:
@@ -1214,13 +1325,28 @@ def _build_gate_config_dict() -> dict:
         "XGB_BLOCK_THRESHOLD": cfg.XGB_BLOCK_THRESHOLD,
         "XGB_BLEND_CONFIDENCE_ENABLED": cfg.XGB_BLEND_CONFIDENCE_ENABLED,
         "XGB_LOG_CONFIDENCE_ENABLED": cfg.XGB_LOG_CONFIDENCE_ENABLED,
-        "AI_TRADE_ADVISOR_ENABLED": cfg.AI_TRADE_ADVISOR_ENABLED,
-        "AI_TRADE_ADVISOR_TIMEOUT_SECONDS": cfg.AI_TRADE_ADVISOR_TIMEOUT_SECONDS,
-        "AI_TRADE_ADVISOR_MIN_SECONDS_BETWEEN_CALLS": cfg.AI_TRADE_ADVISOR_MIN_SECONDS_BETWEEN_CALLS,
-        "AI_TRADE_ADVISOR_MAX_CONFIDENCE": cfg.AI_TRADE_ADVISOR_MAX_CONFIDENCE,
-        "AI_TRADE_ADVISOR_SCORE_BUFFER": cfg.AI_TRADE_ADVISOR_SCORE_BUFFER,
-        "AI_TRADE_ADVISOR_REJECT_CONFIDENCE_MIN": cfg.AI_TRADE_ADVISOR_REJECT_CONFIDENCE_MIN,
-        "AI_TRADE_ADVISOR_FAIL_OPEN": cfg.AI_TRADE_ADVISOR_FAIL_OPEN,
+        "AI_MARKET_BIAS_ENABLED": cfg.AI_MARKET_BIAS_ENABLED,
+        "AI_MARKET_BIAS_REFRESH_SECONDS": cfg.AI_MARKET_BIAS_REFRESH_SECONDS,
+        "AI_MARKET_BIAS_NEWS_LOOKBACK_MINUTES": cfg.AI_MARKET_BIAS_NEWS_LOOKBACK_MINUTES,
+        "AI_MARKET_BIAS_DIRECTION_BLOCK_THRESHOLD": cfg.AI_MARKET_BIAS_DIRECTION_BLOCK_THRESHOLD,
+        "AI_MARKET_BIAS_REDUCE_THRESHOLD": cfg.AI_MARKET_BIAS_REDUCE_THRESHOLD,
+        "AI_MARKET_BIAS_FAIL_OPEN": cfg.AI_MARKET_BIAS_FAIL_OPEN,
+        "AI_MARKET_BIAS_MAX_NEWS_ITEMS": cfg.AI_MARKET_BIAS_MAX_NEWS_ITEMS,
+        "AI_AUTOMATION_ENABLED": cfg.AI_AUTOMATION_ENABLED,
+        "AI_MARKET_BIAS_OPENAI_ENABLED": cfg.AI_MARKET_BIAS_OPENAI_ENABLED,
+        "AI_MARKET_BIAS_ALPHA_ENABLED": cfg.AI_MARKET_BIAS_ALPHA_ENABLED,
+        "AI_TRADE_CORRECTION_ENABLED": cfg.AI_TRADE_CORRECTION_ENABLED,
+        "AI_TRADE_CORRECTION_DRY_RUN": cfg.AI_TRADE_CORRECTION_DRY_RUN,
+        "AI_ANALYSIS_ENABLED": cfg.AI_ANALYSIS_ENABLED,
+        "AI_MANUAL_TRADE_IDEAS_ENABLED": cfg.AI_MANUAL_TRADE_IDEAS_ENABLED,
+        "WEEKEND_INTEL_ENABLED": cfg.WEEKEND_INTEL_ENABLED,
+        "WEEKEND_INTEL_REFRESH_HOURS": cfg.WEEKEND_INTEL_REFRESH_HOURS,
+        "WEEKEND_INTEL_PREOPEN_HOURS": cfg.WEEKEND_INTEL_PREOPEN_HOURS,
+        "WEEKEND_INTEL_X_SPIKE_POST_COUNT": cfg.WEEKEND_INTEL_X_SPIKE_POST_COUNT,
+        "WEEKEND_INTEL_X_MAX_POSTS": cfg.WEEKEND_INTEL_X_MAX_POSTS,
+        "WEEKEND_INTEL_ALPHA_NEWS_LIMIT": cfg.WEEKEND_INTEL_ALPHA_NEWS_LIMIT,
+        "WEEKEND_INTEL_ALPHA_ENABLED": cfg.WEEKEND_INTEL_ALPHA_ENABLED,
+        "WEEKEND_INTEL_X_ENABLED": cfg.WEEKEND_INTEL_X_ENABLED,
         "TRADE_WINDOW_LONDON_START": cfg.TRADE_WINDOW_LONDON_START,
         "TRADE_WINDOW_LONDON_END": cfg.TRADE_WINDOW_LONDON_END,
         "TRADE_WINDOW_OVERLAP_START": cfg.TRADE_WINDOW_OVERLAP_START,
@@ -1394,8 +1520,11 @@ def _build_status_sync() -> dict:
     status["mt5_today_pnl"] = getattr(trader, '_mt5_today_pnl', {})
     status["risk"] = _build_risk_dict(trader)
     status["tick_pressure"] = getattr(trader, "_tick_pressure", None) or {"ready": False}
-    status["ai_trade_advisor"] = _build_ai_trade_advisor_status()
     status["ai_trade_correction"] = _build_ai_trade_correction_status(include_recent=False)
+    status["ai_market_bias"] = _build_ai_market_bias_status()
+    status["weekend_intel"] = _build_weekend_intel_status()
+    status["ai_analysis"] = _build_ai_analysis_status()
+    status["manual_ai_trade_ideas"] = _build_manual_ai_trade_idea_status()
     status["deployment"] = _get_deployment_status(trader)
     return convert_numpy_types(status)
 
@@ -1594,6 +1723,44 @@ async def get_ai_correction_panel(limit: int = 12):
     return {"ai_trade_correction": result}
 
 
+@router.get("/status/ai-market-bias")
+async def get_ai_market_bias_panel():
+    global _ai_market_bias_cache, _ai_market_bias_cache_time
+    now = time.monotonic()
+    if _ai_market_bias_cache is not None and (now - _ai_market_bias_cache_time) < _AI_MARKET_BIAS_CACHE_TTL:
+        return {"ai_market_bias": _ai_market_bias_cache}
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _build_ai_market_bias_status),
+            timeout=6.0,
+        )
+    except asyncio.TimeoutError:
+        result = _ai_market_bias_cache or _build_ai_market_bias_status()
+    _ai_market_bias_cache = result
+    _ai_market_bias_cache_time = time.monotonic()
+    return {"ai_market_bias": result}
+
+
+@router.get("/status/weekend-intel")
+async def get_weekend_intel_panel():
+    global _weekend_intel_cache, _weekend_intel_cache_time
+    now = time.monotonic()
+    if _weekend_intel_cache is not None and (now - _weekend_intel_cache_time) < _WEEKEND_INTEL_CACHE_TTL:
+        return {"weekend_intel": _weekend_intel_cache}
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _build_weekend_intel_status),
+            timeout=6.0,
+        )
+    except asyncio.TimeoutError:
+        result = _weekend_intel_cache or _build_weekend_intel_status()
+    _weekend_intel_cache = result
+    _weekend_intel_cache_time = time.monotonic()
+    return {"weekend_intel": result}
+
+
 @router.get("/status/heavy")
 async def get_status_heavy():
     """Aggregate all heavy panels concurrently. Kept for backward compatibility."""
@@ -1601,15 +1768,16 @@ async def get_status_heavy():
     now = time.monotonic()
     if _heavy_status_cache is not None and (now - _heavy_status_cache_time) < _HEAVY_STATUS_CACHE_TTL:
         return _heavy_status_cache
-    ch, perf, xgb_resp, bl, ai_reviews, ai_correction = await asyncio.gather(
+    ch, perf, xgb_resp, bl, ai_reviews, ai_correction, ai_market_bias = await asyncio.gather(
         get_closed_history(),
         get_performance_panel(),
         get_xgb_panel(),
         get_blockers_panel(),
         get_ai_reviews_panel(),
         get_ai_correction_panel(),
+        get_ai_market_bias_panel(),
     )
-    result = {**ch, **perf, **xgb_resp, **bl, **ai_reviews, **ai_correction}
+    result = {**ch, **perf, **xgb_resp, **bl, **ai_reviews, **ai_correction, **ai_market_bias}
     _heavy_status_cache = result
     _heavy_status_cache_time = time.monotonic()
     return result
@@ -1955,7 +2123,7 @@ async def generate_manual_ai_trade_idea(request: Request):
         if df is None or df.empty:
             return {
                 "status": "error",
-                "provider": "nvidia",
+                "provider": getattr(ai_manual_trade_idea_service, "provider", "openai"),
                 "model": getattr(ai_manual_trade_idea_service, "model", ""),
                 "reasoning": f"No candle data available for {timeframe}",
                 "actionable": False,
@@ -2289,6 +2457,26 @@ async def get_config():
             "XGB_BLEND_CONFIDENCE_ENABLED": editable_value("XGB_BLEND_CONFIDENCE_ENABLED"),
             "XGB_LOG_CONFIDENCE_ENABLED": editable_value("XGB_LOG_CONFIDENCE_ENABLED"),
         },
+        "ai_controls": {
+            "AI_AUTOMATION_ENABLED": editable_value("AI_AUTOMATION_ENABLED"),
+            "AI_MARKET_BIAS_ENABLED": editable_value("AI_MARKET_BIAS_ENABLED"),
+            "AI_MARKET_BIAS_OPENAI_ENABLED": editable_value("AI_MARKET_BIAS_OPENAI_ENABLED"),
+            "AI_MARKET_BIAS_ALPHA_ENABLED": editable_value("AI_MARKET_BIAS_ALPHA_ENABLED"),
+            "AI_TRADE_CORRECTION_ENABLED": editable_value("AI_TRADE_CORRECTION_ENABLED"),
+            "AI_TRADE_CORRECTION_DRY_RUN": editable_value("AI_TRADE_CORRECTION_DRY_RUN"),
+            "AI_ANALYSIS_ENABLED": editable_value("AI_ANALYSIS_ENABLED"),
+            "AI_MANUAL_TRADE_IDEAS_ENABLED": editable_value("AI_MANUAL_TRADE_IDEAS_ENABLED"),
+            "WEEKEND_INTEL_ENABLED": editable_value("WEEKEND_INTEL_ENABLED"),
+            "WEEKEND_INTEL_ALPHA_ENABLED": editable_value("WEEKEND_INTEL_ALPHA_ENABLED"),
+            "WEEKEND_INTEL_X_ENABLED": editable_value("WEEKEND_INTEL_X_ENABLED"),
+        },
+        "ai_control_status": {
+            "ai_trade_correction": _build_ai_trade_correction_status(include_recent=False),
+            "ai_market_bias": _build_ai_market_bias_status(),
+            "weekend_intel": _build_weekend_intel_status(),
+            "ai_analysis": _build_ai_analysis_status(),
+            "manual_ai_trade_ideas": _build_manual_ai_trade_idea_status(),
+        },
         # Risk configuration parameters - nested under risk_config for dashboard
         "risk_config": {
             "MAX_OPEN_TRADES": editable_value("MAX_OPEN_TRADES"),
@@ -2554,8 +2742,7 @@ async def update_config(request: Request):
         'TRADE_SCORE_MIN', 'TRADE_SCORE_PREMIUM', 'TRADE_SCORE_RELAXED_MIN',
         'TRADE_SCORE_STRICT_AFTER_LOSS', 'COUNTER_TREND_MIN_SCORE',
         'AUTO_RELAX_AFTER_MINUTES', 'AUTO_RELAX_MIN_SCORE', 'AUTO_RELAX_RR',
-        'AI_TRADE_ADVISOR_TIMEOUT_SECONDS', 'AI_TRADE_ADVISOR_MIN_SECONDS_BETWEEN_CALLS',
-        'AI_TRADE_ADVISOR_MAX_CONFIDENCE', 'AI_TRADE_ADVISOR_REJECT_CONFIDENCE_MIN',
+        'AI_MARKET_BIAS_DIRECTION_BLOCK_THRESHOLD', 'AI_MARKET_BIAS_REDUCE_THRESHOLD',
         'SCALPER_SWEEP_TOLERANCE', 'MARKET_TICK_POLL_INTERVAL',
         'DASHBOARD_WS_PUSH_INTERVAL'
     }
@@ -2567,7 +2754,11 @@ async def update_config(request: Request):
         'M15_SR_EXTENDED_LOOKBACK_HOURS',
         'M15_SR_MIN_TOUCHES', 'M15_SR_MAX_TRADES_PER_DAY',
         'M15_SR_COOLDOWN_CANDLES', 'M15_SR_BLOCK_AFTER_SPIKE_CANDLES',
-        'AI_TRADE_ADVISOR_SCORE_BUFFER',
+        'AI_MARKET_BIAS_REFRESH_SECONDS', 'AI_MARKET_BIAS_NEWS_LOOKBACK_MINUTES',
+        'AI_MARKET_BIAS_MAX_NEWS_ITEMS',
+        'WEEKEND_INTEL_REFRESH_HOURS', 'WEEKEND_INTEL_PREOPEN_HOURS',
+        'WEEKEND_INTEL_X_SPIKE_POST_COUNT', 'WEEKEND_INTEL_X_MAX_POSTS',
+        'WEEKEND_INTEL_ALPHA_NEWS_LIMIT',
         'TIER1_EARLY_FAIL_TICKS', 'TIER1_MAX_ENTRY_DELAY_MS',
         'TRADE_WINDOW_LONDON_START', 'TRADE_WINDOW_LONDON_END',
         'TRADE_WINDOW_OVERLAP_START', 'TRADE_WINDOW_OVERLAP_END'
@@ -2588,7 +2779,12 @@ async def update_config(request: Request):
         'TIER1_BLOCK_SPIKE_ENTRY', 'TRADE_SCORE_ENABLED', 'CONFIRMATION_3_OF_4_ENABLED',
         'BLOCK_WEAK_COUNTER_TREND', 'COUNTER_TREND_REQUIRE_M15_ZONE',
         'COUNTER_TREND_REQUIRE_SWEEP', 'COUNTER_TREND_REQUIRE_CANDLE_CONFIRMATION',
-        'AI_TRADE_ADVISOR_ENABLED', 'AI_TRADE_ADVISOR_FAIL_OPEN',
+        'AI_MARKET_BIAS_ENABLED', 'AI_MARKET_BIAS_FAIL_OPEN', 'AI_AUTOMATION_ENABLED',
+        'AI_MARKET_BIAS_OPENAI_ENABLED', 'AI_MARKET_BIAS_ALPHA_ENABLED',
+        'AI_TRADE_CORRECTION_ENABLED', 'AI_TRADE_CORRECTION_DRY_RUN',
+        'AI_ANALYSIS_ENABLED', 'AI_MANUAL_TRADE_IDEAS_ENABLED',
+        'WEEKEND_INTEL_ENABLED',
+        'WEEKEND_INTEL_ALPHA_ENABLED', 'WEEKEND_INTEL_X_ENABLED',
         'AUTO_RELAX_ENABLED', 'AUTO_RELAX_ONLY_GOOD_SESSION',
         'AUTO_RELAX_BLOCK_AFTER_LOSS', 'AUTO_RELAX_BLOCK_DRAWDOWN',
         'AUTO_RELAX_REQUIRE_STABLE_SPREAD', 'XGB_BYPASS_ENABLED',

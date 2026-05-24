@@ -64,6 +64,17 @@ class RollbackCondition(BaseModel):
     reference: Optional[str] = None
 
 
+class MarketWindowReviewed(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    session: Optional[str] = None
+    bucket: Optional[str] = None
+    previous_session: Optional[str] = None
+    new_session: Optional[str] = None
+    previous_day: Optional[str] = None
+    new_day: Optional[str] = None
+
+
 class LossClassificationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -109,7 +120,7 @@ class AITradeCorrectionDecision(BaseModel):
     trigger_type: str
     strategy: str
     trade_ids_reviewed: List[str] = Field(default_factory=list)
-    market_window_reviewed: Dict[str, Any] = Field(default_factory=dict)
+    market_window_reviewed: MarketWindowReviewed = Field(default_factory=MarketWindowReviewed)
     diagnosis_summary: str
     loss_classifications: List[LossClassificationRecord] = Field(default_factory=list)
     repeated_patterns_found: List[str] = Field(default_factory=list)
@@ -154,6 +165,27 @@ def build_live_modification_schema() -> Dict[str, Any]:
         },
         "required": ["type", "value", "reference"],
     }
+    override_value_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "require_candle_confirmation": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "expiry_minutes": {"anyOf": [{"type": "integer"}, {"type": "number"}, {"type": "null"}]},
+            "require_retest": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "require_vwap_alignment": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "require_ema_alignment": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "require_microflow_confirmation": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "mode": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "buffer_points": {"anyOf": [{"type": "number"}, {"type": "integer"}, {"type": "null"}]},
+            "rr": {"anyOf": [{"type": "number"}, {"type": "integer"}, {"type": "null"}]},
+            "trail_activate_r": {"anyOf": [{"type": "number"}, {"type": "integer"}, {"type": "null"}]},
+            "trail_lock_r": {"anyOf": [{"type": "number"}, {"type": "integer"}, {"type": "null"}]},
+            "profit_lock_1_arm_r": {"anyOf": [{"type": "number"}, {"type": "integer"}, {"type": "null"}]},
+            "profit_lock_1_r": {"anyOf": [{"type": "number"}, {"type": "integer"}, {"type": "null"}]},
+            "note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        },
+        "required": [],
+    }
     return {
         "type": "object",
         "additionalProperties": False,
@@ -168,7 +200,7 @@ def build_live_modification_schema() -> Dict[str, Any]:
             "exact_runtime_override_key": {"type": "string"},
             "exact_runtime_override_value": {
                 "anyOf": [
-                    {"type": "object", "additionalProperties": True},
+                    override_value_schema,
                     {"type": "array"},
                     {"type": "string"},
                     {"type": "number"},
@@ -220,6 +252,19 @@ def build_response_schema() -> Dict[str, Any]:
         },
         "required": ["type", "value", "reference"],
     }
+    market_window_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "session": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "bucket": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "previous_session": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "new_session": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "previous_day": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "new_day": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        },
+        "required": [],
+    }
     return {
         "type": "object",
         "additionalProperties": False,
@@ -229,7 +274,7 @@ def build_response_schema() -> Dict[str, Any]:
             "trigger_type": {"type": "string"},
             "strategy": {"type": "string"},
             "trade_ids_reviewed": {"type": "array", "items": {"type": "string"}},
-            "market_window_reviewed": {"type": "object", "additionalProperties": True},
+            "market_window_reviewed": market_window_schema,
             "diagnosis_summary": {"type": "string"},
             "loss_classifications": {
                 "type": "array",

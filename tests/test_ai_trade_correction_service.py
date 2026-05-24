@@ -3,9 +3,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import config as live_cfg
 from pydantic import ValidationError
 
 from ai_trade_correction_service import AITradeCorrectionService
+from ai_trade_correction_service.ai_forensic_client import AIForensicClient
 from ai_trade_correction_service.decision_schema import (
     AIDecisionType,
     ExpiryCondition,
@@ -208,6 +210,9 @@ def test_dashboard_status_exposes_recent_analysis_and_modifications(tmp_path: Pa
     monkeypatch.setenv("AI_TRADE_CORRECTION_ENABLED", "1")
     monkeypatch.setenv("AI_TRADE_CORRECTION_DRY_RUN", "1")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(live_cfg, "AI_TRADE_CORRECTION_ENABLED", True, raising=False)
+    monkeypatch.setattr(live_cfg, "AI_TRADE_CORRECTION_DRY_RUN", True, raising=False)
+    monkeypatch.setattr(live_cfg, "AI_AUTOMATION_ENABLED", True, raising=False)
 
     cfg = SimpleNamespace(DEFAULT_STRATEGY=["M15_ZONE_SCALP"])
     strat_mgr = SimpleNamespace(active_name="M15_ZONE_SCALP", selected=["M15_ZONE_SCALP"])
@@ -274,3 +279,63 @@ def test_dashboard_status_exposes_recent_analysis_and_modifications(tmp_path: Pa
     assert status["recent_analyses"][0]["analysis_id"] == "analysis-status"
     assert status["recent_modifications"][0]["modification_id"] == "mod-status"
     assert status["recent_forensics"][0]["classification"] == "CORRECT_IDEA_WRONG_TIMING"
+
+
+def test_trade_correction_skips_analysis_when_market_closed(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AI_TRADE_CORRECTION_ENABLED", "1")
+    monkeypatch.setenv("AI_TRADE_CORRECTION_DRY_RUN", "0")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    cfg = SimpleNamespace(DEFAULT_STRATEGY=["M15_ZONE_SCALP"])
+    strat_mgr = SimpleNamespace(active_name="M15_ZONE_SCALP", selected=["M15_ZONE_SCALP"])
+    service = AITradeCorrectionService(tmp_path, cfg, strategy_manager=strat_mgr, log_fn=None)
+
+    service.store.close_trade_snapshot(
+        "sig-closed",
+        close_snapshot={"trade_ticket": 1, "pnl_r": -1.0},
+        counterfactuals={},
+        loss_classification="AVOIDABLE_BAD_TRADE",
+    )
+    service.store.upsert_signal_snapshot(
+        {
+            "signal_id": "sig-closed",
+            "strategy": "M15_ZONE_SCALP",
+            "signal_snapshot": _snapshot()["signal_snapshot"],
+            "status": "CLOSED",
+        }
+    )
+
+    monkeypatch.setattr(service, "_market_is_open", lambda now=None: False)
+    analyze_called = {"value": False}
+
+    def _should_not_run(self, context):
+        analyze_called["value"] = True
+        return {}
+
+    monkeypatch.setattr(AIForensicClient, "analyze", _should_not_run, raising=True)
+
+    result = service.run_analysis_now(trigger_type="AFTER_CLOSED_TRADE", strategy_name="M15_ZONE_SCALP")
+
+    assert result is None
+    assert analyze_called["value"] is False
+    assert service.get_dashboard_status(include_recent=False)["analysis_state"]["last_status"] == "SKIPPED_CLOSED_MARKET"
+
+
+def test_trade_correction_runtime_bypass_keeps_service_inactive(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AI_TRADE_CORRECTION_ENABLED", "1")
+    monkeypatch.setenv("AI_AUTOMATION_ENABLED", "0")
+    monkeypatch.setenv("AI_TRADE_CORRECTION_DRY_RUN", "0")
+    monkeypatch.setattr(live_cfg, "AI_TRADE_CORRECTION_ENABLED", True, raising=False)
+    monkeypatch.setattr(live_cfg, "AI_AUTOMATION_ENABLED", False, raising=False)
+    monkeypatch.setattr(live_cfg, "AI_TRADE_CORRECTION_DRY_RUN", False, raising=False)
+
+    cfg = SimpleNamespace(DEFAULT_STRATEGY=["M15_ZONE_SCALP"])
+    strat_mgr = SimpleNamespace(active_name="M15_ZONE_SCALP", selected=["M15_ZONE_SCALP"])
+    service = AITradeCorrectionService(tmp_path, cfg, strategy_manager=strat_mgr, log_fn=None)
+
+    status = service.get_dashboard_status(include_recent=False)
+
+    assert service.is_active is False
+    assert status["enabled"] is True
+    assert status["automation_enabled"] is False
+    assert "automation bypass" in status["reason"].lower()
